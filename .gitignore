@@ -1,6 +1,14 @@
 /.claude
 /project
-/docs
 CLAUDE.md
 .mcp.json
 /.devcontainer
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
