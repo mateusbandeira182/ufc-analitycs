@@ -3,7 +3,7 @@
 CLAUDE.md
 .mcp.json
 /.devcontainer
-
+/docs
 # Python
 __pycache__/
 *.py[cod]
