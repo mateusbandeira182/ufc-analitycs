@@ -1,0 +1,5 @@
+event_id,fight_id,date,location,winner,winner_id
+evt1aaaa,fgt1aaaa,"August 16, 2025","Chicago, Illinois, USA",Dricus Du Plessis,aaaa0001
+evt1aaaa,fgt2aaaa,"August 16, 2025","Chicago, Illinois, USA",Geoff Neal,aaaa0002
+evt1aaaa,fgt3aaaa,"August 16, 2025","Chicago, Illinois, USA",Lerone Murphy,aaaa0003
+evt2bbbb,fgt4bbbb,"September 06, 2025",,Nassourdine Imavov,bbbb0001
