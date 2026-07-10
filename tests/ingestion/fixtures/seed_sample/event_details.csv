@@ -1,0 +1,4 @@
+event_id,fight_id,date,location,winner,winner_id
+evt300,f1,"April 13, 2024","Las Vegas, Nevada, USA",Ilia Topuria,bbbb2222
+evt300,f2,"April 13, 2024","Las Vegas, Nevada, USA",Jon Jones,cccc3333
+evtfn,f3,"May 01, 2024",,Ilia Topuria,bbbb2222
