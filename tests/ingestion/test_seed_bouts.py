@@ -278,6 +278,18 @@ def test_resolve_bout_fks_retorna_none_quando_fighter_nao_resolve(db_session: Se
     assert unresolved is None
 
 
+def test_resolve_bout_fks_data_vazia_pula_sem_abortar(db_session: Session) -> None:
+    """CA-02: luta cujo ``event_id`` nao existe em event_details vem com ``date=""``
+    (preenchido por ``_merge_fight_rows``); resolve para ``None`` (skip), sem levantar
+    ``ValueError`` -- nao aborta o seed inteiro."""
+    _seed_support(db_session)
+    fighter_index = build_fighter_index(db_session)
+    event_index = build_event_index(db_session)
+
+    unresolved = resolve_bout_fks(_row(date=""), fighter_index, event_index)
+    assert unresolved is None
+
+
 def test_build_fighter_index_ignora_homonimos_ambiguos(db_session: Session) -> None:
     """CA-02: nome que mapeia para dois lutadores (homonimo) fica fora do indice (ambiguo)."""
     _add_fighter(db_session, "John Doe", date(1985, 1, 1))

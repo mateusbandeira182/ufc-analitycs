@@ -146,6 +146,21 @@ def _parse_event_date(value: str) -> date:
     return datetime.strptime(value.strip(), _DATE_FORMAT).date()  # noqa: DTZ007  # data de calendario, sem timezone
 
 
+def _parse_event_date_or_none(value: str) -> date | None:
+    """Como ``_parse_event_date``, mas devolve ``None`` para data ausente ou nao parseavel.
+
+    ``_merge_fight_rows`` preenche ``date`` com string vazia quando a luta referencia um
+    ``event_id`` inexistente em ``event_details``; nesse caso o evento nao resolve e a luta
+    e pulada pelo chamador, sem abortar o seed inteiro.
+    """
+    if not value.strip():
+        return None
+    try:
+        return _parse_event_date(value)
+    except ValueError:
+        return None
+
+
 def _map_method(token: str) -> BoutMethod:
     """Mapeia o token de metodo do dataset ao enum; token nao previsto -> ``NO_CONTEST`` (log)."""
     method = _METHOD_BY_TOKEN.get(token.strip())
@@ -241,7 +256,10 @@ def resolve_bout_fks(
     """
     red_id = fighter_index.get(normalize_name(row[_R_NAME_COL]))
     blue_id = fighter_index.get(normalize_name(row[_B_NAME_COL]))
-    event_id = event_index.get((row[_EVENT_NAME_COL], _parse_event_date(row[_DATE_COL])))
+    event_date = _parse_event_date_or_none(row[_DATE_COL])
+    event_id = (
+        event_index.get((row[_EVENT_NAME_COL], event_date)) if event_date is not None else None
+    )
     if red_id is None or blue_id is None or event_id is None:
         return None
     return (event_id, red_id, blue_id)

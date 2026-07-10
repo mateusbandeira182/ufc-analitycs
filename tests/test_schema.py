@@ -8,13 +8,13 @@ chaves naturais, a nulabilidade de ``winner_id`` e a granularidade de
 
 from __future__ import annotations
 
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.sql.schema import Table
 
-# Importa os models para registrar as tabelas em Base.metadata.
-import apps.bouts.models
-import apps.events.models
-import apps.fighters.models  # noqa: F401
+# Importa os models (só side-effect) para registrar as tabelas em Base.metadata.
+from apps.bouts import models as _bouts_models  # noqa: F401
+from apps.events import models as _events_models  # noqa: F401
+from apps.fighters import models as _fighters_models  # noqa: F401
 from mma_analytics.db import Base
 
 TABELAS = {"fighters", "events", "bouts", "bout_fighters"}
@@ -98,8 +98,11 @@ def test_bout_fighters_indice_por_fighter_para_historico() -> None:
     assert _tem_indice_na_coluna(_tabela("bout_fighters"), "fighter_id")
 
 
-def test_todas_as_indexes_declaradas() -> None:
-    """Smoke: cada tabela expõe seu objeto Table (guarda contra regressão de import)."""
+def test_todas_as_tabelas_expostas() -> None:
+    """Smoke: cada tabela do domínio expõe seu objeto Table (guarda contra regressão de import).
+
+    Os índices específicos são cobertos pelos testes dedicados
+    (``test_fighters_name_normalized_indexado``, ``test_bout_fighters_indice_por_fighter``).
+    """
     for nome in TABELAS:
         assert isinstance(_tabela(nome), Table)
-        assert isinstance(next(iter(_tabela("fighters").indexes), Index("x")), Index)

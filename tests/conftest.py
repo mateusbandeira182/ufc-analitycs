@@ -20,7 +20,14 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 
-# Importa os models para popular ``Base.metadata`` antes do ``create_all`` da fixture.
+# APP_ENV precisa estar definido ANTES dos imports de primeira-parte: tanto ``apps.*``
+# quanto ``mma_analytics.*`` carregam ``mma_analytics.settings``, cujo objeto ``settings``
+# é instanciado no import. Definir APP_ENV só depois (ou dentro de uma fixture) não muda
+# ``effective_db_name`` -- a proteção ``_garante_ambiente_de_teste`` deixaria de valer e a
+# suíte não seria auto-contida. ``setdefault`` preserva um APP_ENV vindo do ambiente.
+os.environ.setdefault("APP_ENV", "test")
+
+# Importa os models (só side-effect) para popular ``Base.metadata`` antes do ``create_all``.
 from apps.bouts import models as _bouts_models  # noqa: F401
 from apps.events import models as _events_models  # noqa: F401
 from apps.fighters import models as _fighters_models  # noqa: F401
@@ -43,7 +50,6 @@ def _garante_ambiente_de_teste() -> None:
 def alembic_cfg() -> Config:
     """``Config`` do Alembic apontando para o alembic.ini do repositório."""
     _garante_ambiente_de_teste()
-    os.environ.setdefault("APP_ENV", "test")
     return Config(str(_REPO_ROOT / "alembic.ini"))
 
 
