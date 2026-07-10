@@ -1,0 +1,106 @@
+[project]
+name = "mma-analytics"
+version = "0.1.0"
+description = "MMA Analytics Platform -- coleta, armazenamento e análise de dados do UFC."
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    "pandas>=2.2",
+    "pydantic-settings>=2.2",
+    "kagglehub>=1.0.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "polyfactory>=2.16",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+    "pandas-stubs>=3.0.3.260530",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mma_analytics", "apps"]
+
+# ---------------------------------------------------------------------------
+# Ruff -- lint + format (ver skill qualidade-python)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "SIM",      # flake8-simplify
+    "I",        # isort
+    "ASYNC",    # flake8-async
+    "S",        # flake8-bandit
+    "C4",       # flake8-comprehensions
+    "T20",      # flake8-print
+    "DTZ",      # flake8-datetimez
+    "RUF",      # ruff-native
+]
+# RUF001/002/003: pt-BR com acentos é intencional, não caractere ambíguo.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["apps", "ingestion", "mma_analytics"]
+
+[tool.ruff.lint.per-file-ignores]
+# Testes: assert é a ferramenta do pytest; credenciais fake em fixtures.
+"tests/**" = ["S101", "S105", "S106"]
+
+# ---------------------------------------------------------------------------
+# mypy -- estrito + plugin pydantic
+# ---------------------------------------------------------------------------
+[tool.mypy]
+# Alinhado ao interpretador do ambiente (3.12.x); requires-python continua >=3.11.
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/versions/", "\\.venv/"]
+
+[[tool.mypy.overrides]]
+# numpy é alcançado transitivamente (pytest.approx importa numpy sob TYPE_CHECKING);
+# seus stubs usam sintaxe 3.12 (PEP 695) e não devem ser seguidos. pandas idem: o
+# DataFrame é fronteira dinâmica, tipada na borda (ingestion.entity_resolution).
+module = ["pandas", "pandas.*", "numpy", "numpy.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# kagglehub não distribui stubs; usado só no caminho opcional de download.
+module = ["kagglehub", "kagglehub.*"]
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests", "apps", "ingestion"]
+python_files = ["test_*.py"]
+addopts = "-ra"
+
+# ---------------------------------------------------------------------------
+# bandit -- SAST (make security)
+# ---------------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", "alembic", ".venv"]
