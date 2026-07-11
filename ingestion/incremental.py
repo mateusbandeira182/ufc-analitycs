@@ -94,7 +94,14 @@ def resolve_call_budget(cli_value: int | None, env: Mapping[str, str]) -> int:
     if cli_value is not None:
         return cli_value
     raw = env.get(_ENV_CALL_BUDGET)
-    return int(raw) if raw else DEFAULT_CALL_BUDGET
+    if not raw:
+        return DEFAULT_CALL_BUDGET
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(
+            f"{_ENV_CALL_BUDGET}={raw!r} inválido: esperado um inteiro (teto de chamadas à Cito)."
+        ) from None
 
 
 # Mapa PRÓPRIO da Cito -> ``BoutMethod``. Deliberadamente **não** reusa o ``_METHOD_BY_TOKEN`` do
@@ -147,7 +154,9 @@ def _load_existing_fighters(session: Session) -> list[ExistingFighter]:
     ]
 
 
-def resolve_or_create_fighter(session: Session, fighter: CitoFighter) -> int:
+def resolve_or_create_fighter(
+    session: Session, fighter: CitoFighter, existing: list[ExistingFighter] | None = None
+) -> int:
     """Reusa o ``fighter_id`` existente ou insere um novo com ``source="cito"``.
 
     Reconcilia o perfil da Cito contra os fighters já persistidos via ``match_fighter_id``
@@ -157,10 +166,16 @@ def resolve_or_create_fighter(session: Session, fighter: CitoFighter) -> int:
     o DTO já garante default ``0``). Idempotente: na reexecução, o fighter inserido antes casa
     por ``(name_normalized, DOB)`` e é reusado -- zero inserts. Propaga
     ``AmbiguousFighterMatchError`` (nunca duplica nem mescla em silêncio).
+
+    ``existing`` é o índice de fighters em memória a reusar entre chamadas (materializado uma
+    vez por evento em ``resolve_event_fighters`` -- evita N scans da tabela por evento, como o
+    seed faz em ``seed_bouts``). Um fighter recém-inserido é anexado ao índice, mantendo-o
+    coerente para as resoluções seguintes do mesmo evento. Se omitido, o índice é carregado
+    do banco na própria chamada (uso direto, ex.: testes de uma única resolução).
     """
-    existing = _load_existing_fighters(session)
+    index = existing if existing is not None else _load_existing_fighters(session)
     candidate = FighterCandidate(name=fighter.name, date_of_birth=fighter.date_of_birth)
-    matched_id = match_fighter_id(candidate, existing)
+    matched_id = match_fighter_id(candidate, index)
     if matched_id is not None:
         logger.info("Fighter %r reconciliado ao id existente %d", fighter.name, matched_id)
         return matched_id
@@ -180,6 +195,15 @@ def resolve_or_create_fighter(session: Session, fighter: CitoFighter) -> int:
     )
     session.add(model)
     session.flush()  # materializa ``model.id`` para o mapa slug -> fighter_id
+    # Mantém o índice em memória coerente: um canto seguinte que seja a mesma pessoa
+    # (mesmo nome/DOB) reconcilia a este id em vez de duplicar dentro do mesmo evento.
+    index.append(
+        ExistingFighter(
+            id=model.id,
+            name_normalized=model.name_normalized,
+            date_of_birth=model.date_of_birth,
+        )
+    )
     logger.info("Fighter %r inserido com source=%s (id=%d)", fighter.name, SOURCE, model.id)
     return model.id
 
@@ -190,17 +214,20 @@ def resolve_event_fighters(
     """Resolve cada canto do evento a um ``fighter_id`` e devolve o mapa ``slug -> fighter_id``.
 
     Para cada slug único dos cantos, busca o perfil na Cito uma única vez (economia de quota:
-    slug já resolvido não refaz ``get_fighter``) e chama ``resolve_or_create_fighter``. O mapa
-    resultante alimenta o upsert de bouts (``_ingest_bouts``). Propaga
+    slug já resolvido não refaz ``get_fighter``) e chama ``resolve_or_create_fighter``. O índice
+    de fighters existentes é materializado **uma vez** aqui e reusado em todas as resoluções do
+    evento (evita N scans da tabela -- mesmo padrão de índice pré-computado do ``seed_bouts``). O
+    mapa resultante alimenta o upsert de bouts (``_ingest_bouts``). Propaga
     ``AmbiguousFighterMatchError`` -- a resolução falha alto, sem inserir parcial silencioso.
     """
     fighter_ids: dict[str, int] = {}
+    existing = _load_existing_fighters(session)
     for bout in event.bouts:
         for corner in bout.corners:
             if corner.slug in fighter_ids:
                 continue
             profile = client.get_fighter(corner.slug)
-            fighter_ids[corner.slug] = resolve_or_create_fighter(session, profile)
+            fighter_ids[corner.slug] = resolve_or_create_fighter(session, profile, existing)
     return fighter_ids
 
 
@@ -313,6 +340,7 @@ def upsert_bout(
     red_fighter_id: int,
     blue_fighter_id: int,
     core: BoutCore,
+    bout_index: dict[tuple[int, int, int], int] | None = None,
 ) -> int:
     """Get-or-create do ``Bout`` pela chave natural order-independent; devolve o ``bout_id``.
 
@@ -321,8 +349,14 @@ def upsert_bout(
     banco). Na inserção grava ``winner_id`` a partir do canto vencedor, o resultado e
     ``source="cito"``, e faz ``flush`` para materializar ``bout.id`` antes das FKs de
     ``bout_fighters``.
+
+    ``bout_index`` é o índice de lutas do evento em memória a reusar (materializado uma vez em
+    ``_ingest_bouts`` -- evita recomputar ``_existing_bout_index`` a cada luta). Uma luta
+    recém-inserida é anexada ao índice, mantendo a idempotência intra-execução (uma segunda luta
+    do mesmo par, cantos trocados, reconcilia à existente sem nova query). Se omitido, o índice é
+    carregado do banco na própria chamada (uso direto, ex.: testes de um único upsert).
     """
-    index = _existing_bout_index(session, event_id)
+    index = bout_index if bout_index is not None else _existing_bout_index(session, event_id)
     key = _bout_key(event_id, red_fighter_id, blue_fighter_id)
     existing = index.get(key)
     if existing is not None:
@@ -340,6 +374,7 @@ def upsert_bout(
     )
     session.add(bout)
     session.flush()  # materializa ``bout.id`` para as FKs de bout_fighters
+    index[key] = bout.id  # mantém o índice coerente para as próximas lutas do evento
     logger.info("Luta inserida (evento %d, id=%d) com source=%s", event_id, bout.id, SOURCE)
     return bout.id
 
@@ -418,7 +453,11 @@ def _ingest_bouts(
     inseridos e atualizados (linhas já presentes por chave natural, reencontradas no rerun).
     """
     event_id = _resolve_event_db_id(session, event)
-    known_bout_ids = set(_existing_bout_index(session, event_id).values())
+    # Índice de lutas do evento materializado uma vez e reusado por ``upsert_bout`` (evita
+    # recomputá-lo a cada luta). ``known_bout_ids`` fotografa as lutas pré-existentes para
+    # distinguir inserção de atualização no delta.
+    bout_index = _existing_bout_index(session, event_id)
+    known_bout_ids = set(bout_index.values())
     bouts_inserted = 0
     bouts_updated = 0
     bout_fighters_inserted = 0
@@ -432,7 +471,7 @@ def _ingest_bouts(
             continue
 
         bout_db_id = upsert_bout(
-            session, event_id, red_fighter_id, blue_fighter_id, map_bout_core(bout)
+            session, event_id, red_fighter_id, blue_fighter_id, map_bout_core(bout), bout_index
         )
         if bout_db_id not in known_bout_ids:
             known_bout_ids.add(bout_db_id)
@@ -592,7 +631,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     """
     logging.basicConfig(level=logging.INFO)
     args = _parse_args(argv)
-    budget = CallBudget(limit=resolve_call_budget(args.call_budget, os.environ))
+    try:
+        limit = resolve_call_budget(args.call_budget, os.environ)
+    except ValueError as exc:
+        logger.error("Configuração inválida: %s", exc)
+        sys.exit(2)
+    budget = CallBudget(limit=limit)
     client = _build_client(fixture=args.fixture, fixture_dir=args.fixture_dir, budget=budget)
 
     with SessionLocal() as session:

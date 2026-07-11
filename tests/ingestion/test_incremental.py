@@ -202,6 +202,43 @@ def test_resolve_call_budget_cli_vence_env_vence_default() -> None:
     assert resolve_call_budget(None, {}) == DEFAULT_CALL_BUDGET
 
 
+def test_resolve_call_budget_env_nao_numerico_falha_com_mensagem_clara() -> None:
+    """CA-07: ``CITO_CALL_BUDGET`` não-numérico levanta ``ValueError`` explícito (não o cru do int).
+
+    Uma string vazia recai no default (ausência de override); um valor não-inteiro é erro de
+    configuração e deve falhar com mensagem clara que nomeia a variável e o valor recebido.
+    """
+    assert resolve_call_budget(None, {"CITO_CALL_BUDGET": ""}) == DEFAULT_CALL_BUDGET
+
+    with pytest.raises(ValueError, match="CITO_CALL_BUDGET") as excinfo:
+        resolve_call_budget(None, {"CITO_CALL_BUDGET": "quinhentos"})
+    assert "quinhentos" in str(excinfo.value)
+
+
+def test_main_env_call_budget_invalido_encerra_com_erro_de_config(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CA-07: env ``CITO_CALL_BUDGET`` inválido encerra o CLI com exit code != 0 e log claro.
+
+    O erro de configuração é resolvido antes de qualquer fetch ou escrita; ``main`` captura o
+    ``ValueError`` de ``resolve_call_budget``, emite via ``logger.error`` e sai com código != 0,
+    sem propagar traceback cru ao operador.
+    """
+    monkeypatch.setenv("CITO_CALL_BUDGET", "nao-numerico")
+
+    with (
+        caplog.at_level(logging.ERROR, logger="ingestion.incremental"),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        main(["--event", _EVENT_ID, "--fixture"])
+
+    assert excinfo.value.code != 0
+    assert "config" in caplog.text.lower()
+    error_records = [rec for rec in caplog.records if rec.levelno == logging.ERROR]
+    assert error_records
+    assert all(rec.exc_info is None for rec in error_records)
+
+
 def test_run_incremental_resumo_reporta_deltas_e_chamadas(db_session: Session) -> None:
     """CA-01/CA-02/CA-07: o resumo traz inseridos/atualizados por tabela + chamadas gastas.
 
