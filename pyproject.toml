@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "kagglehub>=1.0.2",
     "httpx>=0.28.1",
+    "fastapi>=0.139.0",
 ]
 
 [dependency-groups]
@@ -62,7 +63,9 @@ known-first-party = ["apps", "ingestion", "mma_analytics"]
 
 [tool.ruff.lint.per-file-ignores]
 # Testes: assert é a ferramenta do pytest; credenciais fake em fixtures.
+# Cobre a suíte de infraestrutura/ingestão (tests/**) e os testes por app (apps/**/tests/**).
 "tests/**" = ["S101", "S105", "S106"]
+"apps/**/tests/**" = ["S101", "S105", "S106"]
 
 # ---------------------------------------------------------------------------
 # mypy -- estrito + plugin pydantic
