@@ -1,0 +1,25 @@
+{
+  "bout_id": "sample-bout",
+  "fighters": [
+    {
+      "corner": "red",
+      "fighter_slug": "fighter-red",
+      "knockdowns": 1,
+      "sig_strikes_landed": 50,
+      "sig_strikes_attempted": 100,
+      "takedowns_landed": 2,
+      "takedowns_attempted": 4,
+      "submission_attempts": 1,
+      "control_time_seconds": 120
+    },
+    {
+      "corner": "blue",
+      "fighter_slug": "fighter-blue",
+      "knockdowns": 0,
+      "sig_strikes_landed": 40,
+      "sig_strikes_attempted": 90,
+      "takedowns_landed": 0,
+      "takedowns_attempted": 1
+    }
+  ]
+}

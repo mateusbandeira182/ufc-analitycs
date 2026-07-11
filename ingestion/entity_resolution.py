@@ -14,13 +14,16 @@ nenhum ``Any`` do ``DataFrame`` entra no domínio.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TypedDict
 
 from apps.fighters.enums import Stance
 from ingestion.normalize import normalize_name
+
+logger = logging.getLogger(__name__)
 
 _DOB_FORMAT = "%b %d, %Y"
 _STANCE_BY_LABEL = {
@@ -119,3 +122,88 @@ def resolve_fighters(rows: Iterable[FighterRow]) -> list[ResolvedFighter]:
         if key not in seen:
             seen[key] = fighter
     return list(seen.values())
+
+
+# --- Resolução cross-source (Kaggle x Cito) -------------------------------------------
+#
+# Enquanto ``resolve_fighters`` deduplica dentro de uma fonte (o seed), a resolução
+# cross-source reconcilia um lutador vindo da Cito contra os lutadores **já persistidos**
+# (tipicamente do seed Kaggle). Mesma chave load-bearing -- nome normalizado + data de
+# nascimento como desempate --, mas aqui a ambiguidade **falha alto**
+# (``AmbiguousFighterMatchError``) em vez de colapsar: nunca duplicar nem mesclar em
+# silêncio (invariante do CLAUDE.md; precedente de ``seed_bouts.build_fighter_index``,
+# que pula o nome ambíguo em vez de chutar um id).
+
+
+class AmbiguousFighterMatchError(Exception):
+    """Nome casa com >1 fighter sem desempate por DOB -- nunca duplicar/mesclar em silêncio."""
+
+
+@dataclass(frozen=True)
+class FighterCandidate:
+    """Lutador vindo da Cito a reconciliar: só o nome e a DOB entram no matching."""
+
+    name: str
+    date_of_birth: date | None
+
+
+@dataclass(frozen=True)
+class ExistingFighter:
+    """Lutador já persistido (chave de matching materializada da ``Session``)."""
+
+    id: int
+    name_normalized: str
+    date_of_birth: date | None
+
+
+def match_fighter_id(
+    candidate: FighterCandidate, existing: Sequence[ExistingFighter]
+) -> int | None:
+    """Reconcilia ``candidate`` contra os lutadores já persistidos.
+
+    Retorna o ``fighter_id`` existente (mesma pessoa) ou ``None`` (lutador novo). Levanta
+    ``AmbiguousFighterMatchError`` quando o nome normalizado casa com mais de um fighter e
+    a DOB não desempata para exatamente um -- nunca funde nem duplica em silêncio.
+
+    Política (Decisões em aberto 3 e 4 da SPEC 004):
+
+    - Sem candidato de mesmo nome normalizado -> ``None`` (novo).
+    - DOB conhecida: match exato por DOB único -> id; nenhum exato mas há existente com DOB
+      desconhecida (indescartável) -> ambíguo; nenhum exato e todos com DOB conhecida e
+      diferente -> ``None`` (homônimo real).
+    - DOB ausente: exatamente um existente daquele nome -> id (match sem DOB, logado);
+      mais de um -> ambíguo.
+    """
+    normalized = normalize_name(candidate.name)
+    same_name = [fighter for fighter in existing if fighter.name_normalized == normalized]
+    if not same_name:
+        return None
+
+    if candidate.date_of_birth is not None:
+        exact = [f for f in same_name if f.date_of_birth == candidate.date_of_birth]
+        if len(exact) == 1:
+            return exact[0].id
+        if len(exact) > 1:
+            raise AmbiguousFighterMatchError(
+                f"Nome {candidate.name!r} casa com {len(exact)} fighters de mesma DOB "
+                f"({candidate.date_of_birth}); resolução ambígua."
+            )
+        if any(f.date_of_birth is None for f in same_name):
+            raise AmbiguousFighterMatchError(
+                f"Nome {candidate.name!r} casa com fighter(s) sem DOB indescartável(is); "
+                "resolução ambígua com o candidato com DOB conhecida."
+            )
+        return None
+
+    if len(same_name) == 1:
+        logger.info(
+            "Match sem DOB para %r: único fighter existente de mesmo nome (id=%d)",
+            candidate.name,
+            same_name[0].id,
+        )
+        return same_name[0].id
+
+    raise AmbiguousFighterMatchError(
+        f"Candidato {candidate.name!r} sem DOB casa com {len(same_name)} fighters "
+        "de mesmo nome; resolução ambígua."
+    )

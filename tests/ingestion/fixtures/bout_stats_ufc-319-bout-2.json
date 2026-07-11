@@ -1,0 +1,25 @@
+{
+  "bout_id": "ufc-319-bout-2",
+  "fighters": [
+    {
+      "corner": "red",
+      "fighter_slug": "lerone-murphy",
+      "knockdowns": 1,
+      "sig_strikes_landed": 55,
+      "sig_strikes_attempted": 90,
+      "takedowns_landed": 0,
+      "takedowns_attempted": 0,
+      "submission_attempts": 0,
+      "control_time_seconds": 0
+    },
+    {
+      "corner": "blue",
+      "fighter_slug": "aaron-pico",
+      "knockdowns": 0,
+      "sig_strikes_landed": 30,
+      "sig_strikes_attempted": 70,
+      "takedowns_landed": 1,
+      "takedowns_attempted": 3
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "bout_id": "ufc-319-bout-1",
+  "fighters": [
+    {
+      "corner": "red",
+      "fighter_slug": "dricus-du-plessis",
+      "knockdowns": 0,
+      "sig_strikes_landed": 41,
+      "sig_strikes_attempted": 120,
+      "takedowns_landed": 0,
+      "takedowns_attempted": 2,
+      "submission_attempts": 0,
+      "control_time_seconds": 30
+    },
+    {
+      "corner": "blue",
+      "fighter_slug": "khamzat-chimaev",
+      "knockdowns": 0,
+      "sig_strikes_landed": 130,
+      "sig_strikes_attempted": 180,
+      "takedowns_landed": 12,
+      "takedowns_attempted": 21,
+      "submission_attempts": 2,
+      "control_time_seconds": 1300
+    }
+  ]
+}
