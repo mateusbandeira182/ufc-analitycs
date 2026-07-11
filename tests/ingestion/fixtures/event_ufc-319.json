@@ -1,0 +1,31 @@
+{
+  "event_id": "ufc-319",
+  "name": "UFC 319: Du Plessis vs. Chimaev",
+  "date": "2025-08-16",
+  "bouts": [
+    {
+      "bout_id": "ufc-319-bout-1",
+      "method": "Decision - Unanimous",
+      "finish_round": 5,
+      "finish_time_seconds": 300,
+      "weight_class": "Middleweight",
+      "winner_slug": "khamzat-chimaev",
+      "corners": [
+        {"slug": "dricus-du-plessis", "name": "Dricus du Plessis"},
+        {"slug": "khamzat-chimaev", "name": "Khamzat Chimaev"}
+      ]
+    },
+    {
+      "bout_id": "ufc-319-bout-2",
+      "method": "KO/TKO",
+      "finish_round": 3,
+      "finish_time_seconds": 68,
+      "weight_class": "Featherweight",
+      "winner_slug": "lerone-murphy",
+      "corners": [
+        {"slug": "lerone-murphy", "name": "Lerone Murphy"},
+        {"slug": "aaron-pico", "name": "Aaron Pico"}
+      ]
+    }
+  ]
+}
