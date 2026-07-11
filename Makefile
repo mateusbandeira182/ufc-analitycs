@@ -10,7 +10,7 @@ lint:
 	uv run ruff format --check .
 
 typecheck:
-	uv run mypy mma_analytics apps ingestion tests alembic/env.py
+	uv run mypy mma_analytics apps ingestion tests conftest.py alembic/env.py
 
 test: test-db
 	APP_ENV=test uv run pytest

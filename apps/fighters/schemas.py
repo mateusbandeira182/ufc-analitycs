@@ -1,0 +1,69 @@
+"""Schemas Pydantic de saída do app de fighters.
+
+``FighterOut`` é o contrato público de leitura, reusado em list e detail. Expõe
+identidade, atributos lentos, o cartel snapshot e ``source`` (RF-09). Lista os
+campos explicitamente para nunca vazar ``name_normalized`` -- chave interna de
+dedup do seed, não contrato público.
+
+``FighterBoutOut`` é o item do histórico do lutador (Slice 04): resumo do evento
+e resultado da luta, mais as stats granulares do canto consultado via reuso de
+``BoutFighterStatsOut`` (Slice 03) -- sem redefinir os campos de stats.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+from pydantic import BaseModel, ConfigDict
+
+from apps.bouts.enums import BoutMethod
+from apps.bouts.schemas import BoutFighterStatsOut
+from apps.fighters.enums import Stance
+
+
+class FighterOut(BaseModel):
+    """Representação pública de um lutador."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    nickname: str | None
+    date_of_birth: date | None
+    height_cm: int | None
+    reach_cm: int | None
+    stance: Stance | None
+    wins: int
+    losses: int
+    draws: int
+    source: str
+
+
+class FighterBoutOut(BaseModel):
+    """Uma luta do histórico do lutador, com as stats daquele lutador naquela luta."""
+
+    bout_id: int
+    event_id: int
+    event_name: str
+    event_date: date
+    method: BoutMethod
+    round: int | None
+    ending_time_seconds: int | None
+    won: bool  # ``winner_id == fighter_id`` consultado (empate/no contest -> False)
+    stats: BoutFighterStatsOut  # stats granulares do canto consultado (reuso Slice 03)
+
+
+class FighterStatsOut(BaseModel):
+    """Estatísticas resumidas do lutador, computadas on demand (Slice 06).
+
+    Não inclui ``source``: RF-09 se aplica a schemas de item; o agregado é
+    computado e mistura origens (kaggle/cito), não é um registro único (decisão
+    do plano 003-06). Médias ``None`` quando não há valor a agregar.
+    """
+
+    fighter_id: int
+    bouts_counted: int
+    avg_sig_strikes_landed: float | None
+    avg_takedowns_landed: float | None
+    avg_control_time_seconds: float | None
+    wins_by_method: dict[str, int]
