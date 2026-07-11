@@ -33,10 +33,13 @@ def list_fighters(
     envelope de paginação. Um ``name`` vazio ou ausente não filtra.
     """
     stmt = select(Fighter)
+    count_stmt = select(func.count()).select_from(Fighter)
     if name:
-        stmt = stmt.where(Fighter.name.ilike(f"%{name}%"))
+        name_filter = Fighter.name.ilike(f"%{name}%")
+        stmt = stmt.where(name_filter)
+        count_stmt = count_stmt.where(name_filter)
 
-    total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    total = session.scalar(count_stmt) or 0
     rows = session.scalars(stmt.order_by(Fighter.name).limit(limit).offset(offset)).all()
     return list(rows), total
 
