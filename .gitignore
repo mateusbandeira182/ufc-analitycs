@@ -20,3 +20,5 @@ web/node_modules/
 web/dist/
 web/coverage/
 web/.env
+# Logs do devcontainer (a API sobe em background via post-start.sh)
+.devcontainer/logs/
