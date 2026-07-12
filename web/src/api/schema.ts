@@ -20,5 +20,4 @@ export type EventDetailOut = components["schemas"]["EventDetailOut"];
 export type BoutCardOut = components["schemas"]["BoutCardOut"];
 export type BoutCardFighterOut = components["schemas"]["BoutCardFighterOut"];
 export type BoutDetailOut = components["schemas"]["BoutDetailOut"];
-export type BoutEventOut = components["schemas"]["BoutEventOut"];
 export type HeadToHeadOut = components["schemas"]["HeadToHeadOut"];
