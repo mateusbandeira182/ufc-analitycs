@@ -12,9 +12,11 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from apps.bouts.tests.factories import BoutFactory, EventFactory
+from apps.bouts.enums import Corner
+from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
 from apps.events.models import Event
 from apps.events.selectors import get_event_by_id, list_event_bouts, list_events
+from apps.fighters.tests.factories import FighterFactory
 
 
 def _add_event(session: Session, name: str, event_date: date) -> Event:
@@ -91,6 +93,34 @@ def test_list_event_bouts_devolve_bouts_do_event(db_session: Session) -> None:
     bouts = list_event_bouts(db_session, event.id)
 
     assert {bout.id for bout in bouts} == {primeiro.id, segundo.id}
+
+
+def test_list_event_bouts_carrega_os_cantos_com_identidade(db_session: Session) -> None:
+    """Cada bout do card carrega os dois cantos com a identidade do lutador (enrich SPA)."""
+    event = _add_event(db_session, "UFC 300", date(2024, 4, 13))
+    red = FighterFactory.build(name="Alex Pereira")
+    blue = FighterFactory.build(name="Jamahal Hill")
+    db_session.add_all([red, blue])
+    db_session.flush()
+    bout = BoutFactory.build(event_id=event.id, weight_class="Light Heavyweight")
+    db_session.add(bout)
+    db_session.flush()
+    db_session.add_all(
+        [
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=red.id, corner=Corner.RED),
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=blue.id, corner=Corner.BLUE),
+        ]
+    )
+    db_session.flush()
+
+    bouts = list_event_bouts(db_session, event.id)
+
+    assert len(bouts) == 1
+    por_canto = {bf.corner: bf for bf in bouts[0].bout_fighters}
+    assert set(por_canto) == {Corner.RED, Corner.BLUE}
+    assert por_canto[Corner.RED].fighter_id == red.id
+    assert por_canto[Corner.RED].fighter.name == "Alex Pereira"
+    assert por_canto[Corner.BLUE].fighter.name == "Jamahal Hill"
 
 
 def test_list_event_bouts_event_sem_bouts_devolve_vazio(db_session: Session) -> None:

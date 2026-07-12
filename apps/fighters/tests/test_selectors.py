@@ -188,6 +188,24 @@ def test_get_fighter_history_traz_stats_do_canto_consultado(db_session: Session)
     assert row.stats.sig_strikes_landed == 30
     assert row.stats.control_time_seconds == 120
     assert row.bout.id == bout.id
+    # Identidade do próprio lutador e do adversário (o outro canto) -- enrich SPA.
+    assert row.stats.fighter.name == "Charles Oliveira"
+    assert row.opponent is not None
+    assert row.opponent.fighter_id == opponent.id
+    assert row.opponent.fighter.name == "Justin Gaethje"
+
+
+def test_get_fighter_history_sem_adversario_devolve_opponent_none(db_session: Session) -> None:
+    """Luta com um único canto (dados sujos) devolve ``opponent`` nulo, sem quebrar."""
+    fighter = _add(db_session, "Jon Jones")
+    _add_history_bout(
+        db_session, fighter, event_name="UFC 285", event_date=date(2023, 3, 4), won=True
+    )
+
+    history = get_fighter_history(db_session, fighter.id)
+
+    assert len(history) == 1
+    assert history[0].opponent is None
 
 
 def test_get_fighter_history_lutador_sem_lutas_devolve_vazio(db_session: Session) -> None:

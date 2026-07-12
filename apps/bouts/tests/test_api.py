@@ -114,6 +114,7 @@ def test_get_bout_expoe_stats_granulares_dos_dois_cantos(
     assert set(por_canto) == {Corner.RED.value, Corner.BLUE.value}
 
     red = por_canto[Corner.RED.value]
+    assert red["name"] == "Alex Pereira"  # identidade do canto (enrich SPA)
     assert red["knockdowns"] == 1
     assert red["sig_strikes_landed"] == 40
     assert red["sig_strikes_attempted"] == 55
@@ -121,6 +122,7 @@ def test_get_bout_expoe_stats_granulares_dos_dois_cantos(
     assert red["source"] == "kaggle"
 
     blue = por_canto[Corner.BLUE.value]
+    assert blue["name"] == "Jamahal Hill"
     assert blue["sig_strikes_landed"] == 12
     assert blue["takedowns_landed"] == 1
     assert blue["takedowns_attempted"] == 3
@@ -228,6 +230,11 @@ def test_head_to_head_retorna_confrontos_em_ordem_com_stats_granulares(
     assert set(por_canto) == {Corner.RED.value, Corner.BLUE.value}
     assert por_canto[Corner.RED.value]["sig_strikes_landed"] == 50
     assert por_canto[Corner.RED.value]["source"] == "kaggle"
+    # A identidade dos dois cantos aparece no confronto (enrich SPA).
+    assert {bf["name"] for bf in primeiro["fighters"]} == {
+        "Alexander Volkanovski",
+        "Max Holloway",
+    }
 
 
 def test_head_to_head_nao_vaza_luta_contra_terceiro(

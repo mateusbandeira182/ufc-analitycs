@@ -12,9 +12,10 @@ from datetime import date
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod
-from apps.bouts.tests.factories import BoutFactory, EventFactory
+from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
 from apps.events.models import Event
+from apps.fighters.tests.factories import FighterFactory
 
 
 def _seed_event(db_session: Session, name: str, event_date: date) -> Event:
@@ -90,14 +91,26 @@ def test_list_events_offset_alem_do_total_devolve_vazio(
 def test_get_event_detalha_com_card_de_bouts(client: TestClient, db_session: Session) -> None:
     """O detalhe traz os campos do event e o card de bouts (sem stats granulares)."""
     event = _seed_event(db_session, "UFC 300", date(2024, 4, 13))
+    red = FighterFactory.build(name="Alex Pereira")
+    blue = FighterFactory.build(name="Jamahal Hill")
+    db_session.add_all([red, blue])
+    db_session.flush()
     bout = BoutFactory.build(
         event_id=event.id,
+        winner_id=red.id,
         method=BoutMethod.KO_TKO,
         round=2,
         ending_time_seconds=143,
         weight_class="Lightweight",
     )
     db_session.add(bout)
+    db_session.flush()
+    db_session.add_all(
+        [
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=red.id, corner=Corner.RED),
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=blue.id, corner=Corner.BLUE),
+        ]
+    )
     db_session.flush()
 
     resposta = client.get(f"/api/v1/events/{event.id}")
@@ -110,14 +123,21 @@ def test_get_event_detalha_com_card_de_bouts(client: TestClient, db_session: Ses
     assert len(body["bouts"]) == 1
     card = body["bouts"][0]
     assert card["id"] == bout.id
+    assert card["winner_id"] == red.id
     assert card["method"] == "ko_tko"
     assert card["round"] == 2
     assert card["ending_time_seconds"] == 143
     assert card["weight_class"] == "Lightweight"
     assert card["source"] == "kaggle"
-    # O card não vaza stats granulares de bout_fighters (Slice 03).
+    # A dupla de participantes aparece no card (enrich SPA): id, nome e canto.
+    por_canto = {f["corner"]: f for f in card["fighters"]}
+    assert set(por_canto) == {Corner.RED.value, Corner.BLUE.value}
+    assert por_canto[Corner.RED.value]["fighter_id"] == red.id
+    assert por_canto[Corner.RED.value]["name"] == "Alex Pereira"
+    assert por_canto[Corner.BLUE.value]["name"] == "Jamahal Hill"
+    # O card não vaza stats granulares de bout_fighters (essas ficam no detalhe da luta).
     assert "sig_strikes_landed" not in card
-    assert "corner" not in card
+    assert "corner" not in card  # ``corner`` mora em cada participante, não no card
 
 
 def test_get_event_sem_bouts_devolve_card_vazio(client: TestClient, db_session: Session) -> None:
