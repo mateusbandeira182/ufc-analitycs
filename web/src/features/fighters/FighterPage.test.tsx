@@ -130,6 +130,25 @@ describe("FighterPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("trata id de rota inválido como não encontrado, sem disparar request", async () => {
+    // Ex.: `/fighters/abc` -> Number("abc") é NaN. O hook fica desabilitado e a
+    // página mostra "não encontrado", coerente com /events e /bouts.
+    let requested = false;
+    server.use(
+      http.get("*/api/v1/fighters/:id", () => {
+        requested = true;
+        return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
+      }),
+    );
+
+    renderFighterPage("abc");
+
+    expect(
+      await screen.findByText(/lutador não encontrado/i),
+    ).toBeInTheDocument();
+    expect(requested).toBe(false);
+  });
+
   it("mostra mensagem própria quando o histórico está vazio, mantendo o cartel", async () => {
     server.use(
       http.get("*/api/v1/fighters/:id/bouts", () => HttpResponse.json([])),

@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { AlertTriangle, SearchX } from "lucide-react";
 import { Link } from "react-router";
 
@@ -111,7 +113,7 @@ function StatusMessage({
   title,
   description,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   description: string;
 }) {

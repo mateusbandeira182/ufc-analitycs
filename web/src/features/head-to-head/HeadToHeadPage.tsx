@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { AlertTriangle, Swords, UserX, Users } from "lucide-react";
 import { useSearchParams } from "react-router";
 
@@ -150,7 +152,7 @@ function StatusPanel({
   title,
   description,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   description: string;
 }) {

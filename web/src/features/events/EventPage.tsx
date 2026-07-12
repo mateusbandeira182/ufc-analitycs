@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { AlertTriangle, CalendarDays, CalendarX, MapPin } from "lucide-react";
 import { useParams } from "react-router";
 
@@ -119,7 +121,7 @@ function StatusScreen({
   title,
   description,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   description: string;
 }) {

@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { AlertTriangle, UserX } from "lucide-react";
 import { useParams } from "react-router";
 
@@ -16,6 +18,18 @@ export function FighterPage() {
   const { id } = useParams();
   const fighterId = Number(id);
   const { data, isPending, isError, error } = useFighter(fighterId);
+
+  // Id de rota inválido (ex.: `/fighters/abc`): tratado como não encontrado, sem
+  // disparar request (o hook fica desabilitado). Consistente com /events e /bouts.
+  if (Number.isNaN(fighterId)) {
+    return (
+      <StatusScreen
+        icon={<UserX className="size-6 text-muted-foreground" />}
+        title="Lutador não encontrado"
+        description="Não há nenhum lutador com esse identificador no acervo."
+      />
+    );
+  }
 
   if (isPending) {
     return <FighterPageSkeleton />;
@@ -81,7 +95,7 @@ function StatusScreen({
   title,
   description,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   description: string;
 }) {
