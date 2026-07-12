@@ -1,0 +1,116 @@
+@import url("https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap");
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+  MMA Analytics — tema "Arquivo do Octógono".
+  Direção: arena escura sob os holofotes; a linguagem do esporte (canto vermelho /
+  canto azul) é o dispositivo estrutural recorrente; o ouro do cinturão entra com
+  parcimônia. App sempre escuro — os tokens vivem direto em :root.
+*/
+
+:root {
+  --radius: 0.5rem;
+
+  /* Superfícies — carvão frio de arena. */
+  --background: #0b0d10;
+  --foreground: #f5f7fa;
+  --card: #14181d;
+  --card-foreground: #f5f7fa;
+  --popover: #14181d;
+  --popover-foreground: #f5f7fa;
+
+  /* Vermelho da luta — ação primária. */
+  --primary: #e4322b;
+  --primary-foreground: #ffffff;
+
+  /* Neutros de apoio. */
+  --secondary: #1c222a;
+  --secondary-foreground: #f5f7fa;
+  --muted: #1c222a;
+  --muted-foreground: #8a93a0;
+  --accent: #1c222a;
+  --accent-foreground: #f5f7fa;
+
+  --destructive: #e4322b;
+  --destructive-foreground: #ffffff;
+
+  --border: #252b33;
+  --input: #252b33;
+  --ring: #e4322b;
+
+  /* Linguagem do octógono. */
+  --corner-red: #e4322b;
+  --corner-blue: #2e7dd1;
+  --belt-gold: #d4a24e;
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-corner-red: var(--corner-red);
+  --color-corner-blue: var(--corner-blue);
+  --color-belt-gold: var(--belt-gold);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Oswald", "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    /* Textura sutil de holofote atrás do conteúdo. */
+    background-image: radial-gradient(
+      120% 90% at 50% -20%,
+      color-mix(in oklab, var(--corner-red) 8%, transparent),
+      transparent 55%
+    );
+    background-attachment: fixed;
+  }
+}
+
+@utility octagon-clip {
+  clip-path: polygon(
+    30% 0%,
+    70% 0%,
+    100% 30%,
+    100% 70%,
+    70% 100%,
+    30% 100%,
+    0% 70%,
+    0% 30%
+  );
+}

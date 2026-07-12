@@ -1,0 +1,11 @@
+import type { components } from "@/api/types";
+
+/*
+  Aliases de conveniência sobre os tipos GERADOS do OpenAPI do backend.
+  O shape nunca é redigitado à mão — o contrato do FastAPI é a fonte de verdade.
+  Regenerar via `npm run gen:api` quando o backend mudar.
+*/
+
+export type FighterOut = components["schemas"]["FighterOut"];
+export type PageFighterOut = components["schemas"]["Page_FighterOut_"];
+export type Stance = components["schemas"]["Stance"];
