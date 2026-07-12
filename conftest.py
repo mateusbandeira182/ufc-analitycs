@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 # Importa os models (só side-effect) para popular ``Base.metadata`` antes do ``create_all``.
 from apps.bouts import models as _bouts_models  # noqa: F401
 from apps.events import models as _events_models  # noqa: F401
+from apps.features import models as _features_models  # noqa: F401
 from apps.fighters import models as _fighters_models  # noqa: F401
 from mma_analytics.app import create_app
 from mma_analytics.db import Base, engine, get_session

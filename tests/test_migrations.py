@@ -14,6 +14,7 @@ from alembic import command
 
 TABELAS = {"fighters", "events", "bouts", "bout_fighters"}
 TIPOS_ENUM = {"stance", "bout_method", "corner"}
+TABELA_DERIVADA = "bout_features"
 
 
 def _tabelas_existentes(engine: Engine) -> set[str]:
@@ -40,3 +41,29 @@ def test_downgrade_reverte_sem_residuo(alembic_cfg: Config, migration_engine: En
     command.downgrade(alembic_cfg, "base")
     assert not (TABELAS & _tabelas_existentes(migration_engine))
     assert not (TIPOS_ENUM & _tipos_enum_existentes(migration_engine))
+
+
+def test_upgrade_head_cria_bout_features(alembic_cfg: Config, migration_engine: Engine) -> None:
+    """``alembic upgrade head`` cria a tabela derivada ``bout_features`` (cache reconstrutível)."""
+    command.upgrade(alembic_cfg, "head")
+    assert TABELA_DERIVADA in _tabelas_existentes(migration_engine)
+
+
+def test_downgrade_um_passo_remove_bout_features_preserva_enum_corner(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """O downgrade da migration de ``bout_features`` dropa SÓ a tabela derivada.
+
+    O enum ``corner`` pertence a ``bout_fighters`` (migration inicial); nunca é dropado
+    aqui. As tabelas granulares (``bouts``/``bout_fighters``) permanecem intactas.
+    """
+    command.upgrade(alembic_cfg, "head")
+    assert TABELA_DERIVADA in _tabelas_existentes(migration_engine)
+
+    command.downgrade(alembic_cfg, "-1")
+
+    tabelas = _tabelas_existentes(migration_engine)
+    assert TABELA_DERIVADA not in tabelas
+    # O granular e o enum compartilhado sobrevivem ao downgrade de um passo.
+    assert tabelas >= TABELAS
+    assert "corner" in _tipos_enum_existentes(migration_engine)
