@@ -9,4 +9,6 @@ export const queryKeys = {
   fighterBouts: (id: number) => ["fighter", id, "bouts"] as const,
   events: () => ["events"] as const,
   event: (id: number) => ["event", id] as const,
+  headToHead: (a: number | null, b: number | null) =>
+    ["head-to-head", a, b] as const,
 };

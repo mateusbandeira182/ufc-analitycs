@@ -1,9 +1,10 @@
 import { http, HttpResponse } from "msw";
 
-import type { PageEventOut, PageFighterOut } from "@/api/schema";
+import type { HeadToHeadOut, PageEventOut, PageFighterOut } from "@/api/schema";
 import { BOUT_FIXTURES } from "@/mocks/bouts";
 import { EVENT_DETAIL_FIXTURES, EVENT_FIXTURES } from "@/mocks/events";
 import { FIGHTER_FIXTURES } from "@/mocks/fighters";
+import { headToHeadBouts } from "@/mocks/headToHead";
 
 /*
   Handlers MSW espelhando o contrato do M2: GET /api/v1/fighters devolve o
@@ -66,5 +67,36 @@ export const handlers = [
       return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
     }
     return HttpResponse.json(event);
+  }),
+
+  /*
+    Confronto direto entre dois lutadores, espelhando as regras do M2:
+    a == b -> 422 (devem ser distintos); a ou b inexistente -> 404; ambos
+    existentes sem confronto -> 200 com bouts vazio (distinto do 404).
+  */
+  http.get("*/api/v1/head-to-head", ({ request }) => {
+    const query = new URL(request.url).searchParams;
+    const a = Number(query.get("a"));
+    const b = Number(query.get("b"));
+
+    if (a === b) {
+      return HttpResponse.json(
+        { detail: "Os lutadores devem ser distintos." },
+        { status: 422 },
+      );
+    }
+
+    const hasA = FIGHTER_FIXTURES.some((f) => f.id === a);
+    const hasB = FIGHTER_FIXTURES.some((f) => f.id === b);
+    if (!hasA || !hasB) {
+      return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
+    }
+
+    const body: HeadToHeadOut = {
+      fighter_a_id: a,
+      fighter_b_id: b,
+      bouts: headToHeadBouts(a, b),
+    };
+    return HttpResponse.json(body);
   }),
 ];
