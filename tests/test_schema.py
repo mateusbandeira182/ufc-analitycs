@@ -8,12 +8,16 @@ chaves naturais, a nulabilidade de ``winner_id`` e a granularidade de
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.schema import Table
 
 # Importa os models (só side-effect) para registrar as tabelas em Base.metadata.
 from apps.bouts import models as _bouts_models  # noqa: F401
 from apps.events import models as _events_models  # noqa: F401
+from apps.features import models as _features_models  # noqa: F401
 from apps.fighters import models as _fighters_models  # noqa: F401
 from mma_analytics.db import Base
 
@@ -96,6 +100,39 @@ def test_bouts_ending_time_em_segundos() -> None:
 def test_bout_fighters_indice_por_fighter_para_historico() -> None:
     """Há índice em ``bout_fighters.fighter_id`` (base da série temporal por lutador)."""
     assert _tem_indice_na_coluna(_tabela("bout_fighters"), "fighter_id")
+
+
+def test_bout_features_bout_id_pk_e_fk_para_bouts() -> None:
+    """``bout_features.bout_id`` é a chave primária e FK para ``bouts.id`` (cache por luta)."""
+    tabela = _tabela("bout_features")
+    bout_id = tabela.columns["bout_id"]
+    assert bout_id.primary_key is True
+    alvos = {fk.target_fullname for fk in bout_id.foreign_keys}
+    assert "bouts.id" in alvos
+
+
+def test_bout_features_tem_features_jsonb() -> None:
+    """``bout_features.features`` é JSONB NOT NULL (payload ``*_a``/``*_b``/``*_diff``)."""
+    coluna = _tabela("bout_features").columns["features"]
+    assert isinstance(coluna.type, JSONB)
+    assert coluna.nullable is False
+
+
+def test_bout_features_target_winner_corner_nullable() -> None:
+    """O alvo ``target_winner_corner`` é nullable (NC/draw sem vencedor definido)."""
+    coluna = _tabela("bout_features").columns["target_winner_corner"]
+    assert coluna.nullable is True
+    # Reusa o enum ``corner`` já existente (dono: ``bout_fighters``), sem recriar o tipo.
+    assert getattr(coluna.type, "name", None) == "corner"
+
+
+def test_bout_features_source_not_null_e_generated_at_tz_aware() -> None:
+    """``source`` NOT NULL (rastreio) e ``generated_at`` timezone-aware (instante de geração)."""
+    colunas = _tabela("bout_features").columns
+    assert colunas["source"].nullable is False
+    generated_at = colunas["generated_at"]
+    assert generated_at.type.python_type is datetime
+    assert getattr(generated_at.type, "timezone", False) is True
 
 
 def test_todas_as_tabelas_expostas() -> None:
