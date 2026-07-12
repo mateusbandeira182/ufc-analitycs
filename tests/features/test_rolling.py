@@ -226,3 +226,79 @@ def test_preserva_colunas_originais_e_adiciona_features() -> None:
     assert set(RECENT_FORM_FEATURES).issubset(set(out.columns))
     # Não muta a frame de entrada (opera sobre cópia).
     assert list(frame.columns) == list(_known_history_frame().columns)
+
+
+def test_denominador_zero_produz_nan_nao_inf() -> None:
+    """Denominador zero (minutos anteriores nulos / quedas enfrentadas zero) -> NaN, nunca inf.
+
+    ``inf`` não é JSON válido e quebraria a materialização em JSONB; a guarda ``_safe_ratio``
+    mapeia ``x/0`` para ``NaN`` explícito (coerente com a estreia). Aqui a 1ª luta de A tem
+    ``fight_minutes == 0`` (round 1, ending 0) e ambos os cantos com 0 quedas tentadas, então
+    as taxas por minuto e a defesa de queda da 2ª luta (que usam só a 1ª como histórico)
+    seriam ``x/0`` sem a guarda.
+    """
+    rows = [
+        _participation(
+            fighter_id=_FIGHTER_A,
+            bout_id=1,
+            event_day=1,
+            result="win",
+            method=BoutMethod.KO_TKO,
+            fight_round=1,
+            ending=0,
+            sig_landed=30,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+        ),
+        _participation(
+            fighter_id=2,
+            bout_id=1,
+            event_day=1,
+            result="loss",
+            method=BoutMethod.KO_TKO,
+            fight_round=1,
+            ending=0,
+            sig_landed=10,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+        ),
+        _participation(
+            fighter_id=_FIGHTER_A,
+            bout_id=2,
+            event_day=2,
+            result="win",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=50,
+            takedowns_landed=1,
+            takedowns_attempted=2,
+            control=100,
+        ),
+        _participation(
+            fighter_id=3,
+            bout_id=2,
+            event_day=2,
+            result="loss",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=20,
+            takedowns_landed=0,
+            takedowns_attempted=1,
+            control=0,
+        ),
+    ]
+    frame = (
+        pd.DataFrame(rows)
+        .sort_values(by=[COL_FIGHTER_ID, "event_date", COL_BOUT_ID], kind="stable")
+        .reset_index(drop=True)
+    )
+
+    segunda_luta = _fighter_a(add_recent_form_features(frame)).iloc[1]
+    # pd.isna é True para NaN e False para inf: sem a guarda seria inf -> teste vermelho.
+    assert pd.isna(segunda_luta[SIG_STRIKES_LANDED_PM_R3])
+    assert pd.isna(segunda_luta[SIG_STRIKES_ABSORBED_PM_R3])
+    assert pd.isna(segunda_luta[TAKEDOWN_DEFENSE_R3])

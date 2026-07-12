@@ -79,10 +79,19 @@ def _to_json_value(value: object) -> FeatureValue:
 
 
 def _to_corner(value: object) -> Corner | None:
-    """Mapeia o alvo ``"R"``/``"B"`` para o enum ``Corner``; ``NA`` (NC/draw) -> ``None``."""
+    """Mapeia o alvo ``"R"``/``"B"`` para o enum ``Corner``; ``NA`` (NC/draw) -> ``None``.
+
+    Um valor de alvo inesperado falha visível com ``ValueError`` (indicando os aceitos),
+    em vez do ``KeyError`` sem contexto de um lookup direto -- diagnóstico mais fácil no
+    pipeline de materialização.
+    """
     if _is_missing(value):
         return None
-    return _TARGET_TO_CORNER[str(value)]
+    corner = _TARGET_TO_CORNER.get(str(value))
+    if corner is None:
+        aceitos = ", ".join(sorted(_TARGET_TO_CORNER))
+        raise ValueError(f"Alvo winner_corner inesperado: {value!r}; valores aceitos: {aceitos}")
+    return corner
 
 
 def materialize_features(session: Session, matrix: MatchupMatrix, source: str = SOURCE) -> int:

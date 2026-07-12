@@ -20,6 +20,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pandas as pd
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -30,7 +31,7 @@ from apps.features.models import BoutFeatures
 from apps.fighters.models import Fighter
 from ingestion.features.cli import run_materialize
 from ingestion.features.matchup import MatchupMatrix
-from ingestion.features.materialize import SOURCE, materialize_features
+from ingestion.features.materialize import SOURCE, _to_corner, materialize_features
 from ingestion.normalize import normalize_name
 
 _FEATURE_COLUMNS = ["sig_strikes_pm_asof_a", "sig_strikes_pm_asof_b", "sig_strikes_pm_asof_diff"]
@@ -335,3 +336,12 @@ def test_run_materialize_roda_pipeline_completa_e_popula_bout_features(
     # Rodar de novo é idempotente: mesma contagem (upsert por bout_id).
     run_materialize(db_session)
     assert db_session.scalar(select(func.count()).select_from(BoutFeatures)) == 1
+
+
+def test_to_corner_valor_inesperado_levanta_value_error_claro() -> None:
+    """Alvo fora de ``R``/``B`` falha com ``ValueError`` claro (não ``KeyError`` sem contexto)."""
+    assert _to_corner("R") is Corner.RED
+    assert _to_corner("B") is Corner.BLUE
+    assert _to_corner(None) is None
+    with pytest.raises(ValueError, match="inesperado"):
+        _to_corner("X")

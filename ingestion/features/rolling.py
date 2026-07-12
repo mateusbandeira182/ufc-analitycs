@@ -178,6 +178,17 @@ def _add_expanding_features(frame: pd.DataFrame) -> None:
     frame[WIN_STREAK_PRIOR] = result.groupby(fighter).transform(_prior_streak)
 
 
+def _safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    """Razão com denominador zero mapeado para ``NaN`` (nunca ``inf``).
+
+    Um denominador zero (minutos anteriores nulos, tentativas de queda enfrentadas zero)
+    torna a taxa indefinida. Sem esta guarda, ``x/0`` com ``x>0`` produziria ``inf`` -- que
+    não é JSON válido e quebraria a materialização em JSONB. ``NaN`` explícito é coerente
+    com o tratamento da estreia (decisão #3 da SPEC) e vira ``null`` na Slice 05.
+    """
+    return numerator / denominator.where(denominator != 0)
+
+
 def _add_rolling_features(frame: pd.DataFrame) -> None:
     """Adiciona as features rolling de janela 3 (striking/grappling/control) point-in-time.
 
@@ -190,16 +201,16 @@ def _add_rolling_features(frame: pd.DataFrame) -> None:
     prior_minutes = _prior_rolling_sum(minutes, fighter)
     opponent = _opponent_stats(frame)
 
-    frame[SIG_STRIKES_LANDED_PM_R3] = (
-        _prior_rolling_sum(frame[COL_SIG_STRIKES_LANDED], fighter) / prior_minutes
+    frame[SIG_STRIKES_LANDED_PM_R3] = _safe_ratio(
+        _prior_rolling_sum(frame[COL_SIG_STRIKES_LANDED], fighter), prior_minutes
     )
-    frame[SIG_STRIKES_ABSORBED_PM_R3] = (
-        _prior_rolling_sum(opponent[COL_SIG_STRIKES_LANDED], fighter) / prior_minutes
+    frame[SIG_STRIKES_ABSORBED_PM_R3] = _safe_ratio(
+        _prior_rolling_sum(opponent[COL_SIG_STRIKES_LANDED], fighter), prior_minutes
     )
     frame[TAKEDOWNS_LANDED_AVG_R3] = _prior_rolling_mean(frame[COL_TAKEDOWNS_LANDED], fighter)
     conceded = _prior_rolling_sum(opponent[COL_TAKEDOWNS_LANDED], fighter)
     faced = _prior_rolling_sum(opponent[COL_TAKEDOWNS_ATTEMPTED], fighter)
-    frame[TAKEDOWN_DEFENSE_R3] = 1.0 - conceded / faced
+    frame[TAKEDOWN_DEFENSE_R3] = 1.0 - _safe_ratio(conceded, faced)
     frame[CONTROL_TIME_AVG_R3] = _prior_rolling_mean(frame[COL_CONTROL_TIME_SECONDS], fighter)
 
 
