@@ -1,7 +1,8 @@
 import { http, HttpResponse } from "msw";
 
-import type { PageFighterOut } from "@/api/schema";
+import type { PageEventOut, PageFighterOut } from "@/api/schema";
 import { BOUT_FIXTURES } from "@/mocks/bouts";
+import { EVENT_DETAIL_FIXTURES, EVENT_FIXTURES } from "@/mocks/events";
 import { FIGHTER_FIXTURES } from "@/mocks/fighters";
 
 /*
@@ -44,5 +45,26 @@ export const handlers = [
   http.get("*/api/v1/fighters/:id/bouts", ({ params }) => {
     const id = Number(params.id);
     return HttpResponse.json(BOUT_FIXTURES[id] ?? []);
+  }),
+
+  // Lista de eventos: envelope Page[EventOut], mais recentes primeiro (o backend ordena).
+  http.get("*/api/v1/events", () => {
+    const body: PageEventOut = {
+      items: EVENT_FIXTURES,
+      total: EVENT_FIXTURES.length,
+      limit: 50,
+      offset: 0,
+    };
+    return HttpResponse.json(body);
+  }),
+
+  // Detalhe do evento com o card de lutas: 404 quando o id não existe no acervo.
+  http.get("*/api/v1/events/:id", ({ params }) => {
+    const id = Number(params.id);
+    const event = EVENT_DETAIL_FIXTURES[id];
+    if (!event) {
+      return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
+    }
+    return HttpResponse.json(event);
   }),
 ];
