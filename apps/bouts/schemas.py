@@ -23,6 +23,7 @@ class BoutFighterStatsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     fighter_id: int
+    name: str  # nome do lutador daquele canto (via ``BoutFighter.fighter``), para a SPA
     corner: Corner
     knockdowns: int | None
     sig_strikes_landed: int | None

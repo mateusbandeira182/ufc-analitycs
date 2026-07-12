@@ -14,3 +14,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+# Frontend (SPA em web/) — artefatos não versionados.
+# Atenção: web/src/api/types.ts é gerado mas VERSIONADO (gate roda sem o backend).
+web/node_modules/
+web/dist/
+web/coverage/
+web/.env
+# Logs do devcontainer (a API sobe em background via post-start.sh)
+.devcontainer/logs/

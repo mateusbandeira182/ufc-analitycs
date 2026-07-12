@@ -7,7 +7,9 @@ dedup do seed, não contrato público.
 
 ``FighterBoutOut`` é o item do histórico do lutador (Slice 04): resumo do evento
 e resultado da luta, mais as stats granulares do canto consultado via reuso de
-``BoutFighterStatsOut`` (Slice 03) -- sem redefinir os campos de stats.
+``BoutFighterStatsOut`` (Slice 03) -- sem redefinir os campos de stats -- e o
+adversário daquela luta (``FighterOpponentOut``: id e nome do outro canto) para a
+SPA renderizar o confronto.
 """
 
 from __future__ import annotations
@@ -39,6 +41,13 @@ class FighterOut(BaseModel):
     source: str
 
 
+class FighterOpponentOut(BaseModel):
+    """Adversário do lutador naquela luta: o outro canto (só identidade)."""
+
+    fighter_id: int
+    name: str
+
+
 class FighterBoutOut(BaseModel):
     """Uma luta do histórico do lutador, com as stats daquele lutador naquela luta."""
 
@@ -51,6 +60,7 @@ class FighterBoutOut(BaseModel):
     ending_time_seconds: int | None
     won: bool  # ``winner_id == fighter_id`` consultado (empate/no contest -> False)
     stats: BoutFighterStatsOut  # stats granulares do canto consultado (reuso Slice 03)
+    opponent: FighterOpponentOut | None  # o outro canto; ``None`` em dados sujos
 
 
 class FighterStatsOut(BaseModel):

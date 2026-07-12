@@ -2,9 +2,11 @@
 
 ``get_bout_by_id`` compõe a luta com o seu evento e os dois cantos de
 ``bout_fighters``, trazendo as stats granulares de cada lutador **como foram
-gravadas** -- nunca médias agregadas (invariante do CLAUDE.md, ADR 0001). A
-leitura é explícita (sem ``relationship()`` nos models); os cantos saem em ordem
-determinística por ``corner`` para o response ser estável.
+gravadas** -- nunca médias agregadas (invariante do CLAUDE.md, ADR 0001). Os joins
+principais são explícitos; a identidade do lutador de cada canto entra via
+``selectinload(BoutFighter.fighter)`` (relationship só-leitura, sem migration),
+para o schema expor o nome sem N+1. Os cantos saem em ordem determinística por
+``corner`` para o response ser estável.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
@@ -30,10 +32,17 @@ class BoutDetail:
 
 
 def _load_corners(session: Session, bout_id: int) -> list[BoutFighter]:
-    """Carrega os dois cantos de uma luta em ordem determinística por ``corner``."""
+    """Carrega os dois cantos de uma luta em ordem determinística por ``corner``.
+
+    Traz junto a identidade do lutador de cada canto (``BoutFighter.fighter``) via
+    ``selectinload``, para o schema expor o nome sem N+1.
+    """
     return list(
         session.scalars(
-            select(BoutFighter).where(BoutFighter.bout_id == bout_id).order_by(BoutFighter.corner)
+            select(BoutFighter)
+            .where(BoutFighter.bout_id == bout_id)
+            .options(selectinload(BoutFighter.fighter))
+            .order_by(BoutFighter.corner)
         )
     )
 
@@ -52,6 +61,7 @@ def _load_corners_batch(session: Session, bout_ids: Sequence[int]) -> dict[int, 
     corners = session.scalars(
         select(BoutFighter)
         .where(BoutFighter.bout_id.in_(bout_ids))
+        .options(selectinload(BoutFighter.fighter))
         .order_by(BoutFighter.bout_id, BoutFighter.corner)
     )
     for bout_fighter in corners:

@@ -12,8 +12,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from apps.bouts.schemas import BoutFighterStatsOut
-from apps.fighters.schemas import FighterBoutOut, FighterOut, FighterStatsOut
+from apps.bouts.api import bout_fighter_stats_out
+from apps.fighters.schemas import (
+    FighterBoutOut,
+    FighterOpponentOut,
+    FighterOut,
+    FighterStatsOut,
+)
 from apps.fighters.selectors import (
     get_fighter_by_id,
     get_fighter_history,
@@ -72,7 +77,14 @@ def get_fighter_history_endpoint(
             round=row.bout.round,
             ending_time_seconds=row.bout.ending_time_seconds,
             won=row.bout.winner_id == fighter_id,
-            stats=BoutFighterStatsOut.model_validate(row.stats),
+            stats=bout_fighter_stats_out(row.stats),
+            opponent=(
+                FighterOpponentOut(
+                    fighter_id=row.opponent.fighter_id, name=row.opponent.fighter.name
+                )
+                if row.opponent is not None
+                else None
+            ),
         )
         for row in get_fighter_history(session, fighter_id)
     ]

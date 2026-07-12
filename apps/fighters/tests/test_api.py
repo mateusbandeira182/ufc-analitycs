@@ -208,9 +208,13 @@ def test_fighter_history_ordem_cronologica_com_stats_e_won(
     assert body[1]["method"] == "ko_tko"
     # Stats granulares do canto consultado (não do oponente), com ``source`` (RF-09).
     assert body[0]["stats"]["fighter_id"] == fighter_id
+    assert body[0]["stats"]["name"] == "Max Holloway"  # identidade do próprio canto
     assert body[0]["stats"]["sig_strikes_landed"] == 20
     assert body[0]["stats"]["source"] == "kaggle"
     assert body[1]["stats"]["sig_strikes_landed"] == 50
+    # Adversário daquela luta (o outro canto); nulo quando não houver segundo canto.
+    assert body[0]["opponent"]["name"] == "Dustin Poirier"
+    assert body[1]["opponent"] is None
 
 
 def test_fighter_history_inexistente_retorna_404(client: TestClient) -> None:

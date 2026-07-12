@@ -13,12 +13,34 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from apps.events.schemas import BoutCardOut, EventDetailOut, EventOut
+from apps.bouts.models import Bout
+from apps.events.schemas import BoutCardFighterOut, BoutCardOut, EventDetailOut, EventOut
 from apps.events.selectors import get_event_by_id, list_event_bouts, list_events
 from mma_analytics.db import get_session
 from mma_analytics.pagination import Page, PageParams, page_params
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+
+def _to_bout_card_out(bout: Bout) -> BoutCardOut:
+    """Monta o card de uma luta com a dupla de participantes (id, nome e canto).
+
+    Os participantes vêm de ``bout.bout_fighters`` (eager-loaded no selector), com
+    o nome via ``BoutFighter.fighter`` -- por isso a construção é explícita.
+    """
+    return BoutCardOut(
+        id=bout.id,
+        winner_id=bout.winner_id,
+        method=bout.method,
+        round=bout.round,
+        ending_time_seconds=bout.ending_time_seconds,
+        weight_class=bout.weight_class,
+        source=bout.source,
+        fighters=[
+            BoutCardFighterOut(fighter_id=bf.fighter_id, name=bf.fighter.name, corner=bf.corner)
+            for bf in bout.bout_fighters
+        ],
+    )
 
 
 @router.get("", response_model=Page[EventOut])
@@ -48,5 +70,5 @@ def get_event_endpoint(
     bouts = list_event_bouts(session, event_id)
     return EventDetailOut(
         **EventOut.model_validate(event).model_dump(),
-        bouts=[BoutCardOut.model_validate(bout) for bout in bouts],
+        bouts=[_to_bout_card_out(bout) for bout in bouts],
     )

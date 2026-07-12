@@ -86,6 +86,10 @@ def test_get_bout_by_id_compoe_evento_e_dois_cantos(db_session: Session) -> None
     assert detail.event.date == date(2024, 4, 13)
     assert len(detail.fighters) == 2
     assert {bf.corner for bf in detail.fighters} == {Corner.RED, Corner.BLUE}
+    # Identidade do lutador de cada canto vem via ``BoutFighter.fighter`` (enrich SPA).
+    por_canto = {bf.corner: bf for bf in detail.fighters}
+    assert por_canto[Corner.RED].fighter.name == "Alex Pereira"
+    assert por_canto[Corner.BLUE].fighter.name == "Jamahal Hill"
 
 
 def test_get_bout_by_id_preserva_stats_granulares_por_canto(db_session: Session) -> None:
@@ -195,6 +199,11 @@ def test_head_to_head_carrega_os_dois_cantos_de_cada_confronto(db_session: Sessi
     assert len(detalhes) == 1
     assert {bf.fighter_id for bf in detalhes[0].fighters} == {a.id, b.id}
     assert {bf.corner for bf in detalhes[0].fighters} == {Corner.RED, Corner.BLUE}
+    # Cada canto carrega a identidade do lutador (``BoutFighter.fighter``).
+    assert {bf.fighter.name for bf in detalhes[0].fighters} == {
+        "Alexander Volkanovski",
+        "Max Holloway",
+    }
 
 
 def test_head_to_head_ordem_dos_argumentos_nao_altera_resultado(db_session: Session) -> None:

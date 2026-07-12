@@ -3,16 +3,18 @@
 Recebe a ``Session`` por injeção e devolve models do domínio. ``list_events``
 ordena por data decrescente (mais recentes primeiro), com desempate por ``id``
 decrescente para paginação determinística no Postgres. ``list_event_bouts`` faz a
-leitura cross-app de ``Bout`` (só o card do event; as stats granulares de
-``bout_fighters`` ficam na Slice 03).
+leitura cross-app de ``Bout`` e carrega, via ``selectinload``, os cantos de cada
+luta com a identidade do lutador (``Bout.bout_fighters`` -> ``BoutFighter.fighter``)
+para o card exibir os participantes -- sem o box-score granular, que fica no
+detalhe da luta, e sem N+1.
 """
 
 from __future__ import annotations
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from apps.bouts.models import Bout
+from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 
 
@@ -37,7 +39,14 @@ def list_event_bouts(session: Session, event_id: int) -> list[Bout]:
     """Devolve os bouts do card do event, em ordem determinística por ``id``.
 
     O schema M0 não tem coluna de posição no card; ordenar por ``id`` é estável e
-    suficiente. Não faz join em ``bout_fighters`` -- stats granulares na Slice 03.
+    suficiente. Carrega os cantos (``bout_fighters``) e a identidade do lutador de
+    cada canto via ``selectinload``, para o card expor os participantes sem N+1 --
+    apenas identidade (id/nome/canto), o box-score granular fica no detalhe da luta.
     """
-    stmt = select(Bout).where(Bout.event_id == event_id).order_by(Bout.id)
+    stmt = (
+        select(Bout)
+        .where(Bout.event_id == event_id)
+        .options(selectinload(Bout.bout_fighters).selectinload(BoutFighter.fighter))
+        .order_by(Bout.id)
+    )
     return list(session.scalars(stmt).all())

@@ -1,0 +1,5 @@
+dist
+coverage
+src/api/types.ts
+openapi.json
+package-lock.json

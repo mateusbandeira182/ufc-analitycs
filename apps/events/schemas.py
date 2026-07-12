@@ -2,8 +2,10 @@
 
 ``EventOut`` é o contrato de leitura reusado em list e detail (identidade do event
 + ``source``, RF-09). ``BoutCardOut`` é o resumo de uma luta no card do event --
-**sem** as stats granulares de ``bout_fighters`` (cantos/lutadores/box-score),
-que ficam na Slice 03. ``EventDetailOut`` estende ``EventOut`` com o card.
+inclui a dupla de participantes (``BoutCardFighterOut``: id, nome e canto) para a
+SPA renderizar o confronto, mas **sem** as stats granulares de ``bout_fighters``
+(box-score), que ficam no detalhe da luta. ``EventDetailOut`` estende ``EventOut``
+com o card.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict
 
-from apps.bouts.enums import BoutMethod
+from apps.bouts.enums import BoutMethod, Corner
 
 
 class EventOut(BaseModel):
@@ -27,6 +29,21 @@ class EventOut(BaseModel):
     source: str
 
 
+class BoutCardFighterOut(BaseModel):
+    """Um participante da luta no card do event: identidade e canto.
+
+    Só identidade (id, nome, canto) -- o box-score granular vive no detalhe da
+    luta. A SPA cruza ``fighter_id`` com ``BoutCardOut.winner_id`` para destacar o
+    vencedor.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    fighter_id: int
+    name: str
+    corner: Corner
+
+
 class BoutCardOut(BaseModel):
     """Resumo de uma luta no card do event (sem stats granulares por canto)."""
 
@@ -39,6 +56,7 @@ class BoutCardOut(BaseModel):
     ending_time_seconds: int | None
     weight_class: str | None
     source: str
+    fighters: list[BoutCardFighterOut]  # a dupla de participantes (um item por canto)
 
 
 class EventDetailOut(EventOut):

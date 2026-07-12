@@ -15,6 +15,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from apps.bouts.models import BoutFighter
 from apps.bouts.schemas import BoutDetailOut, BoutEventOut, BoutFighterStatsOut, HeadToHeadOut
 from apps.bouts.selectors import BoutDetail, get_bout_by_id, get_head_to_head
 from apps.fighters.selectors import get_fighter_by_id
@@ -22,6 +23,28 @@ from mma_analytics.db import get_session
 
 router = APIRouter(prefix="/bouts", tags=["bouts"])
 head_to_head_router = APIRouter(tags=["head-to-head"])
+
+
+def bout_fighter_stats_out(bf: BoutFighter) -> BoutFighterStatsOut:
+    """Monta as stats de um canto incluindo o nome do lutador (``bf.fighter``).
+
+    O nome vem do relationship ``BoutFighter.fighter`` (eager-loaded no selector);
+    por isso a construção é explícita, em vez de ``model_validate`` sobre a linha.
+    Reusado pelo histórico do lutador (``apps.fighters.api``).
+    """
+    return BoutFighterStatsOut(
+        fighter_id=bf.fighter_id,
+        name=bf.fighter.name,
+        corner=bf.corner,
+        knockdowns=bf.knockdowns,
+        sig_strikes_landed=bf.sig_strikes_landed,
+        sig_strikes_attempted=bf.sig_strikes_attempted,
+        takedowns_landed=bf.takedowns_landed,
+        takedowns_attempted=bf.takedowns_attempted,
+        submission_attempts=bf.submission_attempts,
+        control_time_seconds=bf.control_time_seconds,
+        source=bf.source,
+    )
 
 
 def _to_bout_detail_out(detail: BoutDetail) -> BoutDetailOut:
@@ -35,7 +58,7 @@ def _to_bout_detail_out(detail: BoutDetail) -> BoutDetailOut:
         ending_time_seconds=detail.bout.ending_time_seconds,
         weight_class=detail.bout.weight_class,
         source=detail.bout.source,
-        fighters=[BoutFighterStatsOut.model_validate(bf) for bf in detail.fighters],
+        fighters=[bout_fighter_stats_out(bf) for bf in detail.fighters],
     )
 
 

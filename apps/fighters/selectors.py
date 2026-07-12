@@ -6,17 +6,20 @@ retorna a página de linhas e o total do conjunto filtrado; a ordenação por
 no Postgres. O filtro por nome é ``ILIKE '%name%'`` (case-insensitive substring).
 
 ``get_fighter_history`` monta a série temporal do lutador com join explícito
-(``bout_fighters`` -> ``bouts`` -> ``events``): os models não têm ``relationship()``,
-então o join é feito à mão. Cada linha traz as stats granulares **do canto
-consultado** naquela luta -- nunca do oponente, nunca médias (ADR 0001).
+(``bout_fighters`` -> ``bouts`` -> ``events``). Cada linha traz as stats granulares
+**do canto consultado** naquela luta -- nunca do oponente, nunca médias (ADR 0001) --
+e o adversário daquela luta (o outro canto), resolvido em lote para o card da SPA.
+A identidade dos lutadores (própria e do adversário) entra via
+``selectinload(BoutFighter.fighter)`` (relationship só-leitura, sem migration).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from apps.bouts.enums import BoutMethod
 from apps.bouts.models import Bout, BoutFighter
@@ -51,11 +54,41 @@ def get_fighter_by_id(session: Session, fighter_id: int) -> Fighter | None:
 
 @dataclass(frozen=True)
 class FighterBoutRow:
-    """Uma luta do histórico do lutador: o canto consultado, a luta e o evento."""
+    """Uma luta do histórico do lutador: o canto consultado, a luta e o evento.
+
+    ``opponent`` é o outro canto daquela luta (o ``bout_fighter`` cujo
+    ``fighter_id`` difere do consultado). É ``None`` só em dados sujos -- luta sem
+    o segundo canto gravado; no caso normal há exatamente um adversário.
+    """
 
     stats: BoutFighter  # linha de ``bout_fighters`` do lutador consultado
     bout: Bout
     event: Event
+    opponent: BoutFighter | None  # o outro canto (adversário) daquela luta
+
+
+def _load_opponents(
+    session: Session, bout_ids: Sequence[int], fighter_id: int
+) -> dict[int, BoutFighter]:
+    """Resolve o adversário (o outro canto) de cada luta, em UMA query em lote.
+
+    Carrega os ``bout_fighters`` das lutas cujo ``fighter_id`` difere do consultado,
+    com a identidade do lutador (``selectinload``), agrupando por ``bout_id``. No
+    caso normal há um único adversário por luta; se dados sujos trouxerem mais de
+    um canto extra, mantém o primeiro pela ordem determinística de ``corner``.
+    """
+    if not bout_ids:
+        return {}
+    corners = session.scalars(
+        select(BoutFighter)
+        .where(BoutFighter.bout_id.in_(bout_ids), BoutFighter.fighter_id != fighter_id)
+        .options(selectinload(BoutFighter.fighter))
+        .order_by(BoutFighter.bout_id, BoutFighter.corner)
+    )
+    opponents: dict[int, BoutFighter] = {}
+    for corner in corners:
+        opponents.setdefault(corner.bout_id, corner)
+    return opponents
 
 
 def get_fighter_history(session: Session, fighter_id: int) -> list[FighterBoutRow]:
@@ -64,7 +97,8 @@ def get_fighter_history(session: Session, fighter_id: int) -> list[FighterBoutRo
     Join explícito ``bout_fighters`` -> ``bouts`` -> ``events`` filtrado pelo
     ``fighter_id``, ordenado por ``events.date`` ascendente com desempate
     determinístico por ``bouts.id`` (lutas na mesma data). Cada item carrega as
-    stats granulares daquele lutador naquela luta. Lutador sem lutas devolve
+    stats granulares daquele lutador naquela luta e o adversário (outro canto),
+    ambos com a identidade do lutador eager-loaded. Lutador sem lutas devolve
     lista vazia (o not-found é decidido no router).
     """
     stmt = (
@@ -72,11 +106,14 @@ def get_fighter_history(session: Session, fighter_id: int) -> list[FighterBoutRo
         .join(Bout, BoutFighter.bout_id == Bout.id)
         .join(Event, Bout.event_id == Event.id)
         .where(BoutFighter.fighter_id == fighter_id)
+        .options(selectinload(BoutFighter.fighter))
         .order_by(Event.date.asc(), Bout.id.asc())
     )
+    rows = session.execute(stmt).tuples().all()
+    opponents = _load_opponents(session, [bout.id for _, bout, _ in rows], fighter_id)
     return [
-        FighterBoutRow(stats=stats, bout=bout, event=event)
-        for stats, bout, event in session.execute(stmt).tuples().all()
+        FighterBoutRow(stats=stats, bout=bout, event=event, opponent=opponents.get(bout.id))
+        for stats, bout, event in rows
     ]
 
 
