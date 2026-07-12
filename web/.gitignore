@@ -1,0 +1,25 @@
+# .gitignore da SPA (web/) — artefatos locais do frontend, não versionados.
+# Regras com caminho relativo a esta pasta. Mantido junto do package.json para
+# ficar óbvio a quem abre só o front. As mesmas regras existem no .gitignore da
+# raiz (redundância proposital e inofensiva).
+
+# Dependências (os 20k+ arquivos que o npm baixa — nunca vão pro repositório)
+node_modules/
+
+# Build e cobertura
+dist/
+coverage/
+
+# Segredos locais (VITE_API_BASE_URL etc.). O .env.example, se houver, documenta.
+.env
+.env.local
+.env.*.local
+
+# Logs e lixo de editor/SO
+*.log
+npm-debug.log*
+.DS_Store
+
+# ATENÇÃO: src/api/types.ts é GERADO (openapi-typescript) mas VERSIONADO de
+# propósito — o gate (tsc/vitest/build) roda sem precisar do backend no ar.
+# Não adicione src/api/types.ts aqui.
