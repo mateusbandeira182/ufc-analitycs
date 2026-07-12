@@ -1,0 +1,22 @@
+{
+  "// nota": "Esconde artefatos locais (deps/build/cobertura) do explorador e da busca, para ver só o código-fonte de verdade. Não afeta o git — só a UI do editor.",
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/__pycache__": true,
+    "**/.mypy_cache": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "web/dist": true,
+    "web/coverage": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "web/dist": true,
+    "web/coverage": true
+  },
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "web/dist/**": true,
+    "web/coverage/**": true
+  }
+}
