@@ -1,6 +1,7 @@
 import { http, HttpResponse } from "msw";
 
 import type { PageFighterOut } from "@/api/schema";
+import { BOUT_FIXTURES } from "@/mocks/bouts";
 import { FIGHTER_FIXTURES } from "@/mocks/fighters";
 
 /*
@@ -27,5 +28,21 @@ export const handlers = [
       offset: 0,
     };
     return HttpResponse.json(body);
+  }),
+
+  // Detalhe do lutador: 404 quando o id não existe no acervo.
+  http.get("*/api/v1/fighters/:id", ({ params }) => {
+    const id = Number(params.id);
+    const fighter = FIGHTER_FIXTURES.find((f) => f.id === id);
+    if (!fighter) {
+      return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
+    }
+    return HttpResponse.json(fighter);
+  }),
+
+  // Histórico de lutas em ordem cronológica (o backend já ordena); vazio por padrão.
+  http.get("*/api/v1/fighters/:id/bouts", ({ params }) => {
+    const id = Number(params.id);
+    return HttpResponse.json(BOUT_FIXTURES[id] ?? []);
   }),
 ];

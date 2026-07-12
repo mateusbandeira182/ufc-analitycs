@@ -24,7 +24,11 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reportsDirectory: "./coverage",
+      // Restringe o agregado ao código-fonte; o bundle de produção (dist/) não
+      // deve poluir a cobertura.
+      include: ["src/**"],
       exclude: [
+        "dist/**",
         "src/api/types.ts",
         "src/main.tsx",
         "src/mocks/**",

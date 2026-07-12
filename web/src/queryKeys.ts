@@ -5,4 +5,6 @@
 */
 export const queryKeys = {
   fighters: (params: { name: string }) => ["fighters", params] as const,
+  fighter: (id: number) => ["fighter", id] as const,
+  fighterBouts: (id: number) => ["fighter", id, "bouts"] as const,
 };

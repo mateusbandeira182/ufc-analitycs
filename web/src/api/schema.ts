@@ -9,3 +9,7 @@ import type { components } from "@/api/types";
 export type FighterOut = components["schemas"]["FighterOut"];
 export type PageFighterOut = components["schemas"]["Page_FighterOut_"];
 export type Stance = components["schemas"]["Stance"];
+export type FighterBoutOut = components["schemas"]["FighterBoutOut"];
+export type FighterOpponentOut = components["schemas"]["FighterOpponentOut"];
+export type BoutMethod = components["schemas"]["BoutMethod"];
+export type BoutFighterStatsOut = components["schemas"]["BoutFighterStatsOut"];
