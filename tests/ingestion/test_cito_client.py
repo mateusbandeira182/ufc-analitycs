@@ -25,7 +25,7 @@ _EVENT_ID = "ufc-319"
 
 
 def _fixture_client() -> CitoClient:
-    return CitoClient(token="", base_url="https://mmaapi.dev", fixture_dir=_FIXTURES)
+    return CitoClient(token="", base_url="https://api.citoapi.com", fixture_dir=_FIXTURES)
 
 
 def test_fetch_event_no_modo_fixture_devolve_dto_tipado() -> None:
@@ -56,7 +56,7 @@ def _mock_client(status_code: int) -> CitoClient:
     transport = httpx.MockTransport(handler)
     return CitoClient(
         token="token-fake",
-        base_url="https://mmaapi.dev",
+        base_url="https://api.citoapi.com",
         transport=transport,
     )
 
@@ -78,7 +78,7 @@ def test_fetch_event_via_http_parseia_payload_com_auth_e_params() -> None:
     """CA-03: ``fetch_event`` no caminho HTTP de sucesso parseia o payload em ``CitoEvent``.
 
     Simétrico ao sucesso do ``get_fighter`` via ``MockTransport``: exercita o parse HTTP real
-    (não o modo fixture) e confirma o header ``Authorization: Bearer`` e o path/params corretos
+    (não o modo fixture) e confirma o header ``x-api-key`` e o path/params corretos
     (``GET /api/v1/ufc/events?id=<event_id>``). Não toca a rede real nem consome quota.
     """
     payload = json.loads((_FIXTURES / f"event_{_EVENT_ID}.json").read_text(encoding="utf-8"))
@@ -90,7 +90,7 @@ def test_fetch_event_via_http_parseia_payload_com_auth_e_params() -> None:
 
     client = CitoClient(
         token="token-fake",
-        base_url="https://mmaapi.dev",
+        base_url="https://api.citoapi.com",
         transport=httpx.MockTransport(handler),
     )
 
@@ -104,14 +104,14 @@ def test_fetch_event_via_http_parseia_payload_com_auth_e_params() -> None:
     request = captured["request"]
     assert request.url.path == "/api/v1/ufc/events"
     assert request.url.params["id"] == _EVENT_ID
-    assert request.headers["Authorization"] == "Bearer token-fake"
+    assert request.headers["x-api-key"] == "token-fake"
 
 
 def test_fetch_bout_stats_via_http_parseia_payload_com_auth_e_path() -> None:
     """CA-01: ``fetch_bout_stats`` no caminho HTTP de sucesso parseia em ``CitoBoutStats``.
 
     Simétrico ao sucesso do ``get_fighter`` via ``MockTransport``: exercita o parse HTTP real
-    das stats granulares por canto e confirma o header ``Authorization: Bearer`` e o path
+    das stats granulares por canto e confirma o header ``x-api-key`` e o path
     correto (``GET /api/v1/ufc/bouts/<bout_id>/stats``). Não toca a rede real nem consome quota.
     """
     bout_id = "ufc-319-bout-1"
@@ -124,7 +124,7 @@ def test_fetch_bout_stats_via_http_parseia_payload_com_auth_e_path() -> None:
 
     client = CitoClient(
         token="token-fake",
-        base_url="https://mmaapi.dev",
+        base_url="https://api.citoapi.com",
         transport=httpx.MockTransport(handler),
     )
 
@@ -138,4 +138,4 @@ def test_fetch_bout_stats_via_http_parseia_payload_com_auth_e_path() -> None:
 
     request = captured["request"]
     assert request.url.path == f"/api/v1/ufc/bouts/{bout_id}/stats"
-    assert request.headers["Authorization"] == "Bearer token-fake"
+    assert request.headers["x-api-key"] == "token-fake"

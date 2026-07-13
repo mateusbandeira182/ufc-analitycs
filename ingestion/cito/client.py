@@ -122,7 +122,7 @@ class CitoClient:
         return CitoEvent.model_validate(payload)
 
     def _fetch_from_http(self, event_id: str) -> CitoEvent:
-        headers = {"Authorization": f"Bearer {self._token}"}
+        headers = {"x-api-key": self._token}
         try:
             with httpx.Client(
                 base_url=self._base_url,
@@ -160,7 +160,7 @@ class CitoClient:
         return CitoFighter.model_validate(payload)
 
     def _fetch_fighter_from_http(self, slug: str) -> CitoFighter:
-        headers = {"Authorization": f"Bearer {self._token}"}
+        headers = {"x-api-key": self._token}
         try:
             with httpx.Client(
                 base_url=self._base_url,
@@ -198,7 +198,7 @@ class CitoClient:
         return CitoBoutStats.model_validate(payload)
 
     def _fetch_bout_stats_from_http(self, bout_id: str) -> CitoBoutStats:
-        headers = {"Authorization": f"Bearer {self._token}"}
+        headers = {"x-api-key": self._token}
         try:
             with httpx.Client(
                 base_url=self._base_url,

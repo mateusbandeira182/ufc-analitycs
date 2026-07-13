@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # Cito API (ingestão incremental, M1). O token vem do .env; vazio é aceitável no
     # modo fixture, que é o caminho de teste e não consome a quota do free tier.
     cito_api_token: str = ""
-    cito_base_url: str = "https://mmaapi.dev"
+    cito_base_url: str = "https://api.citoapi.com"
 
     @property
     def effective_db_name(self) -> str:

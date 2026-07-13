@@ -24,7 +24,7 @@ _SLUG = "alexander-volkanovski"
 
 
 def _fixture_client() -> CitoClient:
-    return CitoClient(token="", base_url="https://mmaapi.dev", fixture_dir=_FIXTURES)
+    return CitoClient(token="", base_url="https://api.citoapi.com", fixture_dir=_FIXTURES)
 
 
 def test_get_fighter_no_modo_fixture_devolve_dto_com_dob() -> None:
@@ -45,7 +45,7 @@ def _mock_client(status_code: int) -> CitoClient:
         return httpx.Response(status_code, json={"detail": "erro simulado"})
 
     transport = httpx.MockTransport(handler)
-    return CitoClient(token="token-fake", base_url="https://mmaapi.dev", transport=transport)
+    return CitoClient(token="token-fake", base_url="https://api.citoapi.com", transport=transport)
 
 
 def test_get_fighter_rate_limit_vira_cito_rate_limit_error() -> None:
