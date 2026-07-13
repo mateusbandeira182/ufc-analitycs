@@ -26,6 +26,7 @@ from analysis.dataset import (
     read_bout_features,
     temporal_split,
 )
+from analysis.model import train_model
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout
 from apps.events.models import Event
@@ -101,7 +102,11 @@ def test_build_dataset_descarta_linhas_com_alvo_nulo() -> None:
 
 
 def test_build_dataset_preserva_nan_das_features() -> None:
-    """Ausência explícita (``None``) vira ``NaN`` numérico -- o modelo trata nativamente."""
+    """Ausência explícita (``None``) vira ``NaN`` numérico -- o modelo trata nativamente.
+
+    A coluna tem ao menos um valor real (não é 100% NaN), logo é preservada: o ``NaN`` da
+    outra linha permanece como ausência explícita, sem imputação.
+    """
     raw = pd.DataFrame(
         [
             _raw_row(
@@ -110,12 +115,85 @@ def test_build_dataset_preserva_nan_das_features() -> None:
                 target="red",
                 features={"reach_cm_diff": None},
             ),
+            _raw_row(
+                bout_id=2,
+                event_date=date(2020, 2, 1),
+                target="blue",
+                features={"reach_cm_diff": 4.0},
+            ),
         ]
     )
 
     dataset = build_dataset(raw)
 
     assert bool(dataset.features["reach_cm_diff"].isna().iloc[0])
+    assert dataset.features["reach_cm_diff"].iloc[1] == 4.0
+
+
+def test_build_dataset_descarta_coluna_de_feature_toda_nan() -> None:
+    """Coluna de feature 100% NaN é descartada antes do treino (backfill parcial legítimo).
+
+    Cenário realista de rollout desenhado pela própria SPEC: os splits (Sprint 02, 0 quota, sem
+    gate) podem ser materializados antes do round-a-round (Sprint 05, atrás de gate humano). Nesse
+    intervalo, as colunas de dinâmica por round ficam 100% NaN e o
+    ``HistGradientBoostingClassifier`` levanta ``ValueError`` no ``fit``. A guarda remove só a
+    coluna toda-nula; as demais (com dado) permanecem e o treino roda.
+    """
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=index,
+                event_date=date(2020, 1, 1) + timedelta(days=30 * index),
+                target="red" if index % 2 == 0 else "blue",
+                features={
+                    "reach_cm_diff": float(index % 7) - 3,
+                    # Round-a-round ainda não backfillado: coluna inteira sem valor.
+                    "round1_sig_strike_share_r3_diff": None,
+                },
+            )
+            for index in range(20)
+        ]
+    )
+
+    dataset = build_dataset(raw)
+
+    assert "round1_sig_strike_share_r3_diff" not in dataset.feature_names
+    assert "round1_sig_strike_share_r3_diff" not in dataset.features.columns
+    assert "reach_cm_diff" in dataset.feature_names
+    # Sem a guarda, este ``fit`` quebra na coluna 100% NaN; com ela, o treino roda ponta a ponta.
+    model = train_model(dataset.features, dataset.target, random_state=0)
+    assert len(model.predict(dataset.features)) == 20
+
+
+def test_build_dataset_preserva_coluna_parcialmente_nan() -> None:
+    """Coluna com ao menos um valor (parcialmente NaN) é preservada intacta.
+
+    O ``HistGradientBoostingClassifier`` trata NaN nativamente -- só a coluna 100% NaN quebra o
+    treino. A guarda não pode remover colunas parcialmente preenchidas: fazê-lo descartaria
+    informação real e mascararia o comportamento normal (degradação legítima, não silenciador).
+    """
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=1,
+                event_date=date(2020, 1, 1),
+                target="red",
+                features={"reach_cm_diff": 5.0, "share_head_r3_diff": None},
+            ),
+            _raw_row(
+                bout_id=2,
+                event_date=date(2020, 2, 1),
+                target="blue",
+                features={"reach_cm_diff": -3.0, "share_head_r3_diff": 0.42},
+            ),
+        ]
+    )
+
+    dataset = build_dataset(raw)
+
+    assert "share_head_r3_diff" in dataset.feature_names
+    assert bool(dataset.features["share_head_r3_diff"].isna().iloc[0])
+    assert dataset.features["share_head_r3_diff"].iloc[1] == 0.42
 
 
 def _dataset_from_dates(dates: list[date]) -> pd.DataFrame:

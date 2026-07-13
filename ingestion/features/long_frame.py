@@ -31,6 +31,27 @@ from apps.fighters.models import Fighter
 # o empate mora na nulabilidade do vencedor, distinto do no contest pelo método.
 BoutResult = Literal["win", "loss", "no_contest", "draw"]
 
+# Splits de golpe wide (M5 -- ADR 0004, Sprint 02), projetados junto das 7 stats base.
+# São contagens granulares POR LUTA (nunca médias): base das features de perfil de
+# striking (share cabeça/corpo/perna, distância/clinch/solo) da Slice 06.
+SPLIT_COLUMNS: list[str] = [
+    "total_strikes_landed",
+    "total_strikes_attempted",
+    "head_landed",
+    "head_attempted",
+    "body_landed",
+    "body_attempted",
+    "leg_landed",
+    "leg_attempted",
+    "distance_landed",
+    "distance_attempted",
+    "clinch_landed",
+    "clinch_attempted",
+    "ground_landed",
+    "ground_attempted",
+    "reversals",
+]
+
 # Colunas da frame longa (uma linha por ``bout_fighter``), na ordem de projeção.
 LONG_FRAME_COLUMNS: list[str] = [
     "fighter_id",
@@ -51,6 +72,7 @@ LONG_FRAME_COLUMNS: list[str] = [
     "takedowns_attempted",
     "submission_attempts",
     "control_time_seconds",
+    *SPLIT_COLUMNS,
     "source",
 ]
 
@@ -116,6 +138,21 @@ def read_granular(session: Session) -> GranularFrames:
             BoutFighter.takedowns_attempted,
             BoutFighter.submission_attempts,
             BoutFighter.control_time_seconds,
+            BoutFighter.total_strikes_landed,
+            BoutFighter.total_strikes_attempted,
+            BoutFighter.head_landed,
+            BoutFighter.head_attempted,
+            BoutFighter.body_landed,
+            BoutFighter.body_attempted,
+            BoutFighter.leg_landed,
+            BoutFighter.leg_attempted,
+            BoutFighter.distance_landed,
+            BoutFighter.distance_attempted,
+            BoutFighter.clinch_landed,
+            BoutFighter.clinch_attempted,
+            BoutFighter.ground_landed,
+            BoutFighter.ground_attempted,
+            BoutFighter.reversals,
             BoutFighter.source,
         ),
         con,

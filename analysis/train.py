@@ -12,13 +12,37 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
-from analysis.metrics import Metrics
+from analysis.metrics import PRE_M5_REFERENCE, Metrics, MetricsDelta, metrics_delta
 from analysis.model import DEFAULT_TEST_FRACTION, TrainingResult, run_training, save_artifact
 from mma_analytics.db import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TrainingComparison:
+    """Comparação honesta do modelo re-treinado: vs. baseline ingênuo e vs. pré-M5.
+
+    ``vs_pre_m5`` mede o ganho das features novas (M5) contra o bootstrap registrado antes
+    da re-materialização (``PRE_M5_REFERENCE``). Ambos os deltas seguem a convenção de
+    ``MetricsDelta`` (accuracy/ROC-AUC: maior é melhor; log-loss: menor é melhor).
+    """
+
+    vs_baseline: MetricsDelta
+    vs_pre_m5: MetricsDelta
+
+
+def compare_training(
+    result: TrainingResult, pre_m5: Metrics = PRE_M5_REFERENCE
+) -> TrainingComparison:
+    """Deriva os deltas do modelo vs. o baseline e vs. o modelo pré-M5 (função pura)."""
+    return TrainingComparison(
+        vs_baseline=metrics_delta(result.model_metrics, result.baseline_metrics),
+        vs_pre_m5=metrics_delta(result.model_metrics, pre_m5),
+    )
 
 
 def _log_metrics(rotulo: str, metrics: Metrics) -> None:
@@ -33,11 +57,29 @@ def _log_metrics(rotulo: str, metrics: Metrics) -> None:
     )
 
 
-def _log_result(result: TrainingResult, artifact_path: Path) -> None:
-    """Reporta o resumo do treino: tamanhos do split, modelo vs. baseline e artefato.
+def _log_delta(rotulo: str, delta: MetricsDelta) -> None:
+    """Reporta um bloco de delta (accuracy/log-loss/ROC-AUC) com o veredito de accuracy.
 
-    Deixa explícito se o modelo bate o baseline em accuracy -- avaliação honesta, sem
-    overclaim (o teto real é a linha de mercado, ~58% do corner vermelho).
+    Sem overclaim: log-loss menor é melhor (delta negativo é melhora); accuracy e ROC-AUC
+    maiores são melhores. ``não supera`` é resultado válido -- o valor da slice é a medição.
+    """
+    veredito = "supera" if delta.improves_accuracy else "não supera"
+    logger.info(
+        "%s: accuracy=%+.4f log_loss=%+.4f roc_auc=%+.4f -> o modelo %s em accuracy.",
+        rotulo,
+        delta.accuracy,
+        delta.log_loss,
+        delta.roc_auc,
+        veredito,
+    )
+
+
+def _log_result(result: TrainingResult, artifact_path: Path) -> None:
+    """Reporta o resumo do treino: split, modelo vs. baseline, vs. pré-M5 e artefato.
+
+    Deixa explícito se o modelo bate o baseline ingênuo E o modelo pré-M5 (M4) em accuracy
+    -- avaliação honesta, sem overclaim (o teto real é a linha de mercado, ~58% do corner
+    vermelho). A comparação vs. pré-M5 mede o ganho das features novas (M5).
     """
     logger.info(
         "Treino concluído: %d amostras (%d treino / %d teste, holdout temporal de %.0f%%).",
@@ -46,16 +88,13 @@ def _log_result(result: TrainingResult, artifact_path: Path) -> None:
         result.n_test,
         result.test_fraction * 100,
     )
-    _log_metrics("Modelo  ", result.model_metrics)
-    _log_metrics("Baseline", result.baseline_metrics)
-    delta = result.model_metrics.accuracy - result.baseline_metrics.accuracy
-    veredito = "supera" if delta > 0 else "não supera"
-    logger.info(
-        "O modelo %s o baseline ingênuo em accuracy (delta=%+.4f). Teto real: linha de "
-        "mercado (~0.58 corner vermelho).",
-        veredito,
-        delta,
-    )
+    _log_metrics("Modelo   ", result.model_metrics)
+    _log_metrics("Baseline ", result.baseline_metrics)
+    _log_metrics("Pré-M5   ", PRE_M5_REFERENCE)
+    comparison = compare_training(result)
+    _log_delta("Delta vs. baseline", comparison.vs_baseline)
+    _log_delta("Delta vs. pré-M5  ", comparison.vs_pre_m5)
+    logger.info("Teto real: linha de mercado (~0.58 corner vermelho).")
     logger.info("Artefato salvo em: %s", artifact_path)
 
 

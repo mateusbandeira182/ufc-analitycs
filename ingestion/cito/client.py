@@ -1,7 +1,8 @@
 """Cliente HTTP tipado da Cito API (``mmaapi.dev``).
 
-Busca um evento (``CitoEvent``), o perfil de um lutador (``CitoFighter``) e as stats
-granulares por canto de uma luta (``CitoBoutStats``). Dois caminhos:
+Busca um evento (``CitoEvent``), o perfil de um lutador (``CitoFighter``), as stats
+granulares por canto de uma luta (``CitoBoutStats``) e as stats do endpoint real de evento
+-- totais + round-a-round -- (``CitoEventStats`` via ``fetch_event_stats``). Dois caminhos:
 
 - **Modo fixture** (``fixture_dir`` definido): lê um JSON local (``event_{id}.json`` /
   ``fighter_{slug}.json`` / ``bout_stats_{bout_id}.json``) em vez de tocar a rede -- é o
@@ -22,11 +23,18 @@ from pathlib import Path
 
 import httpx
 
-from ingestion.cito.dto import CitoBoutStats, CitoEvent, CitoFighter
+from ingestion.cito.dto import (
+    CitoBoutStats,
+    CitoEvent,
+    CitoEventStats,
+    CitoFighter,
+    CitoStatsEnvelope,
+)
 
 _EVENTS_PATH = "/api/v1/ufc/events"
 _FIGHTERS_PATH = "/api/v1/ufc/fighters"
 _BOUTS_PATH = "/api/v1/ufc/bouts"
+_EVENT_STATS_PATH = "/events"
 _HTTP_TOO_MANY_REQUESTS = 429
 
 # Teto default de chamadas à Cito por execução, alinhado ao free tier (500 req/mês).
@@ -107,34 +115,12 @@ class CitoClient:
         Cobra uma unidade do orçamento (``CallBudget``) antes do fetch.
         """
         self._charge()
-        if self._fixture_dir is not None:
-            return self._fetch_from_fixture(event_id)
-        return self._fetch_from_http(event_id)
-
-    def _fetch_from_fixture(self, event_id: str) -> CitoEvent:
-        fixture_dir = self._fixture_dir
-        if fixture_dir is None:  # pragma: no cover - guarda de tipo; fetch_event já checa
-            raise CitoError("Modo fixture sem diretório configurado.")
-        path = fixture_dir / f"event_{event_id}.json"
-        if not path.is_file():
-            raise CitoError(f"Fixture de evento não encontrada: {path}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = (
+            self._read_fixture(f"event_{event_id}.json")
+            if self._fixture_dir is not None
+            else self._get_json(_EVENTS_PATH, f"o evento {event_id!r}", params={"id": event_id})
+        )
         return CitoEvent.model_validate(payload)
-
-    def _fetch_from_http(self, event_id: str) -> CitoEvent:
-        headers = {"x-api-key": self._token}
-        try:
-            with httpx.Client(
-                base_url=self._base_url,
-                headers=headers,
-                transport=self._transport,
-            ) as client:
-                response = client.get(_EVENTS_PATH, params={"id": event_id})
-        except httpx.RequestError as exc:
-            raise CitoError(f"Falha de rede ao consultar a Cito: {exc}") from exc
-
-        self._raise_for_status(response, f"o evento {event_id!r}")
-        return CitoEvent.model_validate(response.json())
 
     def get_fighter(self, slug: str) -> CitoFighter:
         """Busca o perfil do lutador ``slug`` e devolve um ``CitoFighter`` tipado.
@@ -145,34 +131,12 @@ class CitoClient:
         Cobra uma unidade do orçamento (``CallBudget``) antes do fetch.
         """
         self._charge()
-        if self._fixture_dir is not None:
-            return self._fetch_fighter_from_fixture(slug)
-        return self._fetch_fighter_from_http(slug)
-
-    def _fetch_fighter_from_fixture(self, slug: str) -> CitoFighter:
-        fixture_dir = self._fixture_dir
-        if fixture_dir is None:  # pragma: no cover - guarda de tipo; get_fighter já checa
-            raise CitoError("Modo fixture sem diretório configurado.")
-        path = fixture_dir / f"fighter_{slug}.json"
-        if not path.is_file():
-            raise CitoError(f"Fixture de lutador não encontrada: {path}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = (
+            self._read_fixture(f"fighter_{slug}.json")
+            if self._fixture_dir is not None
+            else self._get_json(f"{_FIGHTERS_PATH}/{slug}", f"o lutador {slug!r}")
+        )
         return CitoFighter.model_validate(payload)
-
-    def _fetch_fighter_from_http(self, slug: str) -> CitoFighter:
-        headers = {"x-api-key": self._token}
-        try:
-            with httpx.Client(
-                base_url=self._base_url,
-                headers=headers,
-                transport=self._transport,
-            ) as client:
-                response = client.get(f"{_FIGHTERS_PATH}/{slug}")
-        except httpx.RequestError as exc:
-            raise CitoError(f"Falha de rede ao consultar a Cito: {exc}") from exc
-
-        self._raise_for_status(response, f"o lutador {slug!r}")
-        return CitoFighter.model_validate(response.json())
 
     def fetch_bout_stats(self, bout_id: str) -> CitoBoutStats:
         """Busca as stats granulares por canto da luta ``bout_id`` e devolve ``CitoBoutStats``.
@@ -183,21 +147,50 @@ class CitoClient:
         Cobra uma unidade do orçamento (``CallBudget``) antes do fetch.
         """
         self._charge()
-        if self._fixture_dir is not None:
-            return self._fetch_bout_stats_from_fixture(bout_id)
-        return self._fetch_bout_stats_from_http(bout_id)
-
-    def _fetch_bout_stats_from_fixture(self, bout_id: str) -> CitoBoutStats:
-        fixture_dir = self._fixture_dir
-        if fixture_dir is None:  # pragma: no cover - guarda de tipo; fetch_bout_stats já checa
-            raise CitoError("Modo fixture sem diretório configurado.")
-        path = fixture_dir / f"bout_stats_{bout_id}.json"
-        if not path.is_file():
-            raise CitoError(f"Fixture de stats de luta não encontrada: {path}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = (
+            self._read_fixture(f"bout_stats_{bout_id}.json")
+            if self._fixture_dir is not None
+            else self._get_json(f"{_BOUTS_PATH}/{bout_id}/stats", f"as stats da luta {bout_id!r}")
+        )
         return CitoBoutStats.model_validate(payload)
 
-    def _fetch_bout_stats_from_http(self, bout_id: str) -> CitoBoutStats:
+    def fetch_event_stats(self, slug: str) -> CitoEventStats:
+        """Busca ``boutStats``/``roundStats`` do evento ``slug`` e devolve o DTO desembrulhado.
+
+        Endpoint real da Cito (``GET {base_url}/events/{slug}/stats``): o payload é o envelope
+        ``{success, data, meta}`` em camelCase, com os golpes como ``"L of A"`` e o tempo como
+        ``"m:ss"`` -- convertidos na borda pelos DTOs. Em modo fixture lê
+        ``{fixture_dir}/event_stats_{slug}.json``. Um envelope com ``success=false`` vira
+        ``CitoError`` (payload inválido, não silencioso); erros HTTP viram
+        ``CitoError``/``CitoRateLimitError``. Cobra uma unidade do orçamento antes do fetch.
+        """
+        self._charge()
+        payload = (
+            self._read_fixture(f"event_stats_{slug}.json")
+            if self._fixture_dir is not None
+            else self._get_json(f"{_EVENT_STATS_PATH}/{slug}/stats", f"as stats do evento {slug!r}")
+        )
+        envelope = CitoStatsEnvelope.model_validate(payload)
+        if not envelope.success:
+            raise CitoError(f"Cito retornou success=false para as stats do evento {slug!r}.")
+        return envelope.data
+
+    def _read_fixture(self, filename: str) -> object:
+        """Lê e desserializa um JSON de fixture local; ausência vira ``CitoError`` explícito."""
+        fixture_dir = self._fixture_dir
+        if fixture_dir is None:  # pragma: no cover - guarda de tipo; o chamador já checa
+            raise CitoError("Modo fixture sem diretório configurado.")
+        path = fixture_dir / filename
+        if not path.is_file():
+            raise CitoError(f"Fixture não encontrada: {path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _get_json(self, path: str, target: str, *, params: dict[str, str] | None = None) -> object:
+        """Faz o ``GET`` autenticado (``x-api-key``) e devolve o JSON; erros viram ``CitoError``.
+
+        Rate-limit (429) vira ``CitoRateLimitError``; demais erros HTTP e falha de rede viram
+        ``CitoError``, sem vazar a exceção crua do ``httpx``.
+        """
         headers = {"x-api-key": self._token}
         try:
             with httpx.Client(
@@ -205,12 +198,12 @@ class CitoClient:
                 headers=headers,
                 transport=self._transport,
             ) as client:
-                response = client.get(f"{_BOUTS_PATH}/{bout_id}/stats")
+                response = client.get(path, params=params)
         except httpx.RequestError as exc:
             raise CitoError(f"Falha de rede ao consultar a Cito: {exc}") from exc
 
-        self._raise_for_status(response, f"as stats da luta {bout_id!r}")
-        return CitoBoutStats.model_validate(response.json())
+        self._raise_for_status(response, target)
+        return response.json()
 
     @staticmethod
     def _raise_for_status(response: httpx.Response, target: str) -> None:

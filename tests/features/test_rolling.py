@@ -19,10 +19,19 @@ from apps.bouts.enums import BoutMethod
 from ingestion.features.rolling import (
     COL_BOUT_ID,
     COL_FIGHTER_ID,
+    COL_ROUND_NUMBER,
     COL_SIG_STRIKES_LANDED,
     CONTROL_TIME_AVG_R3,
     FINISH_RATE_PRIOR,
     RECENT_FORM_FEATURES,
+    ROUND1_SIG_STRIKE_SHARE_R3,
+    ROUND_DYNAMICS_FEATURES,
+    SHARE_BODY_R3,
+    SHARE_CLINCH_R3,
+    SHARE_DISTANCE_R3,
+    SHARE_GROUND_R3,
+    SHARE_HEAD_R3,
+    SHARE_LEG_R3,
     SIG_STRIKES_ABSORBED_PM_R3,
     SIG_STRIKES_LANDED_PM_R3,
     TAKEDOWN_DEFENSE_R3,
@@ -31,6 +40,7 @@ from ingestion.features.rolling import (
     WIN_STREAK_PRIOR,
     WINDOW_RECENT,
     add_recent_form_features,
+    add_round_dynamics_features,
 )
 
 _FIGHTER_A = 1
@@ -49,6 +59,12 @@ def _participation(
     takedowns_landed: int,
     takedowns_attempted: int,
     control: int,
+    head_landed: int = 0,
+    body_landed: int = 0,
+    leg_landed: int = 0,
+    distance_landed: int = 0,
+    clinch_landed: int = 0,
+    ground_landed: int = 0,
 ) -> dict[str, object]:
     """Uma linha lutador-luta da frame longa (as colunas que ``rolling`` consome)."""
     return {
@@ -63,6 +79,12 @@ def _participation(
         "takedowns_landed": takedowns_landed,
         "takedowns_attempted": takedowns_attempted,
         "control_time_seconds": control,
+        "head_landed": head_landed,
+        "body_landed": body_landed,
+        "leg_landed": leg_landed,
+        "distance_landed": distance_landed,
+        "clinch_landed": clinch_landed,
+        "ground_landed": ground_landed,
     }
 
 
@@ -302,3 +324,276 @@ def test_denominador_zero_produz_nan_nao_inf() -> None:
     assert pd.isna(segunda_luta[SIG_STRIKES_LANDED_PM_R3])
     assert pd.isna(segunda_luta[SIG_STRIKES_ABSORBED_PM_R3])
     assert pd.isna(segunda_luta[TAKEDOWN_DEFENSE_R3])
+
+
+# --- Perfil de striking: share por alvo (cabeça/corpo/perna) e posição (dist/clinch/solo) ---
+
+_STRIKING_SHARES = [
+    SHARE_HEAD_R3,
+    SHARE_BODY_R3,
+    SHARE_LEG_R3,
+    SHARE_DISTANCE_R3,
+    SHARE_CLINCH_R3,
+    SHARE_GROUND_R3,
+]
+
+
+def _striking_frame() -> pd.DataFrame:
+    """Lutador A com 2 lutas e splits conhecidos; oponente por luta (pareamento intacto).
+
+    Luta 1 de A: alvo cabeça=20, corpo=5, perna=5 (total 30); posição distância=18,
+    clinch=6, solo=6 (total 30). Luta 2: valores diferentes -- as shares da luta 2 usam
+    **só** a luta 1 (``shift(1)``).
+    """
+    rows = [
+        _participation(
+            fighter_id=_FIGHTER_A,
+            bout_id=101,
+            event_day=1,
+            result="win",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=30,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+            head_landed=20,
+            body_landed=5,
+            leg_landed=5,
+            distance_landed=18,
+            clinch_landed=6,
+            ground_landed=6,
+        ),
+        _participation(
+            fighter_id=2,
+            bout_id=101,
+            event_day=1,
+            result="loss",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=10,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+        ),
+        _participation(
+            fighter_id=_FIGHTER_A,
+            bout_id=102,
+            event_day=2,
+            result="win",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=20,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+            head_landed=10,
+            body_landed=10,
+            leg_landed=0,
+            distance_landed=5,
+            clinch_landed=5,
+            ground_landed=10,
+        ),
+        _participation(
+            fighter_id=3,
+            bout_id=102,
+            event_day=2,
+            result="loss",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=5,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+        ),
+    ]
+    return (
+        pd.DataFrame(rows)
+        .sort_values(by=[COL_FIGHTER_ID, "event_date", COL_BOUT_ID], kind="stable")
+        .reset_index(drop=True)
+    )
+
+
+def test_share_de_striking_as_of_usa_so_lutas_anteriores() -> None:
+    """CA-01: as shares da 2a luta usam só a 1a; razão de somas na janela, point-in-time."""
+    out = add_recent_form_features(_striking_frame())
+    a = _fighter_a(out)
+
+    # Share da 2a luta = distribuição da 1a luta (cabeça 20 / (20+5+5)=30, etc.).
+    assert a[SHARE_HEAD_R3].iloc[1] == pytest.approx(20 / 30)
+    assert a[SHARE_BODY_R3].iloc[1] == pytest.approx(5 / 30)
+    assert a[SHARE_LEG_R3].iloc[1] == pytest.approx(5 / 30)
+    assert a[SHARE_DISTANCE_R3].iloc[1] == pytest.approx(18 / 30)
+    assert a[SHARE_CLINCH_R3].iloc[1] == pytest.approx(6 / 30)
+    assert a[SHARE_GROUND_R3].iloc[1] == pytest.approx(6 / 30)
+
+
+def test_share_de_striking_estreia_e_nan() -> None:
+    """CA-01: na estreia (sem histórico) todas as shares de striking são NaN explícito."""
+    out = add_recent_form_features(_striking_frame())
+    a = _fighter_a(out)
+
+    for coluna in _STRIKING_SHARES:
+        assert pd.isna(a[coluna].iloc[0])
+    assert set(_STRIKING_SHARES).issubset(set(RECENT_FORM_FEATURES))
+
+
+def test_share_de_striking_denominador_zero_vira_nan_nao_inf() -> None:
+    """CA-01: sem golpes conectados anteriores, share é NaN (denominador zero), nunca inf."""
+    rows = [
+        _participation(
+            fighter_id=_FIGHTER_A,
+            bout_id=201,
+            event_day=1,
+            result="win",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=0,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+            head_landed=0,
+            body_landed=0,
+            leg_landed=0,
+            distance_landed=0,
+            clinch_landed=0,
+            ground_landed=0,
+        ),
+        _participation(
+            fighter_id=2,
+            bout_id=201,
+            event_day=1,
+            result="loss",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=10,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+        ),
+        _participation(
+            fighter_id=_FIGHTER_A,
+            bout_id=202,
+            event_day=2,
+            result="win",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=20,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+            head_landed=10,
+            body_landed=5,
+            leg_landed=5,
+            distance_landed=10,
+            clinch_landed=5,
+            ground_landed=5,
+        ),
+        _participation(
+            fighter_id=3,
+            bout_id=202,
+            event_day=2,
+            result="loss",
+            method=BoutMethod.DECISION,
+            fight_round=3,
+            ending=300,
+            sig_landed=5,
+            takedowns_landed=0,
+            takedowns_attempted=0,
+            control=0,
+        ),
+    ]
+    frame = (
+        pd.DataFrame(rows)
+        .sort_values(by=[COL_FIGHTER_ID, "event_date", COL_BOUT_ID], kind="stable")
+        .reset_index(drop=True)
+    )
+
+    segunda = _fighter_a(add_recent_form_features(frame)).iloc[1]
+    # A 1a luta de A não conectou golpe algum -> denominador zero -> NaN (não inf).
+    for coluna in _STRIKING_SHARES:
+        assert pd.isna(segunda[coluna])
+
+
+# --- Dinâmica por round: round1_sig_strike_share point-in-time -------------------------
+
+
+def _round_long_frame() -> pd.DataFrame:
+    """Frame longa mínima: lutador A (com round-a-round) e B (sem), 2 lutas cada."""
+    return (
+        pd.DataFrame(
+            [
+                {COL_FIGHTER_ID: 1, COL_BOUT_ID: 101, "event_date": date(2024, 1, 1)},
+                {COL_FIGHTER_ID: 1, COL_BOUT_ID: 102, "event_date": date(2024, 2, 1)},
+                {COL_FIGHTER_ID: 2, COL_BOUT_ID: 201, "event_date": date(2024, 1, 1)},
+                {COL_FIGHTER_ID: 2, COL_BOUT_ID: 202, "event_date": date(2024, 2, 1)},
+            ]
+        )
+        .sort_values(by=[COL_FIGHTER_ID, "event_date", COL_BOUT_ID], kind="stable")
+        .reset_index(drop=True)
+    )
+
+
+def _round_stats_for_a() -> pd.DataFrame:
+    """Round-a-round só do lutador A: luta 101 (r1=15,r2=5) e 102 (r1=10,r2=10,r3=10)."""
+    return pd.DataFrame(
+        [
+            {COL_BOUT_ID: 101, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 1, COL_SIG_STRIKES_LANDED: 15},
+            {COL_BOUT_ID: 101, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 2, COL_SIG_STRIKES_LANDED: 5},
+            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 1, COL_SIG_STRIKES_LANDED: 10},
+            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 2, COL_SIG_STRIKES_LANDED: 10},
+            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 3, COL_SIG_STRIKES_LANDED: 10},
+        ]
+    )
+
+
+def test_round_dynamics_as_of_usa_so_lutas_anteriores() -> None:
+    """CA-02: a dinâmica por round da 2a luta usa só a 1a; estreia é NaN.
+
+    A luta 101 de A conectou 15 dos 20 golpes no round 1 (share 0.75); a feature as-of da
+    luta 102 é a média das lutas anteriores = 0.75. A estreia (luta 101) não tem histórico
+    -> NaN.
+    """
+    out = add_round_dynamics_features(_round_long_frame(), _round_stats_for_a())
+    a = out.loc[out[COL_FIGHTER_ID] == 1].sort_values("event_date").reset_index(drop=True)
+
+    assert pd.isna(a[ROUND1_SIG_STRIKE_SHARE_R3].iloc[0])
+    assert a[ROUND1_SIG_STRIKE_SHARE_R3].iloc[1] == pytest.approx(0.75)
+    assert ROUND1_SIG_STRIKE_SHARE_R3 in ROUND_DYNAMICS_FEATURES
+
+
+def test_round_dynamics_degrada_para_nan_sem_round_a_round() -> None:
+    """CA-02: lutador sem round-a-round nas lutas anteriores tem a feature NaN (não erro/inf)."""
+    out = add_round_dynamics_features(_round_long_frame(), _round_stats_for_a())
+    b = out.loc[out[COL_FIGHTER_ID] == 2].sort_values("event_date").reset_index(drop=True)
+
+    # B não tem nenhuma linha em bout_fighter_rounds -> feature NaN nas duas lutas.
+    assert b[ROUND1_SIG_STRIKE_SHARE_R3].isna().all()
+
+
+def test_round_dynamics_round_stats_vazio_tudo_nan() -> None:
+    """CA-02: sem nenhum round-a-round no banco, a feature existe e é toda NaN."""
+    vazio = pd.DataFrame(
+        columns=[COL_BOUT_ID, COL_FIGHTER_ID, COL_ROUND_NUMBER, COL_SIG_STRIKES_LANDED]
+    )
+
+    out = add_round_dynamics_features(_round_long_frame(), vazio)
+
+    assert ROUND1_SIG_STRIKE_SHARE_R3 in out.columns
+    assert out[ROUND1_SIG_STRIKE_SHARE_R3].isna().all()
+
+
+def test_round_dynamics_nao_persiste_metrico_por_bout_local() -> None:
+    """CA-02 (anti-leakage): só a feature as-of entra; o métrico por-bout não vira coluna."""
+    out = add_round_dynamics_features(_round_long_frame(), _round_stats_for_a())
+
+    # A única coluna nova é a agregada as-of; o share por-bout da luta corrente não sobra.
+    novas = set(out.columns) - set(_round_long_frame().columns)
+    assert novas == {ROUND1_SIG_STRIKE_SHARE_R3}

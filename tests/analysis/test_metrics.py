@@ -11,8 +11,15 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
-from analysis.metrics import baseline_metrics, compute_metrics
+from analysis.metrics import (
+    PRE_M5_REFERENCE,
+    Metrics,
+    baseline_metrics,
+    compute_metrics,
+    metrics_delta,
+)
 
 
 def test_compute_metrics_preditor_perfeito() -> None:
@@ -53,3 +60,41 @@ def test_baseline_usa_prevalencia_do_treino_como_probabilidade() -> None:
     esperado = -(math.log(0.75) + math.log(0.25)) / 2
     assert metrics.accuracy == 0.5
     assert abs(metrics.log_loss - esperado) < 1e-9
+
+
+def test_metrics_delta_sinal_correto_ganho() -> None:
+    """CA-04: com ganho, accuracy/ROC-AUC sobem (delta>0) e log-loss cai (delta<0).
+
+    Convenção: cada delta é ``current - reference``. Para accuracy/ROC-AUC (maior é
+    melhor) um ganho é positivo; para log-loss (menor é melhor) uma melhora é negativa.
+    """
+    current = Metrics(accuracy=0.65, log_loss=0.60, roc_auc=0.68, n_samples=100)
+    reference = Metrics(accuracy=0.60, log_loss=0.65, roc_auc=0.62, n_samples=100)
+
+    delta = metrics_delta(current, reference)
+
+    assert delta.accuracy == pytest.approx(0.05)
+    assert delta.log_loss == pytest.approx(-0.05)
+    assert delta.roc_auc == pytest.approx(0.06)
+    assert delta.improves_accuracy is True
+
+
+def test_metrics_delta_sem_ganho_sem_overclaim() -> None:
+    """CA-04: sem ganho, accuracy/ROC-AUC caem (delta<0) e log-loss sobe (delta>0)."""
+    current = Metrics(accuracy=0.60, log_loss=0.66, roc_auc=0.61, n_samples=100)
+    reference = Metrics(accuracy=0.61, log_loss=0.64, roc_auc=0.63, n_samples=100)
+
+    delta = metrics_delta(current, reference)
+
+    assert delta.accuracy < 0
+    assert delta.log_loss > 0
+    assert delta.roc_auc < 0
+    assert delta.improves_accuracy is False
+
+
+def test_pre_m5_reference_registra_o_bootstrap_pre_m5() -> None:
+    """CA-04: a referência pré-M5 guarda as três métricas capturadas no holdout temporal."""
+    assert PRE_M5_REFERENCE.accuracy == pytest.approx(0.6009791921664627)
+    assert PRE_M5_REFERENCE.log_loss == pytest.approx(0.6860892556792704)
+    assert PRE_M5_REFERENCE.roc_auc == pytest.approx(0.6180559786979942)
+    assert PRE_M5_REFERENCE.n_samples == 1634

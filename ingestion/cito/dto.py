@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_camel
 
 from apps.bouts.enums import Corner
 from apps.fighters.enums import Stance
+from ingestion.cito.parsers import parse_clock, parse_stat
 
 
 class CitoCorner(BaseModel):
@@ -130,3 +132,85 @@ class CitoFighter(BaseModel):
             return Stance(str(value).strip().casefold())
         except ValueError:
             return None
+
+
+# ---------------------------------------------------------------------------
+# DTOs do endpoint real ``GET /events/{id}/stats`` (envelope camelCase).
+#
+# Aditivos: os DTOs acima (``CitoEvent``/``CitoBout``/``CitoBoutStats``/...) são consumidos
+# pelo M1 (``ingestion.incremental``) e permanecem intactos. Aqui, a Cito real embrulha as
+# stats granulares num envelope ``{success, data, meta}``, usa camelCase e expressa golpes como
+# ``"L of A"`` e tempo como ``"m:ss"`` -- convertidos na borda pelos parsers, sem propagar ``Any``.
+# ---------------------------------------------------------------------------
+
+_CAMEL_CONFIG = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+# Campos de golpe expressos como ``"landed of attempted"`` no payload real da Cito.
+_SPLIT_FIELDS = ("sig_strikes", "head", "body", "leg", "distance", "clinch", "ground", "takedowns")
+
+
+class CitoBoutStatLine(BaseModel):
+    """Totais de um canto numa luta do endpoint real (``boutStats``).
+
+    Uma linha por lutador-por-luta (long): ``corner`` liga ao canto e os splits de golpe chegam
+    como tuplas ``(landed, attempted)`` após o parse na borda. Split ausente degrada para
+    ``(None, None)`` (não se inventa zero); string mal-formada levanta ``CitoParseError``.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    bout_id: str
+    corner: Corner
+    fighter_slug: str
+    knockdowns: int | None = None
+    submission_attempts: int | None = None
+    reversals: int | None = None
+    sig_strikes: tuple[int | None, int | None] = (None, None)
+    head: tuple[int | None, int | None] = (None, None)
+    body: tuple[int | None, int | None] = (None, None)
+    leg: tuple[int | None, int | None] = (None, None)
+    distance: tuple[int | None, int | None] = (None, None)
+    clinch: tuple[int | None, int | None] = (None, None)
+    ground: tuple[int | None, int | None] = (None, None)
+    takedowns: tuple[int | None, int | None] = (None, None)
+    control_time_seconds: int | None = Field(default=None, validation_alias="controlTime")
+
+    @field_validator(*_SPLIT_FIELDS, mode="before")
+    @classmethod
+    def _split(cls, value: object) -> tuple[int | None, int | None]:
+        """Converte ``"L of A"`` -> ``(L, A)`` na borda; ausência -> ``(None, None)``."""
+        return parse_stat(value if value is None or isinstance(value, str) else str(value))
+
+    @field_validator("control_time_seconds", mode="before")
+    @classmethod
+    def _clock(cls, value: object) -> int | None:
+        """Converte ``"m:ss"`` -> segundos na borda; ausência -> ``None``."""
+        return parse_clock(value if value is None or isinstance(value, str) else str(value))
+
+
+class CitoRoundStatLine(CitoBoutStatLine):
+    """Stats de um canto num round específico (``roundStats``): a forma do total + ``round``."""
+
+    round: int
+
+
+class CitoEventStats(BaseModel):
+    """Stats de um evento: os totais por canto (``boutStats``) e o round-a-round (``roundStats``).
+
+    ``round_stats`` degrada para lista vazia quando o payload não traz round-a-round (evento sem
+    esse detalhe) -- ausência explícita, sem ``Any``.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    bout_stats: list[CitoBoutStatLine]
+    round_stats: list[CitoRoundStatLine] = []
+
+
+class CitoStatsEnvelope(BaseModel):
+    """Envelope ``{success, data, meta}`` do endpoint real; ``data`` é o ``CitoEventStats``."""
+
+    model_config = _CAMEL_CONFIG
+
+    success: bool
+    data: CitoEventStats

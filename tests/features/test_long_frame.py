@@ -16,13 +16,14 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
-from ingestion.features.long_frame import build_long_frame, read_granular
+from ingestion.features.long_frame import SPLIT_COLUMNS, build_long_frame, read_granular
 from ingestion.normalize import normalize_name
 
 
@@ -242,8 +243,61 @@ def test_build_long_frame_preserva_stats_brutas_e_source(db_session: Session) ->
         "takedowns_attempted",
         "submission_attempts",
         "control_time_seconds",
+        "total_strikes_landed",
+        "total_strikes_attempted",
+        "head_landed",
+        "head_attempted",
+        "body_landed",
+        "body_attempted",
+        "leg_landed",
+        "leg_attempted",
+        "distance_landed",
+        "distance_attempted",
+        "clinch_landed",
+        "clinch_attempted",
+        "ground_landed",
+        "ground_attempted",
+        "reversals",
         "source",
     ]
+
+
+def test_read_granular_projeta_splits_de_golpe(db_session: Session) -> None:
+    """CA-01: os splits wide (Sprint 02) entram na frame longa (leitura + projeção).
+
+    Preenche os splits do canto vermelho e confirma que ``read_granular``/
+    ``build_long_frame`` carregam as colunas novas com o valor bruto por luta (nunca
+    médias, ADR 0001).
+    """
+    red = _add_fighter(db_session, "Alexander Volkanovski")
+    blue = _add_fighter(db_session, "Ilia Topuria")
+    event = _add_event(db_session, "UFC 300: Test", date(2024, 4, 13))
+    bout = _add_bout(db_session, event=event, red=red, blue=blue, winner=red)
+    bf = db_session.execute(
+        select(BoutFighter).where(BoutFighter.bout_id == bout.id, BoutFighter.fighter_id == red.id)
+    ).scalar_one()
+    bf.total_strikes_landed = 40
+    bf.head_landed = 20
+    bf.body_landed = 5
+    bf.leg_landed = 3
+    bf.distance_landed = 18
+    bf.clinch_landed = 6
+    bf.ground_landed = 4
+    bf.reversals = 1
+    db_session.flush()
+
+    long_df = build_long_frame(read_granular(db_session))
+
+    assert set(SPLIT_COLUMNS).issubset(set(long_df.columns))
+    row = long_df.loc[long_df["fighter_id"] == red.id].iloc[0]
+    assert row["head_landed"] == 20
+    assert row["body_landed"] == 5
+    assert row["leg_landed"] == 3
+    assert row["distance_landed"] == 18
+    assert row["clinch_landed"] == 6
+    assert row["ground_landed"] == 4
+    assert row["total_strikes_landed"] == 40
+    assert row["reversals"] == 1
 
 
 def test_build_long_frame_ordena_por_lutador_e_data(db_session: Session) -> None:

@@ -20,6 +20,7 @@ de X -- o classificador consome apenas numérico, com ``NaN`` explícito preserv
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 
@@ -30,6 +31,8 @@ from sqlalchemy.orm import Session
 from apps.bouts.models import Bout
 from apps.events.models import Event
 from apps.features.models import BoutFeatures
+
+logger = logging.getLogger(__name__)
 
 COL_BOUT_ID = "bout_id"
 COL_EVENT_DATE = "event_date"
@@ -119,8 +122,9 @@ def _numeric_feature_columns(expanded: pd.DataFrame) -> list[str]:
     """Colunas de feature numéricas: exclui as que carregam qualquer valor string.
 
     As categóricas do M4 (``stance_a``/``stance_b``) guardam strings (``"orthodox"``...)
-    e ficam fora de X -- o classificador consome apenas numérico. Uma coluna toda nula
-    (sem string) é mantida como ``NaN`` numérico (sem informação, mas inofensiva).
+    e ficam fora de X -- o classificador consome apenas numérico. Uma coluna numérica toda
+    nula (100% ``NaN``) **não** é inofensiva: quebra o ``HistGradientBoostingClassifier``
+    no ``fit``; ela é filtrada depois, em ``_drop_all_nan_feature_columns``.
     """
     numeric: list[str] = []
     for column in expanded.columns:
@@ -128,6 +132,31 @@ def _numeric_feature_columns(expanded: pd.DataFrame) -> list[str]:
         if not has_string:
             numeric.append(str(column))
     return numeric
+
+
+def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
+    """Descarta as colunas de feature 100% ``NaN`` antes do treino; loga quais saíram.
+
+    Uma coluna inteiramente ``NaN`` não é inofensiva: o ``HistGradientBoostingClassifier``
+    levanta ``ValueError: window shape cannot be larger than input array shape`` ao tentar
+    o binning dela. Isso ocorre num estado de **backfill parcial legítimo** desenhado pela
+    própria SPEC -- os splits (Sprint 02, 0 quota, sem gate) podem ser materializados antes
+    do round-a-round (Sprint 05, atrás de gate humano); nesse intervalo, as colunas de
+    dinâmica por round ficam 100% ``NaN``.
+
+    Colunas **parcialmente** ``NaN`` são preservadas intactas (o classificador trata a
+    ausência nativamente). Descartar só a coluna toda-nula é degradação legítima de features
+    ainda-não-backfillados -- não um silenciador genérico de ``NaN``.
+    """
+    all_nan = [str(column) for column in features.columns if bool(features[column].isna().all())]
+    if not all_nan:
+        return features
+    logger.warning(
+        "Descartando %d coluna(s) de feature 100%% NaN antes do treino (backfill parcial): %s",
+        len(all_nan),
+        ", ".join(sorted(all_nan)),
+    )
+    return features.drop(columns=all_nan)
 
 
 def build_dataset(raw: pd.DataFrame) -> Dataset:
@@ -142,6 +171,7 @@ def build_dataset(raw: pd.DataFrame) -> Dataset:
     numeric_columns = _numeric_feature_columns(expanded)
     if numeric_columns:
         features = expanded[numeric_columns].apply(pd.to_numeric).astype("float64")
+        features = _drop_all_nan_feature_columns(features)
     else:
         features = pd.DataFrame(index=decided.index)
     target = decided[COL_TARGET].map(_label_for).astype("int64")
@@ -150,7 +180,7 @@ def build_dataset(raw: pd.DataFrame) -> Dataset:
         target=target,
         event_date=decided[COL_EVENT_DATE],
         bout_id=decided[COL_BOUT_ID],
-        feature_names=numeric_columns,
+        feature_names=[str(column) for column in features.columns],
     )
 
 
