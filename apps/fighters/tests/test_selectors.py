@@ -328,6 +328,134 @@ def test_get_fighter_stats_vitorias_excluem_derrota_e_empate(db_session: Session
     assert stats.wins_by_method == {"ko_tko": 1}
 
 
+def _add_split_bout(
+    session: Session,
+    fighter: Fighter,
+    *,
+    head_landed: int | None,
+    body_landed: int | None,
+    leg_landed: int | None,
+    distance_landed: int | None,
+    clinch_landed: int | None,
+    ground_landed: int | None,
+) -> None:
+    """Semeia uma luta do ``fighter`` com os splits de golpe conectados dados."""
+    evento = EventFactory.build()
+    session.add(evento)
+    session.flush()
+    bout = BoutFactory.build(event_id=evento.id, method=BoutMethod.DECISION)
+    session.add(bout)
+    session.flush()
+    session.add(
+        BoutFighterFactory.build(
+            bout_id=bout.id,
+            fighter_id=fighter.id,
+            corner=Corner.RED,
+            head_landed=head_landed,
+            body_landed=body_landed,
+            leg_landed=leg_landed,
+            distance_landed=distance_landed,
+            clinch_landed=clinch_landed,
+            ground_landed=ground_landed,
+        )
+    )
+    session.flush()
+
+
+def test_get_fighter_stats_striking_profile_soma_sobre_soma(db_session: Session) -> None:
+    """Shares são razão de somas na carreira (não média de razões por luta)."""
+    target = _add(db_session, "Max Holloway")
+    _add_split_bout(
+        db_session,
+        target,
+        head_landed=20,
+        body_landed=10,
+        leg_landed=0,
+        distance_landed=25,
+        clinch_landed=5,
+        ground_landed=0,
+    )
+    _add_split_bout(
+        db_session,
+        target,
+        head_landed=10,
+        body_landed=0,
+        leg_landed=10,
+        distance_landed=10,
+        clinch_landed=0,
+        ground_landed=10,
+    )
+
+    stats = get_fighter_stats(db_session, target.id)
+
+    assert stats is not None
+    perfil = stats.striking_profile
+    # Alvo: head=30, body=10, leg=10 -> total 50.
+    assert perfil.share_head == 0.6
+    assert perfil.share_body == 0.2
+    assert perfil.share_leg == 0.2
+    # Posição: distância=35, clinch=5, solo=10 -> total 50.
+    assert perfil.share_distance == 0.7
+    assert perfil.share_clinch == 0.1
+    assert perfil.share_ground == 0.2
+
+
+def test_get_fighter_stats_striking_profile_denominador_zero_da_none(
+    db_session: Session,
+) -> None:
+    """Sem golpes conectados no grupo, os shares são ``None`` (nunca inf/NaN)."""
+    target = _add(db_session, "Khabib Nurmagomedov")
+    _add_split_bout(
+        db_session,
+        target,
+        head_landed=None,
+        body_landed=None,
+        leg_landed=None,
+        distance_landed=None,
+        clinch_landed=None,
+        ground_landed=None,
+    )
+
+    stats = get_fighter_stats(db_session, target.id)
+
+    assert stats is not None
+    perfil = stats.striking_profile
+    assert perfil.share_head is None
+    assert perfil.share_body is None
+    assert perfil.share_leg is None
+    assert perfil.share_distance is None
+    assert perfil.share_clinch is None
+    assert perfil.share_ground is None
+
+
+def test_get_fighter_stats_striking_profile_componente_nulo_conta_como_zero(
+    db_session: Session,
+) -> None:
+    """Componente ``None`` no grupo conta como zero conectado; o grupo ainda soma."""
+    target = _add(db_session, "Israel Adesanya")
+    _add_split_bout(
+        db_session,
+        target,
+        head_landed=30,
+        body_landed=None,
+        leg_landed=10,
+        distance_landed=40,
+        clinch_landed=None,
+        ground_landed=None,
+    )
+
+    stats = get_fighter_stats(db_session, target.id)
+
+    assert stats is not None
+    perfil = stats.striking_profile
+    # Alvo: head=30, body=0 (None), leg=10 -> total 40.
+    assert perfil.share_head == 0.75
+    assert perfil.share_body == 0.0
+    assert perfil.share_leg == 0.25
+    # Posição: distância=40, clinch=0, solo=0 -> total 40.
+    assert perfil.share_distance == 1.0
+
+
 def test_get_fighter_stats_lutador_inexistente_devolve_none(db_session: Session) -> None:
     """Lutador inexistente devolve ``None`` (habilita o 404, distinto de sem lutas)."""
     assert get_fighter_stats(db_session, 999_999) is None
@@ -346,6 +474,8 @@ def test_get_fighter_stats_lutador_sem_lutas(db_session: Session) -> None:
     assert stats.avg_takedowns_landed is None
     assert stats.avg_control_time_seconds is None
     assert stats.wins_by_method == {}
+    assert stats.striking_profile.share_head is None
+    assert stats.striking_profile.share_distance is None
 
 
 def test_get_fighter_stats_on_demand_sem_persistencia_de_agregado(db_session: Session) -> None:

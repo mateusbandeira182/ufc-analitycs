@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout
-from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
+from apps.bouts.selectors import get_bout_by_id
+from apps.bouts.tests.factories import (
+    BoutFactory,
+    BoutFighterFactory,
+    BoutFighterRoundFactory,
+    EventFactory,
+)
 from apps.fighters.models import Fighter
 from apps.fighters.tests.factories import FighterFactory
 
@@ -35,6 +41,9 @@ def _seed_bout(db_session: Session) -> Bout:
         round=1,
         ending_time_seconds=191,
         weight_class="Light Heavyweight",
+        title_bout=True,
+        scheduled_rounds=5,
+        referee="Marc Goddard",
     )
     db_session.add(bout)
     db_session.flush()
@@ -52,6 +61,21 @@ def _seed_bout(db_session: Session) -> Bout:
                 takedowns_attempted=0,
                 submission_attempts=0,
                 control_time_seconds=90,
+                total_strikes_landed=48,
+                total_strikes_attempted=70,
+                head_landed=25,
+                head_attempted=40,
+                body_landed=10,
+                body_attempted=12,
+                leg_landed=5,
+                leg_attempted=6,
+                distance_landed=30,
+                distance_attempted=45,
+                clinch_landed=6,
+                clinch_attempted=8,
+                ground_landed=4,
+                ground_attempted=5,
+                reversals=1,
             ),
             BoutFighterFactory.build(
                 bout_id=bout.id,
@@ -126,6 +150,103 @@ def test_get_bout_expoe_stats_granulares_dos_dois_cantos(
     assert blue["sig_strikes_landed"] == 12
     assert blue["takedowns_landed"] == 1
     assert blue["takedowns_attempted"] == 3
+
+
+def test_get_bout_expoe_splits_m5_do_canto(client: TestClient, db_session: Session) -> None:
+    """O detalhe expõe os splits de golpe do M5 por canto (granulares, nunca médias)."""
+    bout = _seed_bout(db_session)
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    red = {bf["corner"]: bf for bf in body["fighters"]}[Corner.RED.value]
+    assert red["total_strikes_landed"] == 48
+    assert red["total_strikes_attempted"] == 70
+    assert red["head_landed"] == 25
+    assert red["head_attempted"] == 40
+    assert red["body_landed"] == 10
+    assert red["leg_landed"] == 5
+    assert red["distance_landed"] == 30
+    assert red["clinch_landed"] == 6
+    assert red["ground_landed"] == 4
+    assert red["reversals"] == 1
+
+
+def test_get_bout_splits_ausentes_saem_nulos(client: TestClient, db_session: Session) -> None:
+    """Luta antiga sem splits do M5: os campos saem ``null`` (aditivo/nullable)."""
+    event = EventFactory.build(name="UFC 1", date=date(1993, 11, 12))
+    fighter = FighterFactory.build(name="Royce Gracie")
+    db_session.add_all([event, fighter])
+    db_session.flush()
+    bout = BoutFactory.build(event_id=event.id, method=BoutMethod.SUBMISSION)
+    db_session.add(bout)
+    db_session.flush()
+    db_session.add(
+        BoutFighterFactory.build(
+            bout_id=bout.id,
+            fighter_id=fighter.id,
+            corner=Corner.RED,
+            head_landed=None,
+            reversals=None,
+        )
+    )
+    db_session.flush()
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    red = body["fighters"][0]
+    assert red["head_landed"] is None
+    assert red["reversals"] is None
+
+
+def test_get_bout_expoe_contexto_m5(client: TestClient, db_session: Session) -> None:
+    """O detalhe expõe o contexto do M5: ``title_bout``, ``scheduled_rounds``, ``referee``."""
+    bout = _seed_bout(db_session)
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    assert body["title_bout"] is True
+    assert body["scheduled_rounds"] == 5
+    assert body["referee"] == "Marc Goddard"
+
+
+def test_get_bout_expoe_breakdown_round_a_round(client: TestClient, db_session: Session) -> None:
+    """O detalhe expõe ``rounds``: por canto, por round, com as stats do round."""
+    bout = _seed_bout(db_session)
+    red_bf = {bf.corner: bf for bf in get_bout_by_id(db_session, bout.id).fighters}[  # type: ignore[union-attr]
+        Corner.RED
+    ]
+    db_session.add_all(
+        [
+            BoutFighterRoundFactory.build(
+                bout_fighter_id=red_bf.id, round=1, sig_strikes_landed=18, head_landed=10
+            ),
+            BoutFighterRoundFactory.build(
+                bout_fighter_id=red_bf.id, round=2, sig_strikes_landed=22, head_landed=15
+            ),
+        ]
+    )
+    db_session.flush()
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    red_rounds = [
+        r
+        for r in body["rounds"]
+        if r["corner"] == Corner.RED.value and r["fighter_id"] == red_bf.fighter_id
+    ]
+    assert [r["round"] for r in red_rounds] == [1, 2]
+    assert [r["sig_strikes_landed"] for r in red_rounds] == [18, 22]
+    assert [r["head_landed"] for r in red_rounds] == [10, 15]
+    assert red_rounds[0]["source"] == "cito"
+
+
+def test_get_bout_sem_rounds_expoe_lista_vazia(client: TestClient, db_session: Session) -> None:
+    """Luta sem round-a-round expõe ``rounds`` vazio (aditivo, backfill parcial)."""
+    bout = _seed_bout(db_session)
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    assert body["rounds"] == []
 
 
 def test_get_bout_inexistente_retorna_404(client: TestClient) -> None:

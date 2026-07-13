@@ -118,6 +118,26 @@ def get_fighter_history(session: Session, fighter_id: int) -> list[FighterBoutRo
 
 
 @dataclass(frozen=True)
+class StrikingProfile:
+    """Perfil de striking agregado on demand: shares de golpe significativo conectado.
+
+    Cada share é razão de somas na carreira (``sum(componente) / sum(total do
+    grupo)``), não média de razões por luta -- mesma convenção do feature
+    engineering (``ingestion.features.rolling``). Dois grupos independentes, cada
+    um somando 1 quando definido: alvo (cabeça/corpo/perna) e posição
+    (distância/clinch/solo). Denominador zero (nenhum golpe conectado no grupo) ->
+    ``None``, nunca ``inf``/``NaN`` (o JSON não carrega não-número).
+    """
+
+    share_head: float | None
+    share_body: float | None
+    share_leg: float | None
+    share_distance: float | None
+    share_clinch: float | None
+    share_ground: float | None
+
+
+@dataclass(frozen=True)
 class FighterStats:
     """Resumo estatístico do lutador computado on demand a partir de ``bout_fighters``.
 
@@ -125,6 +145,8 @@ class FighterStats:
     lutas, ou stat sempre nula). ``wins_by_method`` mapeia o valor do método
     (ex.: ``"ko_tko"``) para a contagem de vitórias -- só entram as lutas em que
     ``winner_id`` é o próprio lutador (empate/no contest nunca contam).
+    ``striking_profile`` traz os shares de golpe por alvo/posição, agregados on
+    demand a partir dos splits granulares (nunca pré-agregados).
     """
 
     fighter_id: int
@@ -133,6 +155,23 @@ class FighterStats:
     avg_takedowns_landed: float | None
     avg_control_time_seconds: float | None
     wins_by_method: dict[str, int]
+    striking_profile: StrikingProfile
+
+
+def _group_shares(
+    parts: tuple[int | None, int | None, int | None],
+) -> tuple[float | None, float | None, float | None]:
+    """Converte as somas de um grupo em shares (fração do total do grupo).
+
+    Um componente ``None`` (sem dado somado) conta como zero conectado. Se o total
+    do grupo é zero, todos os shares são ``None`` (denominador zero -> sem fração,
+    nunca ``inf``/``NaN``).
+    """
+    limpos = [float(parte) if parte is not None else 0.0 for parte in parts]
+    total = sum(limpos)
+    if total == 0.0:
+        return (None, None, None)
+    return (limpos[0] / total, limpos[1] / total, limpos[2] / total)
 
 
 def get_fighter_stats(session: Session, fighter_id: int) -> FighterStats | None:
@@ -154,8 +193,27 @@ def get_fighter_stats(session: Session, fighter_id: int) -> FighterStats | None:
             func.avg(BoutFighter.takedowns_landed),
             func.avg(BoutFighter.control_time_seconds),
             func.count(BoutFighter.id),
+            func.sum(BoutFighter.head_landed),
+            func.sum(BoutFighter.body_landed),
+            func.sum(BoutFighter.leg_landed),
+            func.sum(BoutFighter.distance_landed),
+            func.sum(BoutFighter.clinch_landed),
+            func.sum(BoutFighter.ground_landed),
         ).where(BoutFighter.fighter_id == fighter_id)
     ).one()
+
+    share_head, share_body, share_leg = _group_shares((aggregate[4], aggregate[5], aggregate[6]))
+    share_distance, share_clinch, share_ground = _group_shares(
+        (aggregate[7], aggregate[8], aggregate[9])
+    )
+    striking_profile = StrikingProfile(
+        share_head=share_head,
+        share_body=share_body,
+        share_leg=share_leg,
+        share_distance=share_distance,
+        share_clinch=share_clinch,
+        share_ground=share_ground,
+    )
 
     wins_by_method: dict[str, int] = {}
     wins_rows = session.execute(
@@ -174,4 +232,5 @@ def get_fighter_stats(session: Session, fighter_id: int) -> FighterStats | None:
         avg_takedowns_landed=float(aggregate[1]) if aggregate[1] is not None else None,
         avg_control_time_seconds=float(aggregate[2]) if aggregate[2] is not None else None,
         wins_by_method=wins_by_method,
+        striking_profile=striking_profile,
     )

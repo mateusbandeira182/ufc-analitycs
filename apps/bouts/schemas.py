@@ -32,6 +32,63 @@ class BoutFighterStatsOut(BaseModel):
     takedowns_attempted: int | None
     submission_attempts: int | None
     control_time_seconds: int | None
+    # Splits de golpe do M5 (ADR 0004): contagens granulares POR LUTA, todas
+    # nullable (lutas antigas anteriores ao backfill não têm esse detalhe). Nunca
+    # médias -- distribuição/acurácia derivam-se on demand na camada de consumo.
+    total_strikes_landed: int | None
+    total_strikes_attempted: int | None
+    head_landed: int | None
+    head_attempted: int | None
+    body_landed: int | None
+    body_attempted: int | None
+    leg_landed: int | None
+    leg_attempted: int | None
+    distance_landed: int | None
+    distance_attempted: int | None
+    clinch_landed: int | None
+    clinch_attempted: int | None
+    ground_landed: int | None
+    ground_attempted: int | None
+    reversals: int | None
+    source: str
+
+
+class BoutFighterRoundOut(BaseModel):
+    """Stats de um lutador num round (uma linha de ``bout_fighter_rounds``).
+
+    ``fighter_id`` e ``corner`` identificam o canto dono do round (herdados do
+    ``bout_fighter``, que é o dono do enum ``corner`` -- a tabela de rounds não o
+    duplica). ``round`` é o número do round. Todas as stats são granulares por
+    round e nullable (a Cito preenche o round-a-round só a partir de 2019).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    fighter_id: int
+    corner: Corner
+    round: int
+    knockdowns: int | None
+    sig_strikes_landed: int | None
+    sig_strikes_attempted: int | None
+    takedowns_landed: int | None
+    takedowns_attempted: int | None
+    submission_attempts: int | None
+    control_time_seconds: int | None
+    total_strikes_landed: int | None
+    total_strikes_attempted: int | None
+    head_landed: int | None
+    head_attempted: int | None
+    body_landed: int | None
+    body_attempted: int | None
+    leg_landed: int | None
+    leg_attempted: int | None
+    distance_landed: int | None
+    distance_attempted: int | None
+    clinch_landed: int | None
+    clinch_attempted: int | None
+    ground_landed: int | None
+    ground_attempted: int | None
+    reversals: int | None
     source: str
 
 
@@ -48,7 +105,7 @@ class BoutEventOut(BaseModel):
 
 
 class BoutDetailOut(BaseModel):
-    """Detalhe de uma luta: evento, resultado e os dois cantos com stats granulares."""
+    """Detalhe de uma luta: evento, resultado, contexto, cantos e round-a-round."""
 
     id: int
     event: BoutEventOut
@@ -57,8 +114,14 @@ class BoutDetailOut(BaseModel):
     round: int | None
     ending_time_seconds: int | None
     weight_class: str | None
+    # Contexto de luta do M5 (ADR 0004), todos nullable (backfill do CSV do seed).
+    title_bout: bool | None
+    scheduled_rounds: int | None
+    referee: str | None
     source: str
     fighters: list[BoutFighterStatsOut]
+    # Breakdown round-a-round por canto (vazio quando não há dado round-a-round).
+    rounds: list[BoutFighterRoundOut]
 
 
 class HeadToHeadOut(BaseModel):
