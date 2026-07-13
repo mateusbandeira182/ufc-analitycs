@@ -1,0 +1,82 @@
+{
+  "success": true,
+  "data": {
+    "boutStats": [
+      {
+        "boutId": "ufc-320-bout-1",
+        "corner": "red",
+        "fighterSlug": "jon-jones",
+        "knockdowns": 1,
+        "sigStrikes": "50 of 90",
+        "head": "30 of 60",
+        "body": "12 of 20",
+        "leg": "8 of 10",
+        "distance": "40 of 70",
+        "clinch": "6 of 12",
+        "ground": "4 of 8",
+        "takedowns": "1 of 3",
+        "submissionAttempts": 0,
+        "reversals": 1,
+        "controlTime": "2:15"
+      },
+      {
+        "boutId": "ufc-320-bout-1",
+        "corner": "blue",
+        "fighterSlug": "stipe-miocic",
+        "knockdowns": 0,
+        "sigStrikes": "35 of 88",
+        "head": "20 of 55",
+        "body": "10 of 23",
+        "leg": "5 of 10",
+        "distance": "30 of 78",
+        "clinch": "3 of 6",
+        "ground": "2 of 4",
+        "takedowns": "0 of 1",
+        "submissionAttempts": 0,
+        "reversals": 0,
+        "controlTime": "1:05"
+      }
+    ],
+    "roundStats": [
+      {
+        "boutId": "ufc-320-bout-1",
+        "corner": "red",
+        "fighterSlug": "jon-jones",
+        "round": 1,
+        "knockdowns": 1,
+        "sigStrikes": "50 of 90",
+        "head": "30 of 60",
+        "body": "12 of 20",
+        "leg": "8 of 10",
+        "distance": "40 of 70",
+        "clinch": "6 of 12",
+        "ground": "4 of 8",
+        "takedowns": "1 of 3",
+        "submissionAttempts": 0,
+        "reversals": 1,
+        "controlTime": "2:15"
+      },
+      {
+        "boutId": "ufc-320-bout-1",
+        "corner": "blue",
+        "fighterSlug": "stipe-miocic",
+        "round": 1,
+        "knockdowns": 0,
+        "sigStrikes": "35 of 88",
+        "head": "20 of 55",
+        "body": "10 of 23",
+        "leg": "5 of 10",
+        "distance": "30 of 78",
+        "clinch": "3 of 6",
+        "ground": "2 of 4",
+        "takedowns": "0 of 1",
+        "submissionAttempts": 0,
+        "reversals": 0,
+        "controlTime": "1:05"
+      }
+    ]
+  },
+  "meta": {
+    "source": "cito"
+  }
+}
