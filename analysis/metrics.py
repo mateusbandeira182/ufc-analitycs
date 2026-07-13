@@ -31,6 +31,47 @@ class Metrics:
     n_samples: int
 
 
+@dataclass(frozen=True)
+class MetricsDelta:
+    """Diferença ``current - reference`` de cada métrica, para comparação honesta.
+
+    Convenção de sinal: accuracy e ROC-AUC seguem "maior é melhor" (ganho -> positivo);
+    log-loss segue "menor é melhor" (melhora -> negativo). ``improves_accuracy`` resume o
+    veredito de accuracy sem overclaim (empate/regressão -> ``False``).
+    """
+
+    accuracy: float
+    log_loss: float
+    roc_auc: float
+
+    @property
+    def improves_accuracy(self) -> bool:
+        """``True`` só quando a accuracy corrente supera estritamente a de referência."""
+        return self.accuracy > 0.0
+
+
+# Referência do bootstrap pré-M5 (features do M4), holdout temporal de 20%. Capturada no
+# PASSO-00 do Plano 006-06 rodando ``python -m analysis.train`` ANTES de estender as
+# features (banco ufc_databum seedado, 8170 amostras; 1634 no teste). Registrada em código
+# porque o modelo pré-M5 não é re-treinável após a re-materialização (as features antigas
+# deixam de existir): é a única representação fiel do baseline a superar.
+PRE_M5_REFERENCE = Metrics(
+    accuracy=0.6009791921664627,
+    log_loss=0.6860892556792704,
+    roc_auc=0.6180559786979942,
+    n_samples=1634,
+)
+
+
+def metrics_delta(current: Metrics, reference: Metrics) -> MetricsDelta:
+    """Delta ``current - reference`` de accuracy, log-loss e ROC-AUC (comparação testável)."""
+    return MetricsDelta(
+        accuracy=current.accuracy - reference.accuracy,
+        log_loss=current.log_loss - reference.log_loss,
+        roc_auc=current.roc_auc - reference.roc_auc,
+    )
+
+
 def compute_metrics(
     y_true: pd.Series | Sequence[int],
     y_pred: pd.Series | Sequence[int],

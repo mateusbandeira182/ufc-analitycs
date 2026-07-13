@@ -120,6 +120,17 @@ def test_run_training_produz_modelo_e_metricas(db_session: Session) -> None:
     assert result.trained_at.tzinfo is not None
 
 
+def test_run_training_e_deterministico_mesmas_metricas(db_session: Session) -> None:
+    """CA-04: rodar ``run_training`` 2x com o mesmo ``random_state`` reproduz as métricas."""
+    _seed_many(db_session, 20)
+
+    primeiro = run_training(db_session, test_fraction=0.25, random_state=0)
+    segundo = run_training(db_session, test_fraction=0.25, random_state=0)
+
+    assert primeiro.model_metrics == segundo.model_metrics
+    assert primeiro.baseline_metrics == segundo.baseline_metrics
+
+
 def test_save_artifact_persiste_modelo_features_e_metricas(
     db_session: Session, tmp_path: Path
 ) -> None:

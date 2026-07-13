@@ -22,11 +22,13 @@ from ingestion.features.rolling import (
     COL_FIGHTER_ID,
     RECENT_FORM_FEATURES,
     add_recent_form_features,
+    add_round_dynamics_features,
 )
 from ingestion.features.trajectory import (
     TRAJECTORY_FEATURES,
     add_trajectory_features,
     load_fighters_bio,
+    load_round_stats,
 )
 from mma_analytics.db import SessionLocal
 
@@ -48,14 +50,17 @@ def _enriched_long_frame(session: Session) -> pd.DataFrame:
     """Frame longa enriquecida por rolling **e** trajetória (insumo do estágio matchup).
 
     Encadeia a leitura do granular, a frame longa (Slice 01), as features de forma
-    recente (Slice 02) e as de trajetória/contexto físico (Slice 03). Isolada para ser
+    recente e perfil de striking (Slice 02/M5), as de trajetória/contexto físico (Slice
+    03) e a dinâmica por round (M5, a partir de ``bout_fighter_rounds``). Isolada para ser
     o ponto único de injeção nos testes do estágio matchup (sem tocar o Postgres).
     """
     frames = read_granular(session)
     df = build_long_frame(frames)
     df = add_recent_form_features(df)
     fighters = load_fighters_bio(session.connection())
-    return add_trajectory_features(df, fighters)
+    df = add_trajectory_features(df, fighters)
+    round_stats = load_round_stats(session.connection())
+    return add_round_dynamics_features(df, round_stats)
 
 
 def _run_matchup_stage(session: Session) -> pd.DataFrame:

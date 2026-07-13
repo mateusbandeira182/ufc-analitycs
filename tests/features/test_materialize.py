@@ -25,13 +25,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from apps.bouts.enums import BoutMethod, Corner
-from apps.bouts.models import Bout, BoutFighter
+from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 from apps.features.models import BoutFeatures
 from apps.fighters.models import Fighter
 from ingestion.features.cli import run_materialize
 from ingestion.features.matchup import MatchupMatrix
 from ingestion.features.materialize import SOURCE, _to_corner, materialize_features
+from ingestion.features.rolling import ROUND1_SIG_STRIKE_SHARE_R3, SHARE_HEAD_R3
 from ingestion.normalize import normalize_name
 
 _FEATURE_COLUMNS = ["sig_strikes_pm_asof_a", "sig_strikes_pm_asof_b", "sig_strikes_pm_asof_diff"]
@@ -336,6 +337,186 @@ def test_run_materialize_roda_pipeline_completa_e_popula_bout_features(
     # Rodar de novo é idempotente: mesma contagem (upsert por bout_id).
     run_materialize(db_session)
     assert db_session.scalar(select(func.count()).select_from(BoutFeatures)) == 1
+
+
+def _seed_fighter(db_session: Session, name: str) -> Fighter:
+    """Semeia um lutador mínimo e devolve o model já com id."""
+    fighter = Fighter(
+        name=name,
+        name_normalized=normalize_name(name),
+        nickname=None,
+        date_of_birth=date(1990, 1, 1),
+        height_cm=None,
+        reach_cm=None,
+        stance=None,
+        wins=0,
+        losses=0,
+        draws=0,
+        source="kaggle",
+    )
+    db_session.add(fighter)
+    db_session.flush()
+    return fighter
+
+
+def _seed_two_bouts_with_splits_and_rounds(db_session: Session) -> int:
+    """Semeia o lutador A com duas lutas (splits + round-a-round na 1a); devolve o bout_id da 2a.
+
+    A vence as duas por decisão contra oponentes distintos, splits preenchidos nos dois
+    cantos de A, e round-a-round só na 1a luta (r1=15, r2=5 -> round1 share 0.75). A 2a luta
+    passa a ter features as-of de perfil de striking e de dinâmica por round.
+    """
+    a = _seed_fighter(db_session, "Fighter A")
+    b = _seed_fighter(db_session, "Opponent B")
+    c = _seed_fighter(db_session, "Opponent C")
+    evt1 = Event(name="UFC 1: Test", date=date(2023, 1, 1), location=None, source="kaggle")
+    evt2 = Event(name="UFC 2: Test", date=date(2023, 6, 1), location=None, source="kaggle")
+    db_session.add_all([evt1, evt2])
+    db_session.flush()
+
+    second_bout_id = 0
+    for event, opponent in ((evt1, b), (evt2, c)):
+        bout = Bout(
+            event_id=event.id,
+            winner_id=a.id,
+            method=BoutMethod.DECISION,
+            round=3,
+            ending_time_seconds=300,
+            weight_class=None,
+            source="kaggle",
+        )
+        db_session.add(bout)
+        db_session.flush()
+        second_bout_id = int(bout.id)
+        a_corner = BoutFighter(
+            bout_id=bout.id,
+            fighter_id=a.id,
+            corner=Corner.RED,
+            knockdowns=None,
+            sig_strikes_landed=30,
+            sig_strikes_attempted=None,
+            takedowns_landed=None,
+            takedowns_attempted=None,
+            submission_attempts=None,
+            control_time_seconds=None,
+            total_strikes_landed=30,
+            total_strikes_attempted=None,
+            head_landed=20,
+            head_attempted=None,
+            body_landed=5,
+            body_attempted=None,
+            leg_landed=5,
+            leg_attempted=None,
+            distance_landed=18,
+            distance_attempted=None,
+            clinch_landed=6,
+            clinch_attempted=None,
+            ground_landed=6,
+            ground_attempted=None,
+            reversals=None,
+            source="kaggle",
+        )
+        db_session.add_all(
+            [
+                a_corner,
+                BoutFighter(
+                    bout_id=bout.id,
+                    fighter_id=opponent.id,
+                    corner=Corner.BLUE,
+                    knockdowns=None,
+                    sig_strikes_landed=10,
+                    sig_strikes_attempted=None,
+                    takedowns_landed=None,
+                    takedowns_attempted=None,
+                    submission_attempts=None,
+                    control_time_seconds=None,
+                    total_strikes_landed=None,
+                    total_strikes_attempted=None,
+                    head_landed=None,
+                    head_attempted=None,
+                    body_landed=None,
+                    body_attempted=None,
+                    leg_landed=None,
+                    leg_attempted=None,
+                    distance_landed=None,
+                    distance_attempted=None,
+                    clinch_landed=None,
+                    clinch_attempted=None,
+                    ground_landed=None,
+                    ground_attempted=None,
+                    reversals=None,
+                    source="kaggle",
+                ),
+            ]
+        )
+        db_session.flush()
+        if event is evt1:
+            db_session.add_all(
+                [
+                    BoutFighterRound(
+                        bout_fighter_id=a_corner.id,
+                        round=rnd,
+                        knockdowns=None,
+                        sig_strikes_landed=sig,
+                        sig_strikes_attempted=None,
+                        takedowns_landed=None,
+                        takedowns_attempted=None,
+                        submission_attempts=None,
+                        control_time_seconds=None,
+                        total_strikes_landed=None,
+                        total_strikes_attempted=None,
+                        head_landed=None,
+                        head_attempted=None,
+                        body_landed=None,
+                        body_attempted=None,
+                        leg_landed=None,
+                        leg_attempted=None,
+                        distance_landed=None,
+                        distance_attempted=None,
+                        clinch_landed=None,
+                        clinch_attempted=None,
+                        ground_landed=None,
+                        ground_attempted=None,
+                        reversals=None,
+                        source="cito",
+                    )
+                    for rnd, sig in {1: 15, 2: 5}.items()
+                ]
+            )
+            db_session.flush()
+    return second_bout_id
+
+
+def test_run_materialize_grava_features_novas_e_e_idempotente(db_session: Session) -> None:
+    """CA-03: as features novas (share/round1) entram no payload; re-materializar é idempotente.
+
+    A 2a luta de A tem perfil de striking as-of (``share_head_r3_a`` = 20/30) e dinâmica por
+    round (``round1_sig_strike_share_r3_a`` = 0.75). Re-executar mantém a contagem (upsert por
+    ``bout_id``) e ``NaN`` vira ``None`` no JSONB (nunca ``inf``).
+    """
+    second_bout_id = _seed_two_bouts_with_splits_and_rounds(db_session)
+
+    run_materialize(db_session)
+    count_primeiro = db_session.scalar(select(func.count()).select_from(BoutFeatures))
+
+    row = db_session.get(BoutFeatures, second_bout_id)
+    assert row is not None
+    # As features novas estão no payload da 2a luta (as-of, só a 1a como histórico).
+    assert row.features[f"{SHARE_HEAD_R3}_a"] == pytest.approx(20 / 30)
+    assert row.features[f"{ROUND1_SIG_STRIKE_SHARE_R3}_a"] == pytest.approx(0.75)
+    # Os splits raw da luta corrente NÃO vazam para o payload (anti-leakage).
+    assert "head_landed_a" not in row.features
+    assert "reversals_a" not in row.features
+    # NaN -> None explícito (o canto oposto é estreia -> as-of ausente).
+    assert row.features[f"{SHARE_HEAD_R3}_b"] is None
+    # inf jamais entra no JSONB.
+    for valor in row.features.values():
+        assert valor != float("inf")
+
+    # Re-materializar mantém a contagem (idempotência por bout_id).
+    run_materialize(db_session)
+    count_segundo = db_session.scalar(select(func.count()).select_from(BoutFeatures))
+    assert count_primeiro == count_segundo
 
 
 def test_to_corner_valor_inesperado_levanta_value_error_claro() -> None:

@@ -18,10 +18,11 @@ from datetime import date
 
 import pandas as pd
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from apps.bouts.enums import BoutMethod, Corner
-from apps.bouts.models import Bout, BoutFighter
+from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 from apps.fighters.enums import Stance
 from apps.fighters.models import Fighter
@@ -41,6 +42,7 @@ from ingestion.features.trajectory import (
     add_physical_attributes,
     add_trajectory_features,
     load_fighters_bio,
+    load_round_stats,
 )
 from ingestion.normalize import normalize_name
 
@@ -438,3 +440,68 @@ def test_load_fighters_bio_uma_linha_por_lutador(db_session: Session) -> None:
     assert len(bio) == 4
     assert set(bio.columns) == {"fighter_id", "date_of_birth", "height_cm", "reach_cm", "stance"}
     assert bio["fighter_id"].is_unique
+
+
+# --- load_round_stats: leitura do round-a-round por conexão ----------------------------
+
+
+def _add_rounds(session: Session, bout_fighter_id: int, rounds: dict[int, int]) -> None:
+    """Semeia linhas de ``bout_fighter_rounds`` (round -> sig_strikes_landed) para um canto."""
+    session.add_all(
+        [
+            BoutFighterRound(
+                bout_fighter_id=bout_fighter_id,
+                round=rnd,
+                knockdowns=None,
+                sig_strikes_landed=sig,
+                sig_strikes_attempted=None,
+                takedowns_landed=None,
+                takedowns_attempted=None,
+                submission_attempts=None,
+                control_time_seconds=None,
+                total_strikes_landed=None,
+                total_strikes_attempted=None,
+                head_landed=None,
+                head_attempted=None,
+                body_landed=None,
+                body_attempted=None,
+                leg_landed=None,
+                leg_attempted=None,
+                distance_landed=None,
+                distance_attempted=None,
+                clinch_landed=None,
+                clinch_attempted=None,
+                ground_landed=None,
+                ground_attempted=None,
+                reversals=None,
+                source="cito",
+            )
+            for rnd, sig in rounds.items()
+        ]
+    )
+    session.flush()
+
+
+def test_load_round_stats_le_bout_fighter_rounds_por_conexao(db_session: Session) -> None:
+    """CA-02: ``load_round_stats`` lê ``bout_fighter_rounds`` (não-commitado) via conexão.
+
+    Enxerga o estado semeado dentro da transação (como ``load_fighters_bio``), expondo
+    ``bout_id``/``fighter_id``/``round`` mais a stat por round, via a junção com
+    ``bout_fighters``.
+    """
+    hero = _add_fighter(db_session, "Alexander Volkanovski", dob=date(1988, 9, 29))
+    rival = _add_fighter(db_session, "Rival R")
+    event = _add_event(db_session, "UFC Rounds: Test", date(2020, 1, 1))
+    bout = _add_bout(db_session, event=event, red=hero, blue=rival)
+    hero_bf = db_session.execute(
+        select(BoutFighter).where(BoutFighter.bout_id == bout.id, BoutFighter.fighter_id == hero.id)
+    ).scalar_one()
+    _add_rounds(db_session, hero_bf.id, {1: 12, 2: 8, 3: 5})
+
+    rounds = load_round_stats(db_session.connection())
+
+    assert set(rounds.columns) >= {"bout_id", "fighter_id", "round", "sig_strikes_landed"}
+    do_hero = rounds.loc[rounds["fighter_id"] == hero.id].sort_values("round")
+    assert do_hero["round"].tolist() == [1, 2, 3]
+    assert do_hero["sig_strikes_landed"].tolist() == [12, 8, 5]
+    assert set(do_hero["bout_id"]) == {bout.id}

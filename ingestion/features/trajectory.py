@@ -27,6 +27,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from apps.bouts.models import BoutFighter, BoutFighterRound
 from apps.fighters.models import Fighter
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ COL_FIGHTER_ID = "fighter_id"
 COL_EVENT_DATE = "event_date"
 COL_BOUT_ID = "bout_id"
 COL_DATE_OF_BIRTH = "date_of_birth"
+COL_ROUND = "round"
+COL_ROUND_SIG_STRIKES_LANDED = "sig_strikes_landed"
 
 # Colunas de feature produzidas por esta slice.
 AGE_YEARS = "age_years"
@@ -170,4 +173,22 @@ def load_fighters_bio(connection: Connection) -> pd.DataFrame:
         Fighter.reach_cm,
         Fighter.stance,
     )
+    return pd.read_sql_query(statement, connection)
+
+
+def load_round_stats(connection: Connection) -> pd.DataFrame:
+    """Lê ``bout_fighter_rounds`` do Postgres via Pandas, uma linha por canto-por-round.
+
+    Junta ``bout_fighter_rounds`` a ``bout_fighters`` para expor ``bout_id``/``fighter_id``
+    (a granularidade round-a-round não carrega o canto além da FK). Recebe a ``Connection``
+    da sessão (nos testes, ``session.connection()`` -- enxerga o round-a-round semeado dentro
+    da transação, como ``load_fighters_bio``). Projeta apenas as colunas necessárias à
+    dinâmica por round (golpes conectados por round), mantendo o conjunto mínimo (YAGNI).
+    """
+    statement = select(
+        BoutFighter.bout_id.label(COL_BOUT_ID),
+        BoutFighter.fighter_id.label(COL_FIGHTER_ID),
+        BoutFighterRound.round.label(COL_ROUND),
+        BoutFighterRound.sig_strikes_landed.label(COL_ROUND_SIG_STRIKES_LANDED),
+    ).join(BoutFighterRound, BoutFighterRound.bout_fighter_id == BoutFighter.id)
     return pd.read_sql_query(statement, connection)

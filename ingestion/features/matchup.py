@@ -69,6 +69,8 @@ _COL_RESULT_A = f"{COL_RESULT}{_SUFFIX_A}"
 _IDENTITY_BASES: frozenset[str] = frozenset({COL_BOUT_ID, "fighter_id", "fighter_name"})
 _EVENT_CONTEXT_BASES: frozenset[str] = frozenset({"event_id", "event_name", "event_date", "source"})
 # Desfecho da própria luta (não é predição as-of -- leakage se usado como feature).
+# Inclui os splits de golpe wide do M5 (Sprint 02): são box-score da luta corrente, não
+# predição. Só as derivadas as-of (``share_*_r3``, ``round1_*_r3``) entram como feature.
 _OUTCOME_BASES: frozenset[str] = frozenset(
     {
         COL_RESULT,
@@ -82,6 +84,21 @@ _OUTCOME_BASES: frozenset[str] = frozenset(
         "takedowns_attempted",
         "submission_attempts",
         "control_time_seconds",
+        "total_strikes_landed",
+        "total_strikes_attempted",
+        "head_landed",
+        "head_attempted",
+        "body_landed",
+        "body_attempted",
+        "leg_landed",
+        "leg_attempted",
+        "distance_landed",
+        "distance_attempted",
+        "clinch_landed",
+        "clinch_attempted",
+        "ground_landed",
+        "ground_attempted",
+        "reversals",
     }
 )
 _NON_FEATURE_BASES: frozenset[str] = _IDENTITY_BASES | _EVENT_CONTEXT_BASES | _OUTCOME_BASES

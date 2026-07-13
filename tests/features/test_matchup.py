@@ -230,6 +230,54 @@ def test_orquestrador_devolve_contrato_coerente() -> None:
     assert result.red_corner_win_rate == pytest.approx(0.5)
 
 
+def test_splits_raw_da_luta_corrente_ficam_fora_das_features() -> None:
+    """CA-03 (anti-leakage): os splits raw da luta corrente não viram feature; a share as-of, sim.
+
+    Os splits de golpe (``head_landed``, ``reversals``, ``total_strikes_landed``...) são
+    box-score do desfecho: têm de entrar em ``_OUTCOME_BASES`` e ficar fora de
+    ``feature_columns`` (senão o modelo veria o futuro). Já a derivada as-of
+    ``share_head_r3`` (só lutas 1..N-1) sobrevive como feature.
+    """
+    long = pd.DataFrame(
+        [
+            {
+                "bout_id": 1,
+                "corner": Corner.RED,
+                "fighter_id": 10,
+                "result": "win",
+                "head_landed": 20,
+                "reversals": 1,
+                "total_strikes_landed": 40,
+                "share_head_r3": 0.5,
+            },
+            {
+                "bout_id": 1,
+                "corner": Corner.BLUE,
+                "fighter_id": 20,
+                "result": "loss",
+                "head_landed": 10,
+                "reversals": 0,
+                "total_strikes_landed": 25,
+                "share_head_r3": 0.4,
+            },
+        ]
+    )
+
+    result = build_matchup_matrix(long)
+
+    # A derivada as-of é feature (nos dois cantos e no diferencial).
+    assert "share_head_r3_a" in result.feature_columns
+    assert "share_head_r3_b" in result.feature_columns
+    assert "share_head_r3_diff" in result.feature_columns
+    # Os splits raw da luta corrente NÃO são feature (nem *_a/*_b nem *_diff).
+    for base in ("head_landed", "reversals", "total_strikes_landed"):
+        assert f"{base}_a" not in result.feature_columns
+        assert f"{base}_b" not in result.feature_columns
+        assert f"{base}_diff" not in result.feature_columns
+        # E o diferencial nem sequer é calculado (fora dos diferenciais).
+        assert f"{base}_diff" not in result.frame.columns
+
+
 def test_cli_stage_matchup_loga_baseline(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
