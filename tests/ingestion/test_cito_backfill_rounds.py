@@ -356,6 +356,42 @@ def test_run_backfill_rounds_fixture_popula_e_e_idempotente(db_session: Session)
     assert db_session.scalar(select(func.count()).select_from(BoutFighterRound)) == 2
 
 
+def test_run_backfill_rounds_pula_evento_com_slug_nao_derivavel(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CA-05: evento não-numerado (slug não-derivável) é PULADO com aviso; o run não aborta.
+
+    Um 'UFC Fight Night' na janela não deriva slug Cito (a única convenção confirmada por dado real
+    é 'ufc-<n>'); sem heurística silenciosa, o backfill o pula, conta no summary e segue para o
+    evento numerado, que é processado normalmente. Nenhum fetch é disparado para o evento pulado
+    (o cliente registra só o slug numerado).
+    """
+    # Fight Night (não-numerado) mais antigo -> processado primeiro na ordem cronológica (date, id).
+    _seed_event_bout(
+        db_session,
+        name="UFC Fight Night: Silva vs. Costa",
+        event_date=date(2020, 5, 9),
+        red_name="Anderson Silva",
+        blue_name="Uriah Hall",
+    )
+    _seed_ufc319(db_session)
+    budget = CallBudget(limit=10)
+    client = _RecordingClient(budget)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    with caplog.at_level(logging.WARNING, logger="ingestion.cito.backfill_rounds"):
+        summary = run_backfill_rounds(db_session, client, budget, cache)
+    db_session.flush()
+
+    assert summary.events_skipped == 1
+    assert summary.events_processed == 1
+    assert summary.rounds_inserted == 2  # só os rounds do evento numerado (UFC 319)
+    # O evento pulado nunca tocou o cliente; só o numerado foi buscado.
+    assert client.fetched == ["ufc-319"]
+    assert db_session.scalar(select(func.count()).select_from(BoutFighterRound)) == 2
+    assert "pulado" in caplog.text.lower()
+
+
 def test_run_backfill_rounds_savepoint_reverte_so_o_evento_com_falha(db_session: Session) -> None:
     """CA-06: falha no matching de um evento reverte só aquele evento (sem parcial), via SAVEPOINT.
 

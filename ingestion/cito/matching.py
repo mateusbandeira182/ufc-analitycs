@@ -61,8 +61,11 @@ _DEFAULT_FIXTURE_DIR = (
 
 # Identificador numerado de um evento no ``name`` persistido (ex.: 'UFC 319: ...' -> 'ufc-319').
 # A chave natural de ``events`` é ``(name, date)`` -- não há coluna ``slug``; o slug Cito é
-# derivado do nome. Formatos não-numerados ('UFC Fight Night: ...') não derivam slug nesta slice
-# e levantam claro (a Slice 05 estende com teste, sem heurística silenciosa).
+# derivado do nome. A única convenção de slug Cito confirmada por dado real (fixtures
+# ``event_stats_ufc-<n>.json``) é 'ufc-<n>', derivada do prefixo numerado. Formatos não-numerados
+# ('UFC Fight Night: ...', 'UFC on ESPN/ABC: ...') NÃO têm convenção derivável com segurança sem
+# dado da Cito -- ``event_cito_slug`` levanta ``UnsupportedEventSlugError`` e o backfill (Slice 05)
+# pula o evento com aviso, sem heurística silenciosa (nunca chutar e casar o evento errado).
 _EVENT_SLUG_PATTERN = re.compile(r"^\s*UFC\s+(\d+)\b", re.IGNORECASE)
 
 
@@ -72,6 +75,20 @@ class BoutFighterMatchError(Exception):
 
 class AmbiguousBoutFighterMatchError(BoutFighterMatchError):
     """Nome casa com >1 ``bout_fighter`` do evento -- nunca duplicar/mesclar em silêncio."""
+
+
+class UnsupportedEventSlugError(ValueError):
+    """O ``name`` do evento não permite derivar um slug Cito com segurança (sem heurística).
+
+    Subclasse de ``ValueError`` para preservar o contrato anterior de ``event_cito_slug`` (que já
+    levantava ``ValueError`` para nomes fora do formato numerado) -- quem captura ``ValueError``
+    continua funcionando. É levantada para os formatos **não-numerados** ('UFC Fight Night: ...',
+    'UFC on ESPN: ...', 'UFC on ABC: ...' etc.): a única convenção de slug Cito confirmada por dado
+    real (fixtures ``event_stats_ufc-<n>.json``) é 'ufc-<n>', derivada do prefixo numerado; não há
+    dado da Cito que confirme como esses formatos são slugificados, então derivar um seria chutar e
+    arriscar casar o evento errado. O backfill round-a-round (Slice 05) captura este erro tipado e
+    **pula** o evento com aviso -- nunca casa em silêncio nem aborta o run inteiro.
+    """
 
 
 @dataclass(frozen=True)
@@ -96,15 +113,18 @@ class MatchReport:
 def event_cito_slug(event: Event) -> str:
     """Deriva o slug Cito a partir do ``name`` do evento persistido ('UFC 319: ...' -> 'ufc-319').
 
-    Usado numa única chamada ``fetch_event_stats`` por evento (persisted-driven). Um ``name`` fora
-    do formato numerado não deriva slug em silêncio -- levanta ``ValueError`` claro (a Slice 05
-    estende para outros formatos com teste dedicado).
+    Usado numa única chamada ``fetch_event_stats`` por evento (persisted-driven). Só o formato
+    **numerado** ('UFC <n>') tem convenção de slug confirmada por dado real ('ufc-<n>'). Um ``name``
+    fora desse formato (Fight Night, 'UFC on ESPN/ABC', etc.) não deriva slug em silêncio -- levanta
+    ``UnsupportedEventSlugError`` (subtipo de ``ValueError``), pois chutar a slugificação sem dado
+    da Cito arriscaria casar o evento errado. Quem chama trata o erro (o backfill pula o evento).
     """
     match = _EVENT_SLUG_PATTERN.match(event.name)
     if match is None:
-        raise ValueError(
+        raise UnsupportedEventSlugError(
             f"Nome de evento {event.name!r} não segue o formato numerado 'UFC <n>'; "
-            "a derivação do slug Cito só cobre eventos numerados nesta slice."
+            "a derivação do slug Cito só cobre eventos numerados (a única convenção confirmada por "
+            "dado real da Cito). Formatos não-numerados são pulados pelo backfill, sem chutar."
         )
     return f"ufc-{match.group(1)}"
 
@@ -201,13 +221,13 @@ def _find_event_by_cito_slug(session: Session, event_slug: str) -> Event:
     """Localiza o ``Event`` persistido cujo ``event_cito_slug`` bate com ``event_slug``.
 
     Percorre os eventos e compara o slug derivado do ``name``; eventos com nome fora do formato
-    numerado são ignorados (não são candidatos a um slug 'ufc-<n>'). Nenhum candidato ->
-    ``BoutFighterMatchError`` claro.
+    numerado (``UnsupportedEventSlugError``) são ignorados (não são candidatos a um slug 'ufc-<n>').
+    Nenhum candidato -> ``BoutFighterMatchError`` claro.
     """
     for event in session.scalars(select(Event)):
         try:
             candidate_slug = event_cito_slug(event)
-        except ValueError:
+        except UnsupportedEventSlugError:
             continue
         if candidate_slug == event_slug:
             return event

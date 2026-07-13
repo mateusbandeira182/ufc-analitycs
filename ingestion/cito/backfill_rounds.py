@@ -15,6 +15,10 @@ Invariantes (reuso dos padrões do M1, ``ingestion.incremental``)
   ``total_strikes_*`` fica ``None``.
 - **SAVEPOINT por evento** (``session.begin_nested``): uma falha no meio de um evento (ambiguidade
   de matching, estouro de quota) reverte só aquele evento, sem parcial -- retry idempotente.
+- **Skip do slug não-derivável**: eventos cujo ``name`` não deriva slug Cito
+  (``UnsupportedEventSlugError`` -- formatos não-numerados como 'UFC Fight Night: ...') são pulados
+  com ``logger.warning`` e contados em ``events_skipped``, sem abortar o run nem casar em silêncio
+  (sem heurística silenciosa). Ambiguidade e estouro de quota, ao contrário, seguem falhando alto.
 - **``CallBudget`` cobrado por fetch não-cacheado**: o cliente cobra a cada ``fetch_event_stats``;
   um cache hit não chama o cliente, logo não cobra. Estourar o teto levanta ``QuotaExceededError``
   antes de gastar.
@@ -48,7 +52,11 @@ from apps.events.models import Event
 from ingestion.cito.cache import EventStatsCache
 from ingestion.cito.client import CallBudget, CitoClient, QuotaExceededError
 from ingestion.cito.dto import CitoRoundStatLine
-from ingestion.cito.matching import event_cito_slug, resolve_bout_fighter_ids
+from ingestion.cito.matching import (
+    UnsupportedEventSlugError,
+    event_cito_slug,
+    resolve_bout_fighter_ids,
+)
 from ingestion.incremental import resolve_call_budget
 from mma_analytics.db import SessionLocal
 from mma_analytics.settings import settings
@@ -179,9 +187,10 @@ def upsert_bout_fighter_rounds(
 
 @dataclass(frozen=True)
 class BackfillRoundsSummary:
-    """Resumo observável do backfill: eventos processados, rounds inseridos, hits e quota gasta."""
+    """Resumo observável do backfill: eventos processados/pulados, rounds, hits e quota gasta."""
 
     events_processed: int
+    events_skipped: int
     rounds_inserted: int
     cache_hits: int
     cito_calls_used: int
@@ -191,10 +200,11 @@ class BackfillRoundsSummary:
 def _log_backfill_summary(summary: BackfillRoundsSummary, limit: int) -> None:
     """Emite o resumo do backfill via ``logging`` (``print`` é proibido)."""
     logger.info(
-        "Resumo do backfill round-a-round (source=%s): eventos processados=%d; "
+        "Resumo do backfill round-a-round (source=%s): eventos processados=%d; eventos pulados=%d; "
         "rounds inseridos=%d; cache hits=%d; chamadas Cito=%d/%d",
         summary.source,
         summary.events_processed,
+        summary.events_skipped,
         summary.rounds_inserted,
         summary.cache_hits,
         summary.cito_calls_used,
@@ -218,14 +228,33 @@ def run_backfill_rounds(
     04) e grava os rounds via ``upsert_bout_fighter_rounds``. Uma falha no meio de um evento reverte
     só aquele evento e propaga (retry idempotente, sem parcial). Entre eventos **não-cacheados**
     aplica o rate-limit (``sleeper``). Opera sobre a ``Session`` recebida; o commit é do chamador.
+
+    Eventos cujo ``name`` não deriva slug Cito (``UnsupportedEventSlugError`` -- formatos
+    não-numerados, ex.: 'UFC Fight Night: ...') são **pulados** com ``logger.warning`` e contados
+    em ``events_skipped``, **antes** do SAVEPOINT: o loop segue para o próximo evento, sem casar em
+    silêncio nem abortar o run. Uma ambiguidade de matching ou estouro de quota, ao contrário,
+    continua **falhando alto** (invariante de entity resolution / gate de quota).
     """
     events = _select_events_in_window(session)
     last_index = len(events) - 1
     rounds_inserted = 0
     cache_hits = 0
+    events_skipped = 0
     for index, event in enumerate(events):
+        try:
+            slug = event_cito_slug(event)
+        except UnsupportedEventSlugError:
+            logger.warning(
+                "Evento %r (id %d) pulado: slug Cito não derivável do nome (formato não-numerado); "
+                "sem heurística silenciosa, o backfill segue para o próximo evento.",
+                event.name,
+                event.id,
+            )
+            events_skipped += 1
+            continue
+
         with session.begin_nested():
-            stats, cache_hit = cache.get_or_fetch(event_cito_slug(event), client.fetch_event_stats)
+            stats, cache_hit = cache.get_or_fetch(slug, client.fetch_event_stats)
             bf_ids = resolve_bout_fighter_ids(session, event, stats)
             lines_by_bf: dict[int, list[CitoRoundStatLine]] = {}
             for line in stats.round_stats:
@@ -244,7 +273,8 @@ def run_backfill_rounds(
             sleeper(min_interval_seconds)
 
     summary = BackfillRoundsSummary(
-        events_processed=len(events),
+        events_processed=len(events) - events_skipped,
+        events_skipped=events_skipped,
         rounds_inserted=rounds_inserted,
         cache_hits=cache_hits,
         cito_calls_used=budget.used,

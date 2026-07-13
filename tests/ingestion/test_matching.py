@@ -30,6 +30,7 @@ from ingestion.cito.matching import (
     AmbiguousBoutFighterMatchError,
     BoutFighterMatchError,
     MatchReport,
+    UnsupportedEventSlugError,
     _slug_to_normalized_name,
     event_cito_slug,
     resolve_bout_fighter_ids,
@@ -125,6 +126,41 @@ def test_event_cito_slug_nome_nao_numerado_levanta() -> None:
     """CA-04: um nome fora do formato numerado não deriva slug em silêncio -- levanta claro."""
     with pytest.raises(ValueError, match="UFC"):
         event_cito_slug(_event(name="UFC Fight Night: Silva vs. Costa"))
+
+
+def test_unsupported_event_slug_error_e_value_error() -> None:
+    """Contrato: ``UnsupportedEventSlugError`` é um ``ValueError`` (preserva o contrato anterior).
+
+    ``event_cito_slug`` já levantava ``ValueError`` para nomes fora do formato numerado; o erro
+    tipado especializa esse contrato sem quebrar quem captura ``ValueError`` (ex.:
+    ``_find_event_by_cito_slug``).
+    """
+    assert issubclass(UnsupportedEventSlugError, ValueError)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "UFC Fight Night: Silva vs. Costa",
+        "UFC on ESPN: Whittaker vs. Costa",
+        "UFC on ABC: Emmett vs. Topuria",
+    ],
+)
+def test_event_cito_slug_formato_nao_numerado_levanta_unsupported(name: str) -> None:
+    """CA-04/05: formato não-numerado não deriva slug em silêncio -> ``UnsupportedEventSlugError``.
+
+    A única convenção de slug Cito confirmada por dado real (fixtures ``event_stats_ufc-<n>.json``)
+    é 'ufc-<n>', derivada do prefixo numerado; derivar um slug para esses formatos sem dado da Cito
+    seria chutar e arriscar casar o evento errado (invariante "sem heurística silenciosa"). O
+    backfill da Slice 05 captura este erro tipado e pula o evento com aviso.
+    """
+    with pytest.raises(UnsupportedEventSlugError):
+        event_cito_slug(_event(name=name))
+
+
+def test_event_cito_slug_numerado_continua_derivando() -> None:
+    """Regressão: o formato numerado 'UFC <n>' segue derivando 'ufc-<n>'."""
+    assert event_cito_slug(_event(name="UFC 300: Pereira vs. Hill")) == "ufc-300"
 
 
 def test_slug_to_normalized_name_reusa_normalize_name() -> None:
