@@ -23,3 +23,5 @@ web/.env
 web/.vite
 # Logs do devcontainer (a API sobe em background via post-start.sh)
 .devcontainer/logs/
+# Artefato do modelo preditivo (fase 2): binário reconstrutível por python -m analysis.train
+/analysis/artifacts/

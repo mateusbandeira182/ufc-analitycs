@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28.1",
     "fastapi>=0.139.0",
     "uvicorn[standard]>=0.30",
+    "scikit-learn>=1.9.0",
 ]
 
 [dependency-groups]
@@ -89,6 +90,12 @@ follow_imports = "skip"
 [[tool.mypy.overrides]]
 # kagglehub não distribui stubs; usado só no caminho opcional de download.
 module = ["kagglehub", "kagglehub.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scikit-learn e joblib não distribuem stubs; usados na camada de análise (fase 2).
+# O estimador e a persistência são fronteira dinâmica, tipada na borda (analysis.*).
+module = ["sklearn", "sklearn.*", "joblib", "joblib.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

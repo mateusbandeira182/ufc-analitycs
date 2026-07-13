@@ -10,7 +10,7 @@ lint:
 	uv run ruff format --check .
 
 typecheck:
-	uv run mypy mma_analytics apps ingestion tests conftest.py alembic/env.py
+	uv run mypy mma_analytics apps ingestion analysis tests conftest.py alembic/env.py
 
 test: test-db
 	APP_ENV=test uv run pytest
@@ -20,7 +20,7 @@ format:
 	uv run ruff check --fix .
 
 security:
-	uv run bandit -c pyproject.toml -r apps ingestion mma_analytics
+	uv run bandit -c pyproject.toml -r apps ingestion mma_analytics analysis
 	uv run pip-audit
 
 # Cria o banco de teste no Postgres compartilhado, se ainda não existir.
