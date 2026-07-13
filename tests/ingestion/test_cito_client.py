@@ -17,8 +17,14 @@ import httpx
 import pytest
 
 from apps.bouts.enums import Corner
-from ingestion.cito.client import CitoClient, CitoError, CitoRateLimitError
-from ingestion.cito.dto import CitoBoutStats, CitoEvent
+from ingestion.cito.client import (
+    CallBudget,
+    CitoClient,
+    CitoError,
+    CitoRateLimitError,
+    QuotaExceededError,
+)
+from ingestion.cito.dto import CitoBoutStats, CitoEvent, CitoEventStats
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _EVENT_ID = "ufc-319"
@@ -139,3 +145,92 @@ def test_fetch_bout_stats_via_http_parseia_payload_com_auth_e_path() -> None:
     request = captured["request"]
     assert request.url.path == f"/api/v1/ufc/bouts/{bout_id}/stats"
     assert request.headers["x-api-key"] == "token-fake"
+
+
+def test_fetch_event_stats_no_modo_fixture_devolve_dto_tipado() -> None:
+    """CA-04: em modo fixture, ``fetch_event_stats`` devolve ``CitoEventStats`` desembrulhado.
+
+    Os splits chegam parseados (``"41 of 120"`` -> ``(41, 120)``) e o ``controlTime`` em segundos,
+    tanto no total (``bout_stats``) quanto no round-a-round (``round_stats``).
+    """
+    stats = _fixture_client().fetch_event_stats(_EVENT_ID)
+
+    assert isinstance(stats, CitoEventStats)
+    assert len(stats.bout_stats) == 2
+    assert len(stats.round_stats) == 2
+
+    by_corner = {line.corner: line for line in stats.bout_stats}
+    assert by_corner[Corner.RED].sig_strikes == (41, 120)
+    assert by_corner[Corner.BLUE].control_time_seconds == 1300
+
+    first_round = stats.round_stats[0]
+    assert first_round.round == 1
+    assert first_round.control_time_seconds == 10
+
+
+def test_fetch_event_stats_cobra_orcamento_antes_de_servir() -> None:
+    """CA-04: com ``CallBudget(limit=0)``, ``fetch_event_stats`` estoura antes de servir."""
+    budget = CallBudget(limit=0)
+    client = CitoClient(
+        token="", base_url="https://api.citoapi.com", fixture_dir=_FIXTURES, budget=budget
+    )
+
+    with pytest.raises(QuotaExceededError):
+        client.fetch_event_stats(_EVENT_ID)
+    assert budget.used == 0
+
+
+def test_fetch_event_stats_via_http_usa_path_e_auth_corretos() -> None:
+    """CA-04: no caminho HTTP, usa ``GET /events/{slug}/stats`` com header ``x-api-key``."""
+    payload = json.loads((_FIXTURES / f"event_stats_{_EVENT_ID}.json").read_text(encoding="utf-8"))
+    captured: dict[str, httpx.Request] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json=payload)
+
+    client = CitoClient(
+        token="token-fake",
+        base_url="https://api.citoapi.com",
+        transport=httpx.MockTransport(handler),
+    )
+
+    stats = client.fetch_event_stats(_EVENT_ID)
+
+    assert isinstance(stats, CitoEventStats)
+    assert len(stats.bout_stats) == 2
+
+    request = captured["request"]
+    assert request.url.path == f"/events/{_EVENT_ID}/stats"
+    assert request.headers["x-api-key"] == "token-fake"
+
+
+def test_fetch_event_stats_rate_limit_vira_cito_rate_limit_error() -> None:
+    """CA-04: resposta 429 no endpoint de stats vira ``CitoRateLimitError``."""
+    with pytest.raises(CitoRateLimitError):
+        _mock_client(429).fetch_event_stats(_EVENT_ID)
+
+
+def test_fetch_event_stats_erro_servidor_vira_cito_error() -> None:
+    """CA-04: resposta 503 vira ``CitoError`` (não ``CitoRateLimitError``)."""
+    with pytest.raises(CitoError) as excinfo:
+        _mock_client(503).fetch_event_stats(_EVENT_ID)
+    assert not isinstance(excinfo.value, CitoRateLimitError)
+
+
+def test_fetch_event_stats_envelope_success_false_vira_cito_error() -> None:
+    """CA-04: envelope com ``success=false`` propaga ``CitoError`` (payload inválido)."""
+    payload = json.loads((_FIXTURES / f"event_stats_{_EVENT_ID}.json").read_text(encoding="utf-8"))
+    payload["success"] = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = CitoClient(
+        token="token-fake",
+        base_url="https://api.citoapi.com",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(CitoError):
+        client.fetch_event_stats(_EVENT_ID)

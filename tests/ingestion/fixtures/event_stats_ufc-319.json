@@ -1,0 +1,83 @@
+{
+  "success": true,
+  "data": {
+    "boutStats": [
+      {
+        "boutId": "ufc-319-bout-1",
+        "corner": "red",
+        "fighterSlug": "dricus-du-plessis",
+        "knockdowns": 0,
+        "sigStrikes": "41 of 120",
+        "head": "20 of 80",
+        "body": "12 of 25",
+        "leg": "9 of 15",
+        "distance": "30 of 100",
+        "clinch": "6 of 12",
+        "ground": "5 of 8",
+        "takedowns": "0 of 2",
+        "submissionAttempts": 0,
+        "reversals": 0,
+        "controlTime": "0:30",
+        "unknownField": "ignorado pelo extra=ignore"
+      },
+      {
+        "boutId": "ufc-319-bout-1",
+        "corner": "blue",
+        "fighterSlug": "khamzat-chimaev",
+        "knockdowns": 0,
+        "sigStrikes": "130 of 180",
+        "head": "90 of 130",
+        "body": "25 of 35",
+        "leg": "15 of 15",
+        "distance": "40 of 60",
+        "clinch": "10 of 15",
+        "ground": "80 of 105",
+        "takedowns": "12 of 21",
+        "submissionAttempts": 2,
+        "reversals": 0,
+        "controlTime": "21:40"
+      }
+    ],
+    "roundStats": [
+      {
+        "boutId": "ufc-319-bout-1",
+        "corner": "red",
+        "fighterSlug": "dricus-du-plessis",
+        "round": 1,
+        "knockdowns": 0,
+        "sigStrikes": "12 of 30",
+        "head": "6 of 18",
+        "body": "3 of 7",
+        "leg": "3 of 5",
+        "distance": "9 of 25",
+        "clinch": "2 of 3",
+        "ground": "1 of 2",
+        "takedowns": "0 of 1",
+        "submissionAttempts": 0,
+        "reversals": 0,
+        "controlTime": "0:10"
+      },
+      {
+        "boutId": "ufc-319-bout-1",
+        "corner": "blue",
+        "fighterSlug": "khamzat-chimaev",
+        "round": 1,
+        "knockdowns": 0,
+        "sigStrikes": "28 of 40",
+        "head": "18 of 28",
+        "body": "6 of 8",
+        "leg": "4 of 4",
+        "distance": "10 of 15",
+        "clinch": "3 of 5",
+        "ground": "15 of 20",
+        "takedowns": "3 of 5",
+        "submissionAttempts": 1,
+        "reversals": 0,
+        "controlTime": "4:20"
+      }
+    ]
+  },
+  "meta": {
+    "source": "cito"
+  }
+}
