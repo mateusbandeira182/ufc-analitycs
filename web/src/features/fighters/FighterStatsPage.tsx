@@ -7,6 +7,7 @@ import { Link, useParams } from "react-router";
 import { ApiError } from "@/api/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FighterStatsFilters } from "@/features/fighters/FighterStatsFilters";
+import { FighterStrikingProfile } from "@/features/fighters/FighterStrikingProfile";
 import {
   DEFAULT_STATS_FILTER,
   deriveFighterStats,
@@ -69,7 +70,10 @@ export function FighterStatsPage() {
         </h1>
       </header>
 
-      <FighterStatsBody fighterId={fighterId} />
+      <div className="grid gap-12">
+        <FighterStatsBody fighterId={fighterId} />
+        <FighterStrikingProfile fighterId={fighterId} />
+      </div>
     </section>
   );
 }

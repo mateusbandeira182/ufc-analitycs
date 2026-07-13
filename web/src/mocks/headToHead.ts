@@ -1,4 +1,5 @@
 import type { BoutDetailOut, BoutFighterStatsOut } from "@/api/schema";
+import { NULL_STRIKE_SPLITS } from "@/mocks/strikeSplits";
 
 /*
   Fixtures de confronto direto (head-to-head) para os testes e handlers MSW.
@@ -24,6 +25,7 @@ function stats(
     takedowns_attempted: 3,
     submission_attempts: 0,
     control_time_seconds: 96,
+    ...NULL_STRIKE_SPLITS,
     source: "kaggle",
     ...overrides,
   };
@@ -49,6 +51,10 @@ const JONES_VS_VOLKANOVSKI: BoutDetailOut[] = [
     round: 2,
     ending_time_seconds: 84,
     weight_class: "Light Heavyweight",
+    title_bout: false,
+    scheduled_rounds: 3,
+    referee: "Herb Dean",
+    rounds: [],
     source: "kaggle",
     fighters: [
       stats(1, "Jon Jones", "red", { knockdowns: 1 }),

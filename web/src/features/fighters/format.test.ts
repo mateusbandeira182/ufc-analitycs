@@ -7,6 +7,7 @@ import {
   formatMethod,
   formatReach,
   formatResult,
+  formatWeight,
 } from "@/features/fighters/format";
 
 describe("formatMethod", () => {
@@ -73,5 +74,19 @@ describe("formatReach", () => {
   it("formata o alcance em centímetros e traço quando nulo", () => {
     expect(formatReach(215)).toBe("215 cm");
     expect(formatReach(null)).toBe("—");
+  });
+});
+
+describe("formatWeight", () => {
+  it("formata o peso inteiro em quilos sem casa decimal", () => {
+    expect(formatWeight(93)).toBe("93 kg");
+  });
+
+  it("formata o peso fracionário com uma casa em pt-BR (vírgula)", () => {
+    expect(formatWeight(70.3)).toBe("70,3 kg");
+  });
+
+  it("retorna traço quando o peso é nulo", () => {
+    expect(formatWeight(null)).toBe("—");
   });
 });

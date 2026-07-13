@@ -8,6 +8,7 @@ import {
   resolveResult,
 } from "@/features/bouts/format";
 import { DASH } from "@/lib/format";
+import { NULL_STRIKE_SPLITS } from "@/mocks/strikeSplits";
 
 /*
   Funções puras de apresentação da luta. A duração (tempo de encerramento e tempo
@@ -29,6 +30,7 @@ function stats(
     takedowns_attempted: 5,
     submission_attempts: 1,
     control_time_seconds: 315,
+    ...NULL_STRIKE_SPLITS,
     source: "kaggle",
     ...overrides,
   };
@@ -49,6 +51,10 @@ function bout(overrides: Partial<BoutDetailOut> = {}): BoutDetailOut {
     round: 3,
     ending_time_seconds: 300,
     weight_class: "Light Heavyweight",
+    title_bout: false,
+    scheduled_rounds: 3,
+    referee: "Herb Dean",
+    rounds: [],
     source: "kaggle",
     fighters: [
       stats({ fighter_id: 1, name: "Jon Jones", corner: "red" }),

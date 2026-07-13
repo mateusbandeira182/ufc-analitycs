@@ -210,7 +210,7 @@ export interface components {
         };
         /**
          * BoutDetailOut
-         * @description Detalhe de uma luta: evento, resultado e os dois cantos com stats granulares.
+         * @description Detalhe de uma luta: evento, resultado, contexto, cantos e round-a-round.
          */
         BoutDetailOut: {
             /** Id */
@@ -225,10 +225,18 @@ export interface components {
             ending_time_seconds: number | null;
             /** Weight Class */
             weight_class: string | null;
+            /** Title Bout */
+            title_bout: boolean | null;
+            /** Scheduled Rounds */
+            scheduled_rounds: number | null;
+            /** Referee */
+            referee: string | null;
             /** Source */
             source: string;
             /** Fighters */
             fighters: components["schemas"]["BoutFighterStatsOut"][];
+            /** Rounds */
+            rounds: components["schemas"]["BoutFighterRoundOut"][];
         };
         /**
          * BoutEventOut
@@ -246,6 +254,68 @@ export interface components {
             date: string;
             /** Location */
             location: string | null;
+            /** Source */
+            source: string;
+        };
+        /**
+         * BoutFighterRoundOut
+         * @description Stats de um lutador num round (uma linha de ``bout_fighter_rounds``).
+         *
+         *     ``fighter_id`` e ``corner`` identificam o canto dono do round (herdados do
+         *     ``bout_fighter``, que é o dono do enum ``corner`` -- a tabela de rounds não o
+         *     duplica). ``round`` é o número do round. Todas as stats são granulares por
+         *     round e nullable (a Cito preenche o round-a-round só a partir de 2019).
+         */
+        BoutFighterRoundOut: {
+            /** Fighter Id */
+            fighter_id: number;
+            corner: components["schemas"]["Corner"];
+            /** Round */
+            round: number;
+            /** Knockdowns */
+            knockdowns: number | null;
+            /** Sig Strikes Landed */
+            sig_strikes_landed: number | null;
+            /** Sig Strikes Attempted */
+            sig_strikes_attempted: number | null;
+            /** Takedowns Landed */
+            takedowns_landed: number | null;
+            /** Takedowns Attempted */
+            takedowns_attempted: number | null;
+            /** Submission Attempts */
+            submission_attempts: number | null;
+            /** Control Time Seconds */
+            control_time_seconds: number | null;
+            /** Total Strikes Landed */
+            total_strikes_landed: number | null;
+            /** Total Strikes Attempted */
+            total_strikes_attempted: number | null;
+            /** Head Landed */
+            head_landed: number | null;
+            /** Head Attempted */
+            head_attempted: number | null;
+            /** Body Landed */
+            body_landed: number | null;
+            /** Body Attempted */
+            body_attempted: number | null;
+            /** Leg Landed */
+            leg_landed: number | null;
+            /** Leg Attempted */
+            leg_attempted: number | null;
+            /** Distance Landed */
+            distance_landed: number | null;
+            /** Distance Attempted */
+            distance_attempted: number | null;
+            /** Clinch Landed */
+            clinch_landed: number | null;
+            /** Clinch Attempted */
+            clinch_attempted: number | null;
+            /** Ground Landed */
+            ground_landed: number | null;
+            /** Ground Attempted */
+            ground_attempted: number | null;
+            /** Reversals */
+            reversals: number | null;
             /** Source */
             source: string;
         };
@@ -273,6 +343,36 @@ export interface components {
             submission_attempts: number | null;
             /** Control Time Seconds */
             control_time_seconds: number | null;
+            /** Total Strikes Landed */
+            total_strikes_landed: number | null;
+            /** Total Strikes Attempted */
+            total_strikes_attempted: number | null;
+            /** Head Landed */
+            head_landed: number | null;
+            /** Head Attempted */
+            head_attempted: number | null;
+            /** Body Landed */
+            body_landed: number | null;
+            /** Body Attempted */
+            body_attempted: number | null;
+            /** Leg Landed */
+            leg_landed: number | null;
+            /** Leg Attempted */
+            leg_attempted: number | null;
+            /** Distance Landed */
+            distance_landed: number | null;
+            /** Distance Attempted */
+            distance_attempted: number | null;
+            /** Clinch Landed */
+            clinch_landed: number | null;
+            /** Clinch Attempted */
+            clinch_attempted: number | null;
+            /** Ground Landed */
+            ground_landed: number | null;
+            /** Ground Attempted */
+            ground_attempted: number | null;
+            /** Reversals */
+            reversals: number | null;
             /** Source */
             source: string;
         };
@@ -386,6 +486,8 @@ export interface components {
             /** Reach Cm */
             reach_cm: number | null;
             stance: components["schemas"]["Stance"] | null;
+            /** Weight Kg */
+            weight_kg: number | null;
             /** Wins */
             wins: number;
             /** Losses */
@@ -402,6 +504,8 @@ export interface components {
          *     Não inclui ``source``: RF-09 se aplica a schemas de item; o agregado é
          *     computado e mistura origens (kaggle/cito), não é um registro único (decisão
          *     do plano 003-06). Médias ``None`` quando não há valor a agregar.
+         *     ``striking_profile`` traz os shares de golpe por alvo/posição, agregados on
+         *     demand a partir dos splits granulares do M5.
          */
         FighterStatsOut: {
             /** Fighter Id */
@@ -418,6 +522,7 @@ export interface components {
             wins_by_method: {
                 [key: string]: number;
             };
+            striking_profile: components["schemas"]["StrikingProfileOut"];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -468,6 +573,28 @@ export interface components {
          * @enum {string}
          */
         Stance: "orthodox" | "southpaw" | "switch";
+        /**
+         * StrikingProfileOut
+         * @description Perfil de striking agregado on demand: shares de golpe conectado por grupo.
+         *
+         *     Dois grupos que somam 1 quando definidos: alvo (cabeça/corpo/perna) e posição
+         *     (distância/clinch/solo). Cada share é razão de somas na carreira; denominador
+         *     zero -> ``None`` (nunca ``inf``/``NaN`` no JSON).
+         */
+        StrikingProfileOut: {
+            /** Share Head */
+            share_head: number | null;
+            /** Share Body */
+            share_body: number | null;
+            /** Share Leg */
+            share_leg: number | null;
+            /** Share Distance */
+            share_distance: number | null;
+            /** Share Clinch */
+            share_clinch: number | null;
+            /** Share Ground */
+            share_ground: number | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */

@@ -11,6 +11,7 @@ export type PageFighterOut = components["schemas"]["Page_FighterOut_"];
 export type Stance = components["schemas"]["Stance"];
 export type FighterBoutOut = components["schemas"]["FighterBoutOut"];
 export type FighterStatsOut = components["schemas"]["FighterStatsOut"];
+export type StrikingProfileOut = components["schemas"]["StrikingProfileOut"];
 export type FighterOpponentOut = components["schemas"]["FighterOpponentOut"];
 export type BoutMethod = components["schemas"]["BoutMethod"];
 export type BoutFighterStatsOut = components["schemas"]["BoutFighterStatsOut"];

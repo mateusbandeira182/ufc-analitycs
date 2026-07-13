@@ -3,7 +3,7 @@ import { http, HttpResponse } from "msw";
 import type { HeadToHeadOut, PageEventOut, PageFighterOut } from "@/api/schema";
 import { BOUT_DETAIL_FIXTURES, BOUT_FIXTURES } from "@/mocks/bouts";
 import { EVENT_DETAIL_FIXTURES, EVENT_FIXTURES } from "@/mocks/events";
-import { FIGHTER_FIXTURES } from "@/mocks/fighters";
+import { FIGHTER_FIXTURES, FIGHTER_STATS_FIXTURES } from "@/mocks/fighters";
 import { headToHeadBouts } from "@/mocks/headToHead";
 
 /*
@@ -54,6 +54,17 @@ export const handlers = [
   http.get("*/api/v1/fighters/:id/bouts", ({ params }) => {
     const id = Number(params.id);
     return HttpResponse.json(BOUT_FIXTURES[id] ?? []);
+  }),
+
+  // Estatísticas resumidas do lutador (médias + perfil de striking); 404 quando
+  // o id não existe no acervo.
+  http.get("*/api/v1/fighters/:id/stats", ({ params }) => {
+    const id = Number(params.id);
+    const stats = FIGHTER_STATS_FIXTURES[id];
+    if (!stats) {
+      return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
+    }
+    return HttpResponse.json(stats);
   }),
 
   // Lista de eventos: envelope Page[EventOut], mais recentes primeiro (o backend

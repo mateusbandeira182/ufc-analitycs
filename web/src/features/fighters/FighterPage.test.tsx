@@ -26,6 +26,14 @@ describe("FighterPage", () => {
     expect(screen.getByText("27-1-0")).toBeInTheDocument();
   });
 
+  it("exibe o peso do lutador no cabeçalho", async () => {
+    renderFighterPage(1);
+
+    // Jon Jones (fixture): 93 kg.
+    expect(await screen.findByText("Peso")).toBeInTheDocument();
+    expect(screen.getByText("93 kg")).toBeInTheDocument();
+  });
+
   it("exibe o histórico em ordem cronológica com evento, data, adversário e resultado", async () => {
     renderFighterPage(1);
 

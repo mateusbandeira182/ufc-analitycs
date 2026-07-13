@@ -571,6 +571,39 @@
             ],
             "title": "Weight Class"
           },
+          "title_bout": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Bout"
+          },
+          "scheduled_rounds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled Rounds"
+          },
+          "referee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referee"
+          },
           "source": {
             "type": "string",
             "title": "Source"
@@ -581,6 +614,13 @@
             },
             "type": "array",
             "title": "Fighters"
+          },
+          "rounds": {
+            "items": {
+              "$ref": "#/components/schemas/BoutFighterRoundOut"
+            },
+            "type": "array",
+            "title": "Rounds"
           }
         },
         "type": "object",
@@ -592,11 +632,15 @@
           "round",
           "ending_time_seconds",
           "weight_class",
+          "title_bout",
+          "scheduled_rounds",
+          "referee",
           "source",
-          "fighters"
+          "fighters",
+          "rounds"
         ],
         "title": "BoutDetailOut",
-        "description": "Detalhe de uma luta: evento, resultado e os dois cantos com stats granulares."
+        "description": "Detalhe de uma luta: evento, resultado, contexto, cantos e round-a-round."
       },
       "BoutEventOut": {
         "properties": {
@@ -639,6 +683,298 @@
         ],
         "title": "BoutEventOut",
         "description": "Evento resumido exposto no detalhe da luta."
+      },
+      "BoutFighterRoundOut": {
+        "properties": {
+          "fighter_id": {
+            "type": "integer",
+            "title": "Fighter Id"
+          },
+          "corner": {
+            "$ref": "#/components/schemas/Corner"
+          },
+          "round": {
+            "type": "integer",
+            "title": "Round"
+          },
+          "knockdowns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knockdowns"
+          },
+          "sig_strikes_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sig Strikes Landed"
+          },
+          "sig_strikes_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sig Strikes Attempted"
+          },
+          "takedowns_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Takedowns Landed"
+          },
+          "takedowns_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Takedowns Attempted"
+          },
+          "submission_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submission Attempts"
+          },
+          "control_time_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Control Time Seconds"
+          },
+          "total_strikes_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Strikes Landed"
+          },
+          "total_strikes_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Strikes Attempted"
+          },
+          "head_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Landed"
+          },
+          "head_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Attempted"
+          },
+          "body_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Landed"
+          },
+          "body_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Attempted"
+          },
+          "leg_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leg Landed"
+          },
+          "leg_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leg Attempted"
+          },
+          "distance_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Landed"
+          },
+          "distance_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Attempted"
+          },
+          "clinch_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinch Landed"
+          },
+          "clinch_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinch Attempted"
+          },
+          "ground_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Landed"
+          },
+          "ground_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Attempted"
+          },
+          "reversals": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversals"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fighter_id",
+          "corner",
+          "round",
+          "knockdowns",
+          "sig_strikes_landed",
+          "sig_strikes_attempted",
+          "takedowns_landed",
+          "takedowns_attempted",
+          "submission_attempts",
+          "control_time_seconds",
+          "total_strikes_landed",
+          "total_strikes_attempted",
+          "head_landed",
+          "head_attempted",
+          "body_landed",
+          "body_attempted",
+          "leg_landed",
+          "leg_attempted",
+          "distance_landed",
+          "distance_attempted",
+          "clinch_landed",
+          "clinch_attempted",
+          "ground_landed",
+          "ground_attempted",
+          "reversals",
+          "source"
+        ],
+        "title": "BoutFighterRoundOut",
+        "description": "Stats de um lutador num round (uma linha de ``bout_fighter_rounds``).\n\n``fighter_id`` e ``corner`` identificam o canto dono do round (herdados do\n``bout_fighter``, que \u00e9 o dono do enum ``corner`` -- a tabela de rounds n\u00e3o o\nduplica). ``round`` \u00e9 o n\u00famero do round. Todas as stats s\u00e3o granulares por\nround e nullable (a Cito preenche o round-a-round s\u00f3 a partir de 2019)."
       },
       "BoutFighterStatsOut": {
         "properties": {
@@ -730,6 +1066,171 @@
             ],
             "title": "Control Time Seconds"
           },
+          "total_strikes_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Strikes Landed"
+          },
+          "total_strikes_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Strikes Attempted"
+          },
+          "head_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Landed"
+          },
+          "head_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Attempted"
+          },
+          "body_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Landed"
+          },
+          "body_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Attempted"
+          },
+          "leg_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leg Landed"
+          },
+          "leg_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leg Attempted"
+          },
+          "distance_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Landed"
+          },
+          "distance_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Attempted"
+          },
+          "clinch_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinch Landed"
+          },
+          "clinch_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinch Attempted"
+          },
+          "ground_landed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Landed"
+          },
+          "ground_attempted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Attempted"
+          },
+          "reversals": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversals"
+          },
           "source": {
             "type": "string",
             "title": "Source"
@@ -747,6 +1248,21 @@
           "takedowns_attempted",
           "submission_attempts",
           "control_time_seconds",
+          "total_strikes_landed",
+          "total_strikes_attempted",
+          "head_landed",
+          "head_attempted",
+          "body_landed",
+          "body_attempted",
+          "leg_landed",
+          "leg_attempted",
+          "distance_landed",
+          "distance_attempted",
+          "clinch_landed",
+          "clinch_attempted",
+          "ground_landed",
+          "ground_attempted",
+          "reversals",
           "source"
         ],
         "title": "BoutFighterStatsOut",
@@ -1027,6 +1543,17 @@
               }
             ]
           },
+          "weight_kg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Kg"
+          },
           "wins": {
             "type": "integer",
             "title": "Wins"
@@ -1053,6 +1580,7 @@
           "height_cm",
           "reach_cm",
           "stance",
+          "weight_kg",
           "wins",
           "losses",
           "draws",
@@ -1110,6 +1638,9 @@
             },
             "type": "object",
             "title": "Wins By Method"
+          },
+          "striking_profile": {
+            "$ref": "#/components/schemas/StrikingProfileOut"
           }
         },
         "type": "object",
@@ -1119,10 +1650,11 @@
           "avg_sig_strikes_landed",
           "avg_takedowns_landed",
           "avg_control_time_seconds",
-          "wins_by_method"
+          "wins_by_method",
+          "striking_profile"
         ],
         "title": "FighterStatsOut",
-        "description": "Estat\u00edsticas resumidas do lutador, computadas on demand (Slice 06).\n\nN\u00e3o inclui ``source``: RF-09 se aplica a schemas de item; o agregado \u00e9\ncomputado e mistura origens (kaggle/cito), n\u00e3o \u00e9 um registro \u00fanico (decis\u00e3o\ndo plano 003-06). M\u00e9dias ``None`` quando n\u00e3o h\u00e1 valor a agregar."
+        "description": "Estat\u00edsticas resumidas do lutador, computadas on demand (Slice 06).\n\nN\u00e3o inclui ``source``: RF-09 se aplica a schemas de item; o agregado \u00e9\ncomputado e mistura origens (kaggle/cito), n\u00e3o \u00e9 um registro \u00fanico (decis\u00e3o\ndo plano 003-06). M\u00e9dias ``None`` quando n\u00e3o h\u00e1 valor a agregar.\n``striking_profile`` traz os shares de golpe por alvo/posi\u00e7\u00e3o, agregados on\ndemand a partir dos splits granulares do M5."
       },
       "HTTPValidationError": {
         "properties": {
@@ -1235,6 +1767,87 @@
         ],
         "title": "Stance",
         "description": "Base (guarda) do lutador."
+      },
+      "StrikingProfileOut": {
+        "properties": {
+          "share_head": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Head"
+          },
+          "share_body": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Body"
+          },
+          "share_leg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Leg"
+          },
+          "share_distance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Distance"
+          },
+          "share_clinch": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Clinch"
+          },
+          "share_ground": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Ground"
+          }
+        },
+        "type": "object",
+        "required": [
+          "share_head",
+          "share_body",
+          "share_leg",
+          "share_distance",
+          "share_clinch",
+          "share_ground"
+        ],
+        "title": "StrikingProfileOut",
+        "description": "Perfil de striking agregado on demand: shares de golpe conectado por grupo.\n\nDois grupos que somam 1 quando definidos: alvo (cabe\u00e7a/corpo/perna) e posi\u00e7\u00e3o\n(dist\u00e2ncia/clinch/solo). Cada share \u00e9 raz\u00e3o de somas na carreira; denominador\nzero -> ``None`` (nunca ``inf``/``NaN`` no JSON)."
       },
       "ValidationError": {
         "properties": {

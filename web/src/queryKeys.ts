@@ -8,6 +8,7 @@ export const queryKeys = {
     ["fighters", params] as const,
   fighter: (id: number) => ["fighter", id] as const,
   fighterBouts: (id: number) => ["fighter", id, "bouts"] as const,
+  fighterStats: (id: number) => ["fighter", id, "stats"] as const,
   events: (params: { limit: number; offset: number }) =>
     ["events", params] as const,
   event: (id: number) => ["event", id] as const,
