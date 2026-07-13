@@ -3,24 +3,13 @@ import { DASH } from "@/lib/format";
 
 /*
   Formatadores específicos da página da luta. Os genéricos (data, método, tempo de
-  encerramento com round) vivem em `@/lib/format`; aqui ficam os de apresentação
-  do box-score granular — duração pura mm:ss e a resolução do vencedor por nome.
-  Promover para `@/lib/format` só quando uma segunda feature precisar.
+  encerramento com round, duração m:ss) vivem em `@/lib/format`; aqui ficam os de
+  apresentação do box-score granular — pares acertados/tentados e a resolução do
+  vencedor por nome. `formatDuration` foi promovido para `@/lib/format` quando a
+  página de estatísticas passou a precisar dele; reexportado aqui para preservar
+  os call sites e testes desta feature.
 */
-
-/**
- * Duração em segundos como `m:ss` (ex.: `315` -> `"5:15"`). Usada tanto no tempo
- * de encerramento quanto no tempo de controle — ambos são segundos inteiros no
- * contrato (decisão de schema; a formatação é apresentação). Traço quando nula.
- */
-export function formatDuration(totalSeconds: number | null): string {
-  if (totalSeconds === null) {
-    return DASH;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes)}:${String(seconds).padStart(2, "0")}`;
-}
+export { formatDuration } from "@/lib/format";
 
 /** Número da stat como texto; preserva o zero e usa traço quando nulo. */
 export function formatStat(value: number | null): string {

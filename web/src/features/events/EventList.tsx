@@ -1,6 +1,11 @@
 import type { ReactNode } from "react";
 
-import { AlertTriangle, CalendarDays, MapPin } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarDays,
+  ChevronRight,
+  MapPin,
+} from "lucide-react";
 import { Link } from "react-router";
 
 import type { EventOut } from "@/api/schema";
@@ -66,35 +71,45 @@ export function EventList({ events, isPending, isError }: EventListProps) {
   );
 }
 
+/**
+ * Entrada do arquivo de eventos: faixa lateral no ouro do cinturão (identidade do
+ * evento, distinta do vermelho do lutador), nome em destaque, a data em
+ * monoespaçada dourada e o local com marcador. A seta convida a abrir o card e
+ * respeita `prefers-reduced-motion`.
+ */
 function EventRow({ event }: { event: EventOut }) {
   return (
     <Link
       to={`/events/${String(event.id)}`}
       className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
-      <Card className="relative flex items-center gap-4 overflow-hidden p-4 transition-colors group-hover:border-primary/60">
-        {/* Faixa de acento — identidade visual do evento. */}
+      <Card className="relative flex items-center gap-4 overflow-hidden p-4 pl-5 transition-colors motion-reduce:transition-none group-hover:border-primary/60">
+        {/* Faixa do cinturão — identidade do evento. */}
         <span
           aria-hidden="true"
-          className="absolute inset-y-0 left-0 w-1 bg-primary"
+          className="absolute inset-y-0 left-0 w-1 bg-belt-gold/70"
         />
-        <div className="min-w-0 flex-1 pl-2">
-          <h2 className="truncate font-display text-lg font-semibold uppercase tracking-wide">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate font-display text-lg font-semibold uppercase tracking-wide transition-colors motion-reduce:transition-none group-hover:text-primary">
             {event.name}
           </h2>
-          <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs uppercase tracking-wide text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs uppercase tracking-wide">
+            <span className="inline-flex items-center gap-1.5 font-mono tabular-nums text-belt-gold">
               <CalendarDays aria-hidden="true" className="size-3.5" />
               {formatIsoDate(event.date)}
             </span>
             {event.location ? (
-              <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1 text-muted-foreground">
                 <MapPin aria-hidden="true" className="size-3.5" />
                 {event.location}
               </span>
             ) : null}
           </p>
         </div>
+        <ChevronRight
+          aria-hidden="true"
+          className="size-5 shrink-0 text-muted-foreground/40 transition-transform motion-reduce:transition-none group-hover:translate-x-0.5 group-hover:text-primary"
+        />
       </Card>
     </Link>
   );

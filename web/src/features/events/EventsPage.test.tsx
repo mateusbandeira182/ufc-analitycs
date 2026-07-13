@@ -1,4 +1,5 @@
 import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
@@ -6,10 +7,10 @@ import { EventsPage } from "@/features/events/EventsPage";
 import { server } from "@/mocks/server";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
-function renderEventsPage() {
+function renderEventsPage(initialEntry = "/events") {
   return renderWithProviders(<EventsPage />, {
     routes: [{ path: "/events", element: <EventsPage /> }],
-    initialEntries: ["/events"],
+    initialEntries: [initialEntry],
   });
 }
 
@@ -78,6 +79,45 @@ describe("EventsPage", () => {
 
     expect(
       await screen.findByText(/não foi possível carregar os eventos/i),
+    ).toBeInTheDocument();
+  });
+
+  it("pagina server-side lendo limit/offset da URL", async () => {
+    renderEventsPage("/events?limit=2");
+
+    await screen.findByText("UFC 300");
+    expect(screen.getByText("UFC 299")).toBeInTheDocument();
+    expect(screen.queryByText(/ribas vs\. namajunas/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: /paginação de eventos/i }),
+    ).toHaveTextContent(/página 1 de 2/i);
+  });
+
+  it("avança de página mudando o offset na URL", async () => {
+    const user = userEvent.setup();
+    const { router } = renderEventsPage("/events?limit=2");
+
+    await screen.findByText("UFC 300");
+    await user.click(screen.getByRole("link", { name: /próxima/i }));
+
+    expect(router.state.location.search).toContain("offset=2");
+    expect(
+      await screen.findByText(/ribas vs\. namajunas/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/próxima/i)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
+  it("orienta o usuário quando a página está fora do intervalo", async () => {
+    renderEventsPage("/events?limit=2&offset=10");
+
+    expect(
+      await screen.findByText(/página fora do intervalo/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /primeira página/i }),
     ).toBeInTheDocument();
   });
 });

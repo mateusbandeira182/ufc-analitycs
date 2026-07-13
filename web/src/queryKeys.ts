@@ -4,10 +4,12 @@
   suas chaves aqui (fighter, events, bout, head-to-head).
 */
 export const queryKeys = {
-  fighters: (params: { name: string }) => ["fighters", params] as const,
+  fighters: (params: { name: string; limit: number; offset: number }) =>
+    ["fighters", params] as const,
   fighter: (id: number) => ["fighter", id] as const,
   fighterBouts: (id: number) => ["fighter", id, "bouts"] as const,
-  events: () => ["events"] as const,
+  events: (params: { limit: number; offset: number }) =>
+    ["events", params] as const,
   event: (id: number) => ["event", id] as const,
   bout: (id: number) => ["bout", id] as const,
   headToHead: (a: number | null, b: number | null) =>

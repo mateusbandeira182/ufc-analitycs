@@ -1,5 +1,6 @@
 dist
 coverage
+.vite
 src/api/types.ts
 openapi.json
 package-lock.json

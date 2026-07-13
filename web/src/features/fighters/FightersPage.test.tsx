@@ -76,4 +76,61 @@ describe("FightersPage", () => {
     expect(within(list).queryByText("Jon Jones")).not.toBeInTheDocument();
     expect(router.state.location.search).toContain("name=volkanovski");
   });
+
+  it("pagina server-side lendo limit/offset da URL", async () => {
+    renderFightersPage("/fighters?limit=2");
+
+    await screen.findByText("Jon Jones");
+    expect(screen.getByText("Alexander Volkanovski")).toBeInTheDocument();
+    expect(screen.queryByText("Israel Adesanya")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: /paginação de lutadores/i }),
+    ).toHaveTextContent(/página 1 de 2/i);
+    expect(screen.getByText(/anterior/i)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("link", { name: /próxima/i })).toBeInTheDocument();
+  });
+
+  it("avança de página mudando o offset na URL", async () => {
+    const user = userEvent.setup();
+    const { router } = renderFightersPage("/fighters?limit=2");
+
+    await screen.findByText("Jon Jones");
+    await user.click(screen.getByRole("link", { name: /próxima/i }));
+
+    expect(router.state.location.search).toContain("offset=2");
+    expect(await screen.findByText("Israel Adesanya")).toBeInTheDocument();
+    expect(screen.getByText(/próxima/i)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
+  it("reseta o offset ao mudar o termo de busca", async () => {
+    const user = userEvent.setup();
+    const { router } = renderFightersPage("/fighters?limit=2&offset=2");
+
+    await screen.findByText("Israel Adesanya");
+
+    const search = screen.getByLabelText(/buscar lutador/i);
+    await user.type(search, "jon");
+
+    await waitFor(() => {
+      expect(router.state.location.search).not.toContain("offset");
+    });
+    expect(router.state.location.search).toContain("name=jon");
+  });
+
+  it("orienta o usuário quando a página está fora do intervalo", async () => {
+    renderFightersPage("/fighters?limit=2&offset=10");
+
+    expect(
+      await screen.findByText(/página fora do intervalo/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /primeira página/i }),
+    ).toBeInTheDocument();
+  });
 });

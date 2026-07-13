@@ -10,6 +10,20 @@ import type { BoutMethod } from "@/api/schema";
 /** Traço padrão para valores ausentes (dado anulável do contrato). */
 export const DASH = "—";
 
+/**
+ * Duração em segundos como `m:ss` (ex.: `315` -> `"5:15"`). Compartilhada entre a
+ * página da luta (tempo de encerramento e de controle) e as estatísticas do
+ * lutador (média de tempo de controle). Traço quando nula.
+ */
+export function formatDuration(totalSeconds: number | null): string {
+  if (totalSeconds === null) {
+    return DASH;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes)}:${String(seconds).padStart(2, "0")}`;
+}
+
 const METHOD_LABELS: Record<BoutMethod, string> = {
   ko_tko: "KO/TKO",
   submission: "Finalização",

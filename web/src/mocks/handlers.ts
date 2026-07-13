@@ -8,26 +8,34 @@ import { headToHeadBouts } from "@/mocks/headToHead";
 
 /*
   Handlers MSW espelhando o contrato do M2: GET /api/v1/fighters devolve o
-  envelope paginado Page[FighterOut] e filtra server-side por `name` (substring,
-  case-insensitive), como o backend faz. Os testes podem sobrescrever handlers
-  específicos (erro 500, lista vazia) via server.use(...).
+  envelope paginado Page[FighterOut], filtra server-side por `name` (substring,
+  case-insensitive) e pagina por `limit`/`offset`, como o backend faz. `total`
+  reflete o conjunto filtrado inteiro (não só a página). Os testes podem
+  sobrescrever handlers específicos (erro 500, lista vazia) via server.use(...).
 */
+
+/** Lê `limit`/`offset` da query string com os mesmos padrões do backend. */
+function readPageParams(url: URL): { limit: number; offset: number } {
+  const limit = Number(url.searchParams.get("limit") ?? 50);
+  const offset = Number(url.searchParams.get("offset") ?? 0);
+  return { limit, offset };
+}
+
 export const handlers = [
   http.get("*/api/v1/fighters", ({ request }) => {
-    const name = new URL(request.url).searchParams
-      .get("name")
-      ?.trim()
-      .toLowerCase();
+    const url = new URL(request.url);
+    const name = url.searchParams.get("name")?.trim().toLowerCase();
+    const { limit, offset } = readPageParams(url);
 
-    const items = name
+    const filtered = name
       ? FIGHTER_FIXTURES.filter((f) => f.name.toLowerCase().includes(name))
       : FIGHTER_FIXTURES;
 
     const body: PageFighterOut = {
-      items,
-      total: items.length,
-      limit: 50,
-      offset: 0,
+      items: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      limit,
+      offset,
     };
     return HttpResponse.json(body);
   }),
@@ -48,13 +56,15 @@ export const handlers = [
     return HttpResponse.json(BOUT_FIXTURES[id] ?? []);
   }),
 
-  // Lista de eventos: envelope Page[EventOut], mais recentes primeiro (o backend ordena).
-  http.get("*/api/v1/events", () => {
+  // Lista de eventos: envelope Page[EventOut], mais recentes primeiro (o backend
+  // ordena) e paginado por `limit`/`offset`.
+  http.get("*/api/v1/events", ({ request }) => {
+    const { limit, offset } = readPageParams(new URL(request.url));
     const body: PageEventOut = {
-      items: EVENT_FIXTURES,
+      items: EVENT_FIXTURES.slice(offset, offset + limit),
       total: EVENT_FIXTURES.length,
-      limit: 50,
-      offset: 0,
+      limit,
+      offset,
     };
     return HttpResponse.json(body);
   }),

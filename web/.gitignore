@@ -10,6 +10,9 @@ node_modules/
 dist/
 coverage/
 
+# Cache de pré-bundle do Vite (regenerado a cada dev/build)
+.vite/
+
 # Segredos locais (VITE_API_BASE_URL etc.). O .env.example, se houver, documenta.
 .env
 .env.local

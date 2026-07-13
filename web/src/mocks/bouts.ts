@@ -29,9 +29,24 @@ function stubStats(fighterId: number, name: string): BoutFighterStatsOut {
 }
 
 /*
+  Stats do canto no histórico com box-score preenchido: o histórico em si não
+  exibe o box-score, mas a página de estatísticas recompõe as médias a partir
+  dele (recorte por período / últimas N). Só os três números agregados importam.
+*/
+function historyStats(
+  box: Pick<
+    BoutFighterStatsOut,
+    "sig_strikes_landed" | "takedowns_landed" | "control_time_seconds"
+  >,
+): BoutFighterStatsOut {
+  return { ...stubStats(1, "Jon Jones"), ...box };
+}
+
+/*
   Histórico do lutador 1 (Jon Jones) em ordem cronológica: uma derrota por
   decisão mais antiga e uma vitória por nocaute mais recente. Datas distintas
-  para travar a ordem no teste.
+  para travar a ordem no teste; o box-score alimenta as médias da página de stats
+  (média de golpes 60,0; quedas 1,0; controle 3:24 sobre as duas lutas).
 */
 export const JON_JONES_BOUTS: FighterBoutOut[] = [
   {
@@ -43,7 +58,11 @@ export const JON_JONES_BOUTS: FighterBoutOut[] = [
     round: 3,
     ending_time_seconds: 300,
     won: false,
-    stats: stubStats(1, "Jon Jones"),
+    stats: historyStats({
+      sig_strikes_landed: 50,
+      takedowns_landed: 2,
+      control_time_seconds: 120,
+    }),
     opponent: { fighter_id: 2, name: "Alexander Volkanovski" },
   },
   {
@@ -55,7 +74,11 @@ export const JON_JONES_BOUTS: FighterBoutOut[] = [
     round: 2,
     ending_time_seconds: 255,
     won: true,
-    stats: stubStats(1, "Jon Jones"),
+    stats: historyStats({
+      sig_strikes_landed: 70,
+      takedowns_landed: 0,
+      control_time_seconds: 288,
+    }),
     opponent: { fighter_id: 3, name: "Israel Adesanya" },
   },
 ];

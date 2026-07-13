@@ -2,43 +2,36 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "@/api/client";
-import { getFighters } from "@/features/fighters/getFighters";
+import { getEvents } from "@/features/events/getEvents";
 import { server } from "@/mocks/server";
 
-describe("getFighters", () => {
+describe("getEvents", () => {
   it("desembrulha o envelope Page e devolve itens e total", async () => {
-    const result = await getFighters();
+    const result = await getEvents();
 
     expect(result.total).toBe(3);
     expect(result.items).toHaveLength(3);
-    expect(result.items[0]?.name).toBe("Jon Jones");
-  });
-
-  it("filtra server-side pelo parâmetro name", async () => {
-    const result = await getFighters({ name: "volkanovski" });
-
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]?.name).toBe("Alexander Volkanovski");
+    expect(result.items[0]?.name).toBe("UFC 300");
   });
 
   it("pagina server-side por limit/offset e devolve a janela do envelope", async () => {
-    const result = await getFighters({ limit: 2, offset: 2 });
+    const result = await getEvents({ limit: 2, offset: 2 });
 
     expect(result.total).toBe(3);
     expect(result.limit).toBe(2);
     expect(result.offset).toBe(2);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0]?.name).toBe("Israel Adesanya");
+    expect(result.items[0]?.name).toMatch(/ribas vs\. namajunas/i);
   });
 
   it("lança ApiError com o status quando o backend responde com erro", async () => {
     server.use(
-      http.get("*/api/v1/fighters", () =>
+      http.get("*/api/v1/events", () =>
         HttpResponse.json({ detail: "boom" }, { status: 500 }),
       ),
     );
 
-    await expect(getFighters()).rejects.toBeInstanceOf(ApiError);
-    await expect(getFighters()).rejects.toMatchObject({ status: 500 });
+    await expect(getEvents()).rejects.toBeInstanceOf(ApiError);
+    await expect(getEvents()).rejects.toMatchObject({ status: 500 });
   });
 });
