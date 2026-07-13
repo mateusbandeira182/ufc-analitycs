@@ -25,8 +25,10 @@ Decisoes desta slice (confirmadas contra o dataset real):
 
 from __future__ import annotations
 
+import argparse
 import logging
-from collections.abc import Mapping
+import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -41,7 +43,13 @@ from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
 from ingestion.normalize import normalize_name
-from ingestion.sources.kaggle import load_event_details, load_fight_details
+from ingestion.sources.kaggle import (
+    EVENT_DETAILS_FILE,
+    FIGHT_DETAILS_FILE,
+    load_event_details,
+    load_fight_details,
+)
+from mma_analytics.db import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +114,50 @@ _STAT_FIGHT_COLUMNS: tuple[str, ...] = tuple(
     f"{prefix}_{suffix}" for prefix in ("r", "b") for suffix in _STAT_COLUMN_BY_FIELD.values()
 )
 _FIGHT_COLUMNS: tuple[str, ...] = _CORE_FIGHT_COLUMNS + _STAT_FIGHT_COLUMNS
+
+# --- Backfill M5 (Slice 02): splits de golpe totais + contexto da luta, do CSV do seed --------
+#
+# O ``fight_details.csv`` do seed (ADR 0002) já traz, ~100% preenchidos e nunca ingeridos, os
+# golpes por alvo/posição (totais da luta) e o contexto (title fight, rounds agendados, árbitro).
+# O backfill faz UPDATE idempotente por chave natural nas linhas já persistidas -- 0 quota Cito.
+
+# Campo do model ``BoutFighter`` (WIDE) -> sufixo da coluna de split no CSV (prefixado por canto).
+# Só pares landed/attempted: ``*_acc``/``*_per`` são deriváveis (SPEC "Fora do escopo") e não
+# entram. ``reversals`` NÃO tem coluna no ``fight_details.csv`` do seed -- permanece ``NULL`` aqui
+# (virá do ``roundStats`` da Cito na Slice 05); não se inventa valor.
+_SPLIT_COLUMN_BY_FIELD: dict[str, str] = {
+    "total_strikes_landed": "total_str_landed",
+    "total_strikes_attempted": "total_str_atmpted",
+    "head_landed": "head_landed",
+    "head_attempted": "head_atmpted",
+    "body_landed": "body_landed",
+    "body_attempted": "body_atmpted",
+    "leg_landed": "leg_landed",
+    "leg_attempted": "leg_atmpted",
+    "distance_landed": "dist_landed",
+    "distance_attempted": "dist_atmpted",
+    "clinch_landed": "clinch_landed",
+    "clinch_attempted": "clinch_atmpted",
+    "ground_landed": "ground_landed",
+    "ground_attempted": "ground_atmpted",
+}
+
+# Colunas de contexto da luta (tabela ``bouts``), presentes na linha do ``fight_details.csv``.
+_TITLE_FIGHT_COL = "title_fight"
+_TOTAL_ROUNDS_COL = "total_rounds"
+_REFEREE_COL = "referee"
+
+_SPLIT_FIGHT_COLUMNS: tuple[str, ...] = tuple(
+    f"{prefix}_{suffix}" for prefix in ("r", "b") for suffix in _SPLIT_COLUMN_BY_FIELD.values()
+)
+_CONTEXT_FIGHT_COLUMNS: tuple[str, ...] = (_TITLE_FIGHT_COL, _TOTAL_ROUNDS_COL, _REFEREE_COL)
+# Colunas projetadas pelo backfill: core (para resolver as FKs) + splits + contexto.
+_BACKFILL_COLUMNS: tuple[str, ...] = (
+    _CORE_FIGHT_COLUMNS + _SPLIT_FIGHT_COLUMNS + _CONTEXT_FIGHT_COLUMNS
+)
+
+# Variável de ambiente que aponta o diretório local do dataset (paridade com ``ingestion.seed``).
+_ENV_DATASET_DIR = "SEED_DATASET_DIR"
 
 
 class BoutCore(TypedDict):
@@ -221,6 +273,71 @@ def build_bout_fighter(
     )
 
 
+class BoutContext(TypedDict):
+    """Contexto da luta (tabela ``bouts``) lido do CSV do seed -- fronteira dinâmica tipada."""
+
+    title_bout: bool | None
+    scheduled_rounds: int | None
+    referee: str | None
+
+
+def _parse_optional_bool(value: str) -> bool | None:
+    """Converte a flag textual do CSV (``"1"``/``"1.0"`` -> ``True``; ``"0"``/``"0.0"`` ->
+    ``False``) em booleano; vazio ou valor inesperado degrada para ``None`` (com log)."""
+    stripped = value.strip()
+    if stripped in ("1", "1.0"):
+        return True
+    if stripped in ("0", "0.0"):
+        return False
+    if stripped:
+        logger.warning("Flag booleana inesperada %r; degradada para None", stripped)
+    return None
+
+
+def _parse_optional_split(value: str) -> int | None:
+    """Como ``_parse_optional_int``, mas degrada célula não-parseável para ``None`` (com log).
+
+    O split do ``fight_details.csv`` é ~100% preenchido; uma célula não-numérica é anomalia
+    pontual de dado -- não erro de programa. Degrada graciosamente para ``None`` (CA-01),
+    simétrico ao ``_parse_optional_bool``, em vez de abortar o backfill inteiro. A ausência
+    (``""``) segue virando ``None`` pelo próprio ``_parse_optional_int`` (sem log). Restringido
+    ao split de propósito: não mascara valor malformado em campos core (``round``/tempo/rounds
+    agendados), que continuam levantando via ``_parse_optional_int``.
+    """
+    try:
+        return _parse_optional_int(value)
+    except ValueError:
+        logger.warning("Valor de split não numérico %r; degradado para None", value)
+        return None
+
+
+def build_bout_fighter_splits(row: Mapping[str, str], corner: Corner) -> dict[str, int | None]:
+    """Extrai os 7 grupos de split (landed/attempted) daquele canto da linha crua da luta.
+
+    Lê as colunas ``{r,b}_{total_str/head/body/leg/dist/clinch/ground}_{landed,atmpted}``;
+    valor ausente/malformado vira ``None`` (função pura, sem I/O). ``reversals`` **não** vem do
+    CSV do seed (permanece fora do dicionário -- será populado da Cito na Slice 05).
+    """
+    prefix = _CORNER_PREFIX[corner]
+    return {
+        field: _parse_optional_split(row[f"{prefix}_{suffix}"])
+        for field, suffix in _SPLIT_COLUMN_BY_FIELD.items()
+    }
+
+
+def map_bout_context(row: Mapping[str, str]) -> BoutContext:
+    """Mapeia o contexto da luta (title fight, rounds agendados, árbitro) -- função pura.
+
+    ``title_bout`` degrada ausência/valor inesperado para ``None``; ``scheduled_rounds`` reusa o
+    parser numérico da borda; ``referee`` vazio (após trim) vira ``None``.
+    """
+    return BoutContext(
+        title_bout=_parse_optional_bool(row[_TITLE_FIGHT_COL]),
+        scheduled_rounds=_parse_optional_int(row[_TOTAL_ROUNDS_COL]),
+        referee=row[_REFEREE_COL].strip() or None,
+    )
+
+
 def build_fighter_index(session: Session) -> dict[str, int]:
     """Indexa os fighters persistidos por nome normalizado -> id.
 
@@ -310,19 +427,23 @@ def _existing_bout_fighter_keys(session: Session) -> set[tuple[int, int]]:
 
 
 def _merge_fight_rows(
-    fight_details: pd.DataFrame, event_details: pd.DataFrame
+    fight_details: pd.DataFrame,
+    event_details: pd.DataFrame,
+    columns: tuple[str, ...] = _FIGHT_COLUMNS,
 ) -> list[dict[str, str]]:
     """Combina as bordas: anexa ``date`` (por ``event_id``) e ``winner`` (por ``fight_id``).
 
-    Tipa a borda dinamica do Pandas -- cada celula consumida vira texto; nenhum ``Any`` do
-    ``DataFrame`` propaga para o dominio.
+    Projeta apenas ``columns`` do ``fight_details`` (default: core + box-score do seed; o backfill
+    do M5 passa ``_BACKFILL_COLUMNS`` para trazer splits + contexto). Tipa a borda dinamica do
+    Pandas -- cada celula consumida vira texto; nenhum ``Any`` do ``DataFrame`` propaga para o
+    dominio.
     """
     date_by_event = _first_by_key(event_details, _EVENT_ID_COL, _DATE_COL)
     winner_by_fight = _first_by_key(event_details, _FIGHT_ID_COL, _WINNER_COL)
 
     rows: list[dict[str, str]] = []
-    for record in fight_details[list(_FIGHT_COLUMNS)].to_dict(orient="records"):
-        row = {column: str(record[column]) for column in _FIGHT_COLUMNS}
+    for record in fight_details[list(columns)].to_dict(orient="records"):
+        row = {column: str(record[column]) for column in columns}
         row[_DATE_COL] = date_by_event.get(row[_EVENT_ID_COL], "")
         row[_WINNER_COL] = winner_by_fight.get(row[_FIGHT_ID_COL], "")
         rows.append(row)
@@ -419,3 +540,161 @@ def seed_bouts(
     fight_details = load_fight_details(fight_details_path)
     event_details = load_event_details(event_details_path)
     return load_bouts(session, fight_details, event_details)
+
+
+# --- Backfill M5 (Slice 02): UPDATE idempotente de splits + contexto (0 quota Cito) ----------
+
+
+@dataclass(frozen=True)
+class BackfillResult:
+    """Resumo observável do backfill: linhas atualizadas e lutas puladas (idempotência/skip)."""
+
+    bouts_updated: int
+    bout_fighters_updated: int
+    skipped: int
+
+
+def _existing_bout_by_key(session: Session) -> dict[tuple[int, int, int], Bout]:
+    """Indexa os ``Bout`` persistidos pela chave natural ``(event_id, low_fid, high_fid)``.
+
+    Devolve o **objeto** ORM (não o id) para que o backfill sete atributos diretamente (UPDATE).
+    Lutas sem exatamente dois cantos ficam fora do índice (não é uma luta completa a atualizar).
+    """
+    fighter_ids_by_bout: dict[int, list[int]] = {}
+    for bout_id, fighter_id in session.execute(select(BoutFighter.bout_id, BoutFighter.fighter_id)):
+        fighter_ids_by_bout.setdefault(bout_id, []).append(fighter_id)
+
+    index: dict[tuple[int, int, int], Bout] = {}
+    for bout in session.scalars(select(Bout)):
+        fighter_ids = fighter_ids_by_bout.get(bout.id, [])
+        if len(fighter_ids) != 2:
+            continue
+        index[_bout_key(bout.event_id, fighter_ids[0], fighter_ids[1])] = bout
+    return index
+
+
+def _existing_bout_fighter_by_key(session: Session) -> dict[tuple[int, int], BoutFighter]:
+    """Indexa os ``BoutFighter`` persistidos por ``(bout_id, fighter_id)`` -> objeto ORM."""
+    return {(bf.bout_id, bf.fighter_id): bf for bf in session.scalars(select(BoutFighter))}
+
+
+def backfill_splits_and_context(
+    session: Session, fight_details: pd.DataFrame, event_details: pd.DataFrame
+) -> BackfillResult:
+    """Faz UPDATE idempotente dos splits (``bout_fighters``) e do contexto (``bouts``) do CSV.
+
+    Caminho **distinto** do seed: carrega os objetos ORM já persistidos por chave natural (evento
+    + par não-ordenado de fighter_ids; ``(bout_id, fighter_id)`` por canto) e seta os atributos --
+    **nunca** insere. Luta/linha sem correspondência já semeada é **pulada** (contada em
+    ``skipped``), nunca criada. Grava/preserva ``source="kaggle"``. Rodar de novo mantém contagem
+    e conteúdo (o UPDATE por atributo é naturalmente idempotente). Zero chamadas à Cito.
+    """
+    fighter_index = build_fighter_index(session)
+    event_index = build_event_index(session)
+    bout_by_key = _existing_bout_by_key(session)
+    bout_fighter_by_key = _existing_bout_fighter_by_key(session)
+
+    bouts_updated = 0
+    bout_fighters_updated = 0
+    skipped = 0
+
+    for row in _merge_fight_rows(fight_details, event_details, _BACKFILL_COLUMNS):
+        fks = resolve_bout_fks(row, fighter_index, event_index)
+        if fks is None:
+            skipped += 1
+            logger.warning(
+                "Backfill: luta %s (%s vs %s) sem FK resolvida; pulada",
+                row[_FIGHT_ID_COL],
+                row[_R_NAME_COL],
+                row[_B_NAME_COL],
+            )
+            continue
+
+        event_id, red_id, blue_id = fks
+        bout = bout_by_key.get(_bout_key(event_id, red_id, blue_id))
+        if bout is None:
+            skipped += 1
+            logger.warning(
+                "Backfill: luta %s (%s vs %s) ainda não semeada; pulada (não cria linha)",
+                row[_FIGHT_ID_COL],
+                row[_R_NAME_COL],
+                row[_B_NAME_COL],
+            )
+            continue
+
+        context = map_bout_context(row)
+        bout.title_bout = context["title_bout"]
+        bout.scheduled_rounds = context["scheduled_rounds"]
+        bout.referee = context["referee"]
+        bout.source = SOURCE
+        bouts_updated += 1
+
+        for corner, fighter_id in ((Corner.RED, red_id), (Corner.BLUE, blue_id)):
+            bout_fighter = bout_fighter_by_key.get((bout.id, fighter_id))
+            if bout_fighter is None:
+                continue
+            for field, value in build_bout_fighter_splits(row, corner).items():
+                setattr(bout_fighter, field, value)
+            bout_fighter.source = SOURCE
+            bout_fighters_updated += 1
+
+    session.flush()
+    logger.info(
+        "Backfill de splits + contexto: %d bouts atualizados, %d bout_fighters atualizados, "
+        "%d lutas puladas",
+        bouts_updated,
+        bout_fighters_updated,
+        skipped,
+    )
+    return BackfillResult(
+        bouts_updated=bouts_updated,
+        bout_fighters_updated=bout_fighters_updated,
+        skipped=skipped,
+    )
+
+
+def _parse_backfill_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    """Interpreta os argumentos de linha de comando do backfill."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Backfill dos splits totais + contexto da luta a partir do CSV do seed "
+            "(UPDATE idempotente, source=kaggle, 0 quota Cito)."
+        ),
+    )
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Diretório local com fight_details.csv e event_details.csv. Omitido: baixa o "
+            "dataset via kagglehub. Alternativa: variável SEED_DATASET_DIR."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Entrypoint de ``python -m ingestion.seed_bouts``: backfill de splits + contexto e commit.
+
+    A lógica testável (``backfill_splits_and_context``) é isolada; ``main`` é fino e escapa à
+    transação de teste (por isso commita). Pressupõe o banco já semeado (M0): faz UPDATE nas
+    linhas existentes, nunca INSERT. Reporta via ``logging`` (``print`` é proibido).
+    """
+    logging.basicConfig(level=logging.INFO)
+    args = _parse_backfill_args(argv)
+    raw_env_dir = os.environ.get(_ENV_DATASET_DIR)
+    dataset_dir = args.dataset_dir or (Path(raw_env_dir) if raw_env_dir else None)
+    fight_path = dataset_dir / FIGHT_DETAILS_FILE if dataset_dir is not None else None
+    event_path = dataset_dir / EVENT_DETAILS_FILE if dataset_dir is not None else None
+
+    fight_details = load_fight_details(fight_path)
+    event_details = load_event_details(event_path)
+    with SessionLocal() as session:
+        result = backfill_splits_and_context(session, fight_details, event_details)
+        session.commit()
+
+    logger.info("Backfill de splits + contexto concluído: %s", result)
+
+
+if __name__ == "__main__":
+    main()
