@@ -86,8 +86,10 @@ def test_bout_fighters_tem_stats_granulares_e_corner() -> None:
         "control_time_seconds",
     }
     assert granulares <= colunas
-    # Nenhuma coluna de média/agregação destrutiva é modelada.
-    assert not {c for c in colunas if c.startswith(("avg_", "mean_", "total_"))}
+    # Guard anti-agregação: proíbe média pré-agregada destrutiva (``avg_``/``mean_``).
+    # ``total_strikes_landed/attempted`` (M5, ADR 0004) são contagens granulares POR
+    # LUTA, não agregados de carreira -- por isso o prefixo ``total_`` não é barrado.
+    assert not {c for c in colunas if c.startswith(("avg_", "mean_"))}
 
 
 def test_bouts_ending_time_em_segundos() -> None:

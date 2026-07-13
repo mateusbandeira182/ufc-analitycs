@@ -32,6 +32,8 @@ class Fighter(Base):
     stance: Mapped[Stance | None] = mapped_column(
         Enum(Stance, name="stance", values_callable=lambda enum: [m.value for m in enum])
     )
+    # Atributo físico estático opcional (M5 -- ADR 0004): peso em quilogramas.
+    weight_kg: Mapped[float | None]
     # Cartel snapshot do dataset (recálculo a partir de bouts é do M2).
     wins: Mapped[int]
     losses: Mapped[int]

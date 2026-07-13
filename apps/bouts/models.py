@@ -42,6 +42,11 @@ class Bout(Base):
     round: Mapped[int | None]
     ending_time_seconds: Mapped[int | None]  # Decisão #3: segundos, não mm:ss
     weight_class: Mapped[str | None] = mapped_column(String(64))
+    # Contexto de luta (M5 -- ADR 0004). Aditivo/nullable: preenchido pelo backfill
+    # do CSV do seed (Slice 02), com origem ``kaggle``.
+    title_bout: Mapped[bool | None]
+    scheduled_rounds: Mapped[int | None]
+    referee: Mapped[str | None] = mapped_column(String(128))
     source: Mapped[str] = mapped_column(String(32))
 
     # Relationship ORM (só leitura, sem migration): os cantos desta luta, ordenados
@@ -74,9 +79,72 @@ class BoutFighter(Base):
     takedowns_attempted: Mapped[int | None]
     submission_attempts: Mapped[int | None]
     control_time_seconds: Mapped[int | None]
+    # Splits de golpe (WIDE, atributo 1:1 do canto -- ADR 0004). Nullable: só serão
+    # preenchidos pelo backfill do CSV do seed (Slice 02). São contagens granulares
+    # POR LUTA (não médias): acurácia/distribuição derivam-se on demand.
+    total_strikes_landed: Mapped[int | None]
+    total_strikes_attempted: Mapped[int | None]
+    head_landed: Mapped[int | None]
+    head_attempted: Mapped[int | None]
+    body_landed: Mapped[int | None]
+    body_attempted: Mapped[int | None]
+    leg_landed: Mapped[int | None]
+    leg_attempted: Mapped[int | None]
+    distance_landed: Mapped[int | None]
+    distance_attempted: Mapped[int | None]
+    clinch_landed: Mapped[int | None]
+    clinch_attempted: Mapped[int | None]
+    ground_landed: Mapped[int | None]
+    ground_attempted: Mapped[int | None]
+    reversals: Mapped[int | None]
     source: Mapped[str] = mapped_column(String(32))
 
     # Relationship ORM (só leitura, sem migration): a identidade do lutador daquele
     # canto. Carregado via ``selectinload`` nos selectors que expõem o nome (detalhe
     # da luta, head-to-head, histórico, card do evento), evitando N+1.
     fighter: Mapped[Fighter] = relationship()
+
+
+class BoutFighterRound(Base):
+    """Stats por canto POR ROUND (granularidade nova -- ADR 0004).
+
+    Uma linha por lutador-por-luta-por-round, com o **conjunto completo** de stats
+    (os 7 base + os 15 splits do RF-01), que o ``roundStats`` da Cito expõe
+    (confirmado no piloto). Populada pelo backfill da Cito (Slice 05), origem
+    ``cito``.
+
+    Sem coluna ``corner``: o canto é o de ``bout_fighter_id`` (não se duplica o
+    enum ``corner``, dono: ``bout_fighters``). Unicidade ``(bout_fighter_id, round)``
+    garante idempotência do backfill.
+    """
+
+    __tablename__ = "bout_fighter_rounds"
+    __table_args__ = (UniqueConstraint("bout_fighter_id", "round", name="uq_bout_fighter_round"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bout_fighter_id: Mapped[int] = mapped_column(ForeignKey("bout_fighters.id"), index=True)
+    round: Mapped[int]
+    # Conjunto completo por round: 7 base + 15 splits (todas nullable).
+    knockdowns: Mapped[int | None]
+    sig_strikes_landed: Mapped[int | None]
+    sig_strikes_attempted: Mapped[int | None]
+    takedowns_landed: Mapped[int | None]
+    takedowns_attempted: Mapped[int | None]
+    submission_attempts: Mapped[int | None]
+    control_time_seconds: Mapped[int | None]
+    total_strikes_landed: Mapped[int | None]
+    total_strikes_attempted: Mapped[int | None]
+    head_landed: Mapped[int | None]
+    head_attempted: Mapped[int | None]
+    body_landed: Mapped[int | None]
+    body_attempted: Mapped[int | None]
+    leg_landed: Mapped[int | None]
+    leg_attempted: Mapped[int | None]
+    distance_landed: Mapped[int | None]
+    distance_attempted: Mapped[int | None]
+    clinch_landed: Mapped[int | None]
+    clinch_attempted: Mapped[int | None]
+    ground_landed: Mapped[int | None]
+    ground_attempted: Mapped[int | None]
+    reversals: Mapped[int | None]
+    source: Mapped[str] = mapped_column(String(32))
