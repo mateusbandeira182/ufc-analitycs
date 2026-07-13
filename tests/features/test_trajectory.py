@@ -486,7 +486,7 @@ def test_load_round_stats_le_bout_fighter_rounds_por_conexao(db_session: Session
     """CA-02: ``load_round_stats`` lê ``bout_fighter_rounds`` (não-commitado) via conexão.
 
     Enxerga o estado semeado dentro da transação (como ``load_fighters_bio``), expondo
-    ``bout_id``/``fighter_id``/``round`` mais a stat por round, via a junção com
+    ``bout_id``/``fighter_id``/``round_number`` mais a stat por round, via a junção com
     ``bout_fighters``.
     """
     hero = _add_fighter(db_session, "Alexander Volkanovski", dob=date(1988, 9, 29))
@@ -500,8 +500,8 @@ def test_load_round_stats_le_bout_fighter_rounds_por_conexao(db_session: Session
 
     rounds = load_round_stats(db_session.connection())
 
-    assert set(rounds.columns) >= {"bout_id", "fighter_id", "round", "sig_strikes_landed"}
-    do_hero = rounds.loc[rounds["fighter_id"] == hero.id].sort_values("round")
-    assert do_hero["round"].tolist() == [1, 2, 3]
+    assert set(rounds.columns) >= {"bout_id", "fighter_id", "round_number", "sig_strikes_landed"}
+    do_hero = rounds.loc[rounds["fighter_id"] == hero.id].sort_values("round_number")
+    assert do_hero["round_number"].tolist() == [1, 2, 3]
     assert do_hero["sig_strikes_landed"].tolist() == [12, 8, 5]
     assert set(do_hero["bout_id"]) == {bout.id}

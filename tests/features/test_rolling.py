@@ -19,6 +19,7 @@ from apps.bouts.enums import BoutMethod
 from ingestion.features.rolling import (
     COL_BOUT_ID,
     COL_FIGHTER_ID,
+    COL_ROUND_NUMBER,
     COL_SIG_STRIKES_LANDED,
     CONTROL_TIME_AVG_R3,
     FINISH_RATE_PRIOR,
@@ -544,11 +545,11 @@ def _round_stats_for_a() -> pd.DataFrame:
     """Round-a-round só do lutador A: luta 101 (r1=15,r2=5) e 102 (r1=10,r2=10,r3=10)."""
     return pd.DataFrame(
         [
-            {COL_BOUT_ID: 101, COL_FIGHTER_ID: 1, "round": 1, COL_SIG_STRIKES_LANDED: 15},
-            {COL_BOUT_ID: 101, COL_FIGHTER_ID: 1, "round": 2, COL_SIG_STRIKES_LANDED: 5},
-            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, "round": 1, COL_SIG_STRIKES_LANDED: 10},
-            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, "round": 2, COL_SIG_STRIKES_LANDED: 10},
-            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, "round": 3, COL_SIG_STRIKES_LANDED: 10},
+            {COL_BOUT_ID: 101, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 1, COL_SIG_STRIKES_LANDED: 15},
+            {COL_BOUT_ID: 101, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 2, COL_SIG_STRIKES_LANDED: 5},
+            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 1, COL_SIG_STRIKES_LANDED: 10},
+            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 2, COL_SIG_STRIKES_LANDED: 10},
+            {COL_BOUT_ID: 102, COL_FIGHTER_ID: 1, COL_ROUND_NUMBER: 3, COL_SIG_STRIKES_LANDED: 10},
         ]
     )
 
@@ -579,7 +580,9 @@ def test_round_dynamics_degrada_para_nan_sem_round_a_round() -> None:
 
 def test_round_dynamics_round_stats_vazio_tudo_nan() -> None:
     """CA-02: sem nenhum round-a-round no banco, a feature existe e é toda NaN."""
-    vazio = pd.DataFrame(columns=[COL_BOUT_ID, COL_FIGHTER_ID, "round", COL_SIG_STRIKES_LANDED])
+    vazio = pd.DataFrame(
+        columns=[COL_BOUT_ID, COL_FIGHTER_ID, COL_ROUND_NUMBER, COL_SIG_STRIKES_LANDED]
+    )
 
     out = add_round_dynamics_features(_round_long_frame(), vazio)
 

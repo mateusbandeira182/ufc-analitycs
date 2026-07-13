@@ -40,10 +40,14 @@ COL_FIGHTER_ID = "fighter_id"
 COL_BOUT_ID = "bout_id"
 COL_RESULT = "result"
 COL_METHOD = "method"
-COL_ROUND = "round"
+# Round de TÉRMINO da luta na frame longa (uma linha por lutador-luta).
+COL_FIGHT_END_ROUND = "round"
 COL_ENDING_TIME_SECONDS = "ending_time_seconds"
 COL_SIG_STRIKES_LANDED = "sig_strikes_landed"
-COL_ROUND_NUMBER = "round"
+# NÚMERO do round na frame round-a-round (``load_round_stats``). String distinta de
+# ``COL_FIGHT_END_ROUND`` de propósito: as duas frames têm semânticas diferentes de "round" e
+# nunca devem colidir caso sejam unidas no futuro.
+COL_ROUND_NUMBER = "round_number"
 COL_TAKEDOWNS_LANDED = "takedowns_landed"
 COL_TAKEDOWNS_ATTEMPTED = "takedowns_attempted"
 COL_CONTROL_TIME_SECONDS = "control_time_seconds"
@@ -158,7 +162,7 @@ def _fight_minutes(frame: pd.DataFrame) -> pd.Series:
     Lutas com ``round`` ou ``ending_time_seconds`` nulos produzem ``NaN`` -- propagado (não
     mascarado) nas taxas por minuto daquela luta.
     """
-    return (frame[COL_ROUND] - 1) * _ROUND_MINUTES + frame[COL_ENDING_TIME_SECONDS] / 60.0
+    return (frame[COL_FIGHT_END_ROUND] - 1) * _ROUND_MINUTES + frame[COL_ENDING_TIME_SECONDS] / 60.0
 
 
 def _opponent_stats(frame: pd.DataFrame) -> pd.DataFrame:

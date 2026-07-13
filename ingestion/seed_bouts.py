@@ -21,14 +21,20 @@ Decisoes desta slice (confirmadas contra o dataset real):
   tem unicidade ``(bout_id, fighter_id)`` e usa get-or-create nessa chave.
 - Lutas cujo lutador/evento nao resolve (ex.: homonimo ambiguo por nome, sem DOB no
   ``fight_details``) sao registradas em log e puladas -- nunca se insere luta com FK inventada.
+
+Este modulo tambem provê o **backfill M5 (Slice 02)**: ``backfill_splits_and_context`` faz UPDATE
+idempotente dos splits totais (``bout_fighters``) e do contexto da luta (``bouts``) a partir do
+mesmo CSV do seed (``source="kaggle"``, 0 quota Cito), reusando pesadamente os internos do seed
+(resolução de FKs, chave natural, índices em memória) -- por isso a lógica mora aqui, junto do
+seed, e não em módulo separado. O CLI operacional desse backfill vive no entrypoint fino
+``ingestion.backfill_splits_context`` (``python -m ingestion.backfill_splits_context``); este
+módulo não expõe ``main`` próprio (a orquestração do seed M0 vive em ``ingestion.seed``).
 """
 
 from __future__ import annotations
 
-import argparse
 import logging
-import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -43,13 +49,7 @@ from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
 from ingestion.normalize import normalize_name
-from ingestion.sources.kaggle import (
-    EVENT_DETAILS_FILE,
-    FIGHT_DETAILS_FILE,
-    load_event_details,
-    load_fight_details,
-)
-from mma_analytics.db import SessionLocal
+from ingestion.sources.kaggle import load_event_details, load_fight_details
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +155,6 @@ _CONTEXT_FIGHT_COLUMNS: tuple[str, ...] = (_TITLE_FIGHT_COL, _TOTAL_ROUNDS_COL, 
 _BACKFILL_COLUMNS: tuple[str, ...] = (
     _CORE_FIGHT_COLUMNS + _SPLIT_FIGHT_COLUMNS + _CONTEXT_FIGHT_COLUMNS
 )
-
-# Variável de ambiente que aponta o diretório local do dataset (paridade com ``ingestion.seed``).
-_ENV_DATASET_DIR = "SEED_DATASET_DIR"
 
 
 class BoutCore(TypedDict):
@@ -651,50 +648,3 @@ def backfill_splits_and_context(
         bout_fighters_updated=bout_fighters_updated,
         skipped=skipped,
     )
-
-
-def _parse_backfill_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    """Interpreta os argumentos de linha de comando do backfill."""
-    parser = argparse.ArgumentParser(
-        description=(
-            "Backfill dos splits totais + contexto da luta a partir do CSV do seed "
-            "(UPDATE idempotente, source=kaggle, 0 quota Cito)."
-        ),
-    )
-    parser.add_argument(
-        "--dataset-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Diretório local com fight_details.csv e event_details.csv. Omitido: baixa o "
-            "dataset via kagglehub. Alternativa: variável SEED_DATASET_DIR."
-        ),
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: Sequence[str] | None = None) -> None:
-    """Entrypoint de ``python -m ingestion.seed_bouts``: backfill de splits + contexto e commit.
-
-    A lógica testável (``backfill_splits_and_context``) é isolada; ``main`` é fino e escapa à
-    transação de teste (por isso commita). Pressupõe o banco já semeado (M0): faz UPDATE nas
-    linhas existentes, nunca INSERT. Reporta via ``logging`` (``print`` é proibido).
-    """
-    logging.basicConfig(level=logging.INFO)
-    args = _parse_backfill_args(argv)
-    raw_env_dir = os.environ.get(_ENV_DATASET_DIR)
-    dataset_dir = args.dataset_dir or (Path(raw_env_dir) if raw_env_dir else None)
-    fight_path = dataset_dir / FIGHT_DETAILS_FILE if dataset_dir is not None else None
-    event_path = dataset_dir / EVENT_DETAILS_FILE if dataset_dir is not None else None
-
-    fight_details = load_fight_details(fight_path)
-    event_details = load_event_details(event_path)
-    with SessionLocal() as session:
-        result = backfill_splits_and_context(session, fight_details, event_details)
-        session.commit()
-
-    logger.info("Backfill de splits + contexto concluído: %s", result)
-
-
-if __name__ == "__main__":
-    main()

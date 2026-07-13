@@ -37,7 +37,10 @@ COL_FIGHTER_ID = "fighter_id"
 COL_EVENT_DATE = "event_date"
 COL_BOUT_ID = "bout_id"
 COL_DATE_OF_BIRTH = "date_of_birth"
-COL_ROUND = "round"
+# NÚMERO do round na frame round-a-round (``load_round_stats``). Mantido igual ao
+# ``COL_ROUND_NUMBER`` de ``ingestion.features.rolling`` (definido aqui em vez de importado para
+# evitar acoplamento entre os módulos de feature); string distinta do round de término da luta.
+COL_ROUND_NUMBER = "round_number"
 COL_ROUND_SIG_STRIKES_LANDED = "sig_strikes_landed"
 
 # Colunas de feature produzidas por esta slice.
@@ -188,7 +191,7 @@ def load_round_stats(connection: Connection) -> pd.DataFrame:
     statement = select(
         BoutFighter.bout_id.label(COL_BOUT_ID),
         BoutFighter.fighter_id.label(COL_FIGHTER_ID),
-        BoutFighterRound.round.label(COL_ROUND),
+        BoutFighterRound.round.label(COL_ROUND_NUMBER),
         BoutFighterRound.sig_strikes_landed.label(COL_ROUND_SIG_STRIKES_LANDED),
     ).join(BoutFighterRound, BoutFighterRound.bout_fighter_id == BoutFighter.id)
     return pd.read_sql_query(statement, connection)
