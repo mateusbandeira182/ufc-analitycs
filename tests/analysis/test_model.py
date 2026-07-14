@@ -18,9 +18,16 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
+import pytest
 from sqlalchemy.orm import Session
 
-from analysis.model import run_training, save_artifact, train_model
+from analysis.model import (
+    LoadedModel,
+    load_artifact,
+    run_training,
+    save_artifact,
+    train_model,
+)
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout
 from apps.events.models import Event
@@ -150,3 +157,27 @@ def test_save_artifact_persiste_modelo_features_e_metricas(
     amostra = pd.DataFrame([dict.fromkeys(result.feature_names, 0.0)])
     predicoes = payload["model"].predict(amostra)
     assert len(predicoes) == 1
+
+
+def test_load_artifact_recarrega_modelo_e_features(db_session: Session, tmp_path: Path) -> None:
+    """``load_artifact`` recupera o modelo e a lista de features do artefato salvo.
+
+    Simetria com ``save_artifact``: o que foi persistido volta pronto para servir a
+    predição. O modelo recarregado prediz sobre um X com as mesmas colunas de features.
+    """
+    _seed_many(db_session, 20)
+    result = run_training(db_session, test_fraction=0.25, random_state=0)
+    save_artifact(result, directory=tmp_path)
+
+    loaded = load_artifact(directory=tmp_path)
+
+    assert isinstance(loaded, LoadedModel)
+    assert loaded.feature_names == result.feature_names
+    amostra = pd.DataFrame([dict.fromkeys(loaded.feature_names, 0.0)])
+    assert len(loaded.model.predict(amostra)) == 1
+
+
+def test_load_artifact_ausente_falha_claro(tmp_path: Path) -> None:
+    """Sem artefato em disco, ``load_artifact`` falha visível (nunca devolve modelo vazio)."""
+    with pytest.raises(FileNotFoundError):
+        load_artifact(directory=tmp_path)
