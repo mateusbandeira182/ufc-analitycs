@@ -15,4 +15,5 @@ export const queryKeys = {
   bout: (id: number) => ["bout", id] as const,
   headToHead: (a: number | null, b: number | null) =>
     ["head-to-head", a, b] as const,
+  matchup: (a: number | null, b: number | null) => ["matchup", a, b] as const,
 };

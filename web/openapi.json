@@ -409,6 +409,62 @@
           }
         }
       }
+    },
+    "/api/v1/predict/matchup": {
+      "get": {
+        "tags": [
+          "predictions"
+        ],
+        "summary": "Predict Matchup Endpoint",
+        "description": "Palpite neutro de canto para o confronto hipot\u00e9tico entre dois lutadores.\n\n``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; artefato de modelo ausente\n-> 503. As probabilidades s\u00e3o neutralizadas de canto (m\u00e9dia das duas ordens), ent\u00e3o a\nordem dos par\u00e2metros n\u00e3o muda o vencedor previsto.",
+        "operationId": "predict_matchup_endpoint_api_v1_predict_matchup_get",
+        "parameters": [
+          {
+            "name": "fighter_a",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "Id do primeiro lutador",
+              "title": "Fighter A"
+            },
+            "description": "Id do primeiro lutador"
+          },
+          {
+            "name": "fighter_b",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "Id do segundo lutador",
+              "title": "Fighter B"
+            },
+            "description": "Id do segundo lutador"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchupPredictionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1695,6 +1751,57 @@
         ],
         "title": "HeadToHeadOut",
         "description": "Confrontos diretos entre dois lutadores.\n\nEnvelope com os dois ids consultados e a lista de bouts em que ambos\nparticiparam, em ordem cronol\u00f3gica. Cada item reusa ``BoutDetailOut`` (Slice\n03): resultado + stats granulares dos dois cantos, nunca m\u00e9dias agregadas."
+      },
+      "MatchupFighterOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "MatchupFighterOut",
+        "description": "Lutador resolvido do banco, exposto no palpite (id + nome)."
+      },
+      "MatchupPredictionOut": {
+        "properties": {
+          "fighter_a": {
+            "$ref": "#/components/schemas/MatchupFighterOut"
+          },
+          "fighter_b": {
+            "$ref": "#/components/schemas/MatchupFighterOut"
+          },
+          "prob_a_wins": {
+            "type": "number",
+            "title": "Prob A Wins"
+          },
+          "prob_b_wins": {
+            "type": "number",
+            "title": "Prob B Wins"
+          },
+          "predicted_winner_id": {
+            "type": "integer",
+            "title": "Predicted Winner Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fighter_a",
+          "fighter_b",
+          "prob_a_wins",
+          "prob_b_wins",
+          "predicted_winner_id"
+        ],
+        "title": "MatchupPredictionOut",
+        "description": "Palpite neutro de canto para um confronto hipot\u00e9tico A vs B.\n\n``prob_a_wins`` e ``prob_b_wins`` s\u00e3o complementares (somam 1) e j\u00e1 neutralizadas de\ncanto; ``predicted_winner_id`` \u00e9 o ``fighter_id`` de maior probabilidade neutra."
       },
       "Page_EventOut_": {
         "properties": {

@@ -1,6 +1,11 @@
 import { http, HttpResponse } from "msw";
 
-import type { HeadToHeadOut, PageEventOut, PageFighterOut } from "@/api/schema";
+import type {
+  HeadToHeadOut,
+  MatchupPredictionOut,
+  PageEventOut,
+  PageFighterOut,
+} from "@/api/schema";
 import { BOUT_DETAIL_FIXTURES, BOUT_FIXTURES } from "@/mocks/bouts";
 import { EVENT_DETAIL_FIXTURES, EVENT_FIXTURES } from "@/mocks/events";
 import { FIGHTER_FIXTURES, FIGHTER_STATS_FIXTURES } from "@/mocks/fighters";
@@ -127,6 +132,42 @@ export const handlers = [
       fighter_a_id: a,
       fighter_b_id: b,
       bouts: headToHeadBouts(a, b),
+    };
+    return HttpResponse.json(body);
+  }),
+
+  /*
+    Palpite neutro de canto do modelo preditivo, espelhando as regras do router:
+    fighter_a == fighter_b -> 422; lutador inexistente -> 404. No caminho feliz a
+    probabilidade é derivada de forma determinística das vitórias das fixtures
+    (proporção de cartel), para as asserções dos testes; as duas somam 1 e o
+    vencedor previsto é o de maior probabilidade.
+  */
+  http.get("*/api/v1/predict/matchup", ({ request }) => {
+    const query = new URL(request.url).searchParams;
+    const a = Number(query.get("fighter_a"));
+    const b = Number(query.get("fighter_b"));
+
+    if (a === b) {
+      return HttpResponse.json(
+        { detail: "fighter_a e fighter_b devem ser lutadores distintos" },
+        { status: 422 },
+      );
+    }
+
+    const fighterA = FIGHTER_FIXTURES.find((f) => f.id === a);
+    const fighterB = FIGHTER_FIXTURES.find((f) => f.id === b);
+    if (!fighterA || !fighterB) {
+      return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
+    }
+
+    const probA = fighterA.wins / (fighterA.wins + fighterB.wins);
+    const body: MatchupPredictionOut = {
+      fighter_a: { id: fighterA.id, name: fighterA.name },
+      fighter_b: { id: fighterB.id, name: fighterB.name },
+      prob_a_wins: probA,
+      prob_b_wins: 1 - probA,
+      predicted_winner_id: probA >= 0.5 ? fighterA.id : fighterB.id,
     };
     return HttpResponse.json(body);
   }),

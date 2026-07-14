@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { to: "/fighters", label: "Lutadores" },
   { to: "/events", label: "Eventos" },
   { to: "/head-to-head", label: "Head-to-head" },
+  { to: "/matchup", label: "Prevê essa luta" },
 ];
 
 /** Casca da aplicação: cabeçalho de navegação + conteúdo da rota + rodapé. */

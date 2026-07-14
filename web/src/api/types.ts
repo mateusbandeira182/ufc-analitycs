@@ -168,6 +168,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/predict/matchup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Predict Matchup Endpoint
+         * @description Palpite neutro de canto para o confronto hipotético entre dois lutadores.
+         *
+         *     ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; artefato de modelo ausente
+         *     -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então a
+         *     ordem dos parâmetros não muda o vencedor previsto.
+         */
+        get: operations["predict_matchup_endpoint_api_v1_predict_matchup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -545,6 +569,33 @@ export interface components {
             /** Bouts */
             bouts: components["schemas"]["BoutDetailOut"][];
         };
+        /**
+         * MatchupFighterOut
+         * @description Lutador resolvido do banco, exposto no palpite (id + nome).
+         */
+        MatchupFighterOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+        };
+        /**
+         * MatchupPredictionOut
+         * @description Palpite neutro de canto para um confronto hipotético A vs B.
+         *
+         *     ``prob_a_wins`` e ``prob_b_wins`` são complementares (somam 1) e já neutralizadas de
+         *     canto; ``predicted_winner_id`` é o ``fighter_id`` de maior probabilidade neutra.
+         */
+        MatchupPredictionOut: {
+            fighter_a: components["schemas"]["MatchupFighterOut"];
+            fighter_b: components["schemas"]["MatchupFighterOut"];
+            /** Prob A Wins */
+            prob_a_wins: number;
+            /** Prob B Wins */
+            prob_b_wins: number;
+            /** Predicted Winner Id */
+            predicted_winner_id: number;
+        };
         /** Page[EventOut] */
         Page_EventOut_: {
             /** Items */
@@ -858,6 +909,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HeadToHeadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    predict_matchup_endpoint_api_v1_predict_matchup_get: {
+        parameters: {
+            query: {
+                /** @description Id do primeiro lutador */
+                fighter_a: number;
+                /** @description Id do segundo lutador */
+                fighter_b: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatchupPredictionOut"];
                 };
             };
             /** @description Validation Error */
