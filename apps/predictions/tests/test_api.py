@@ -15,6 +15,7 @@ dependência ``get_artifacts_dir``, e a ``Session`` é a sessão transacional da
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -24,21 +25,26 @@ from sqlalchemy.orm import Session
 from apps.predictions.api import get_artifacts_dir
 from mma_analytics.app import create_app
 from mma_analytics.db import get_session
-from tests.analysis.test_predict import _seed_history, _train_and_persist
+from tests.analysis.test_predict import _make_fighter, _seed_history, _train_and_persist
 
 
+@contextmanager
 def _client(db_session: Session, artifacts_dir: Path) -> Iterator[TestClient]:
     """``TestClient`` com ``get_session`` e ``get_artifacts_dir`` sobrepostos.
 
     A sessão aponta para a transação do teste; o diretório do artefato aponta para o
     ``tmp_path`` onde o modelo pequeno foi persistido (ou um diretório vazio, no caso 503).
+    Context manager: o ``with`` garante que o ``TestClient`` fecha e que os
+    ``dependency_overrides`` são limpos ao fim de cada teste (sem vazamento entre casos).
     """
     app = create_app()
     app.dependency_overrides[get_session] = lambda: db_session
     app.dependency_overrides[get_artifacts_dir] = lambda: artifacts_dir
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.clear()
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_matchup_devolve_probabilidades_complementares(db_session: Session, tmp_path: Path) -> None:
@@ -46,11 +52,11 @@ def test_matchup_devolve_probabilidades_complementares(db_session: Session, tmp_
     ids = _seed_history(db_session)
     _train_and_persist(db_session, tmp_path)
 
-    client = next(_client(db_session, tmp_path))
-    resp = client.get(
-        "/api/v1/predict/matchup",
-        params={"fighter_a": ids["Fighter Alpha"], "fighter_b": ids["Fighter Delta"]},
-    )
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup",
+            params={"fighter_a": ids["Fighter Alpha"], "fighter_b": ids["Fighter Delta"]},
+        )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -76,9 +82,9 @@ def test_matchup_e_neutro_de_canto(db_session: Session, tmp_path: Path) -> None:
     _train_and_persist(db_session, tmp_path)
     a, b = ids["Fighter Alpha"], ids["Fighter Delta"]
 
-    client = next(_client(db_session, tmp_path))
-    ab = client.get("/api/v1/predict/matchup", params={"fighter_a": a, "fighter_b": b}).json()
-    ba = client.get("/api/v1/predict/matchup", params={"fighter_a": b, "fighter_b": a}).json()
+    with _client(db_session, tmp_path) as client:
+        ab = client.get("/api/v1/predict/matchup", params={"fighter_a": a, "fighter_b": b}).json()
+        ba = client.get("/api/v1/predict/matchup", params={"fighter_a": b, "fighter_b": a}).json()
 
     # A probabilidade de A vencer é a mesma, esteja A no lado a (ab) ou no lado b (ba).
     assert ab["prob_a_wins"] == pytest.approx(ba["prob_b_wins"])
@@ -93,11 +99,11 @@ def test_matchup_lutador_inexistente_responde_404(db_session: Session, tmp_path:
     _train_and_persist(db_session, tmp_path)
     inexistente = max(ids.values()) + 10_000
 
-    client = next(_client(db_session, tmp_path))
-    resp = client.get(
-        "/api/v1/predict/matchup",
-        params={"fighter_a": ids["Fighter Alpha"], "fighter_b": inexistente},
-    )
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup",
+            params={"fighter_a": ids["Fighter Alpha"], "fighter_b": inexistente},
+        )
 
     assert resp.status_code == 404
 
@@ -108,8 +114,10 @@ def test_matchup_mesmo_lutador_responde_422(db_session: Session, tmp_path: Path)
     _train_and_persist(db_session, tmp_path)
     alpha = ids["Fighter Alpha"]
 
-    client = next(_client(db_session, tmp_path))
-    resp = client.get("/api/v1/predict/matchup", params={"fighter_a": alpha, "fighter_b": alpha})
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup", params={"fighter_a": alpha, "fighter_b": alpha}
+        )
 
     assert resp.status_code == 422
 
@@ -121,10 +129,10 @@ def test_matchup_mesmo_lutador_tem_precedencia_sobre_inexistencia(
     _seed_history(db_session)
     _train_and_persist(db_session, tmp_path)
 
-    client = next(_client(db_session, tmp_path))
-    resp = client.get(
-        "/api/v1/predict/matchup", params={"fighter_a": 999_999, "fighter_b": 999_999}
-    )
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup", params={"fighter_a": 999_999, "fighter_b": 999_999}
+        )
 
     assert resp.status_code == 422
 
@@ -134,11 +142,33 @@ def test_matchup_artefato_ausente_responde_503(db_session: Session, tmp_path: Pa
     ids = _seed_history(db_session)
     # Não treina: tmp_path fica sem o artefato joblib.
 
-    client = next(_client(db_session, tmp_path))
-    resp = client.get(
-        "/api/v1/predict/matchup",
-        params={"fighter_a": ids["Fighter Alpha"], "fighter_b": ids["Fighter Delta"]},
-    )
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup",
+            params={"fighter_a": ids["Fighter Alpha"], "fighter_b": ids["Fighter Delta"]},
+        )
 
     assert resp.status_code == 503
     assert "modelo" in resp.json()["detail"].lower()
+
+
+def test_matchup_lutador_sem_historico_responde_422(db_session: Session, tmp_path: Path) -> None:
+    """Lutador existe no banco mas não tem lutas no granular -> 422 (não 500 cru).
+
+    O serving levanta ``ValueError`` (sem features as-of); o router traduz para 422 para a SPA
+    tratar "sem histórico" como estado esperado, distinto do 404 (lutador inexistente).
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    sem_historico = _make_fighter("Fighter Sem Historico", 195)
+    db_session.add(sem_historico)
+    db_session.flush()
+
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup",
+            params={"fighter_a": ids["Fighter Alpha"], "fighter_b": int(sem_historico.id)},
+        )
+
+    assert resp.status_code == 422
+    assert "histórico" in resp.json()["detail"].lower()

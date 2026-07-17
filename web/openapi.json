@@ -416,7 +416,7 @@
           "predictions"
         ],
         "summary": "Predict Matchup Endpoint",
-        "description": "Palpite neutro de canto para o confronto hipot\u00e9tico entre dois lutadores.\n\n``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; artefato de modelo ausente\n-> 503. As probabilidades s\u00e3o neutralizadas de canto (m\u00e9dia das duas ordens), ent\u00e3o a\nordem dos par\u00e2metros n\u00e3o muda o vencedor previsto.",
+        "description": "Palpite neutro de canto para o confronto hipot\u00e9tico entre dois lutadores.\n\n``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; lutador sem hist\u00f3rico no\ngranular (existe, mas n\u00e3o tem lutas para derivar features as-of) -> 422; artefato de modelo\nausente -> 503. As probabilidades s\u00e3o neutralizadas de canto (m\u00e9dia das duas ordens), ent\u00e3o\na ordem dos par\u00e2metros n\u00e3o muda o vencedor previsto.",
         "operationId": "predict_matchup_endpoint_api_v1_predict_matchup_get",
         "parameters": [
           {
@@ -452,6 +452,12 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Lutador n\u00e3o encontrado"
+          },
+          "503": {
+            "description": "Modelo preditivo indispon\u00edvel: artefato treinado ausente"
           },
           "422": {
             "description": "Validation Error",

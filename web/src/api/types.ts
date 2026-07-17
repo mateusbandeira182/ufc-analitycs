@@ -179,9 +179,10 @@ export interface paths {
          * Predict Matchup Endpoint
          * @description Palpite neutro de canto para o confronto hipotético entre dois lutadores.
          *
-         *     ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; artefato de modelo ausente
-         *     -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então a
-         *     ordem dos parâmetros não muda o vencedor previsto.
+         *     ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; lutador sem histórico no
+         *     granular (existe, mas não tem lutas para derivar features as-of) -> 422; artefato de modelo
+         *     ausente -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então
+         *     a ordem dos parâmetros não muda o vencedor previsto.
          */
         get: operations["predict_matchup_endpoint_api_v1_predict_matchup_get"];
         put?: never;
@@ -945,6 +946,13 @@ export interface operations {
                     "application/json": components["schemas"]["MatchupPredictionOut"];
                 };
             };
+            /** @description Lutador não encontrado */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -953,6 +961,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+            /** @description Modelo preditivo indisponível: artefato treinado ausente */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

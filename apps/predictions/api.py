@@ -30,6 +30,15 @@ from mma_analytics.db import get_session
 
 router = APIRouter(prefix="/predict", tags=["predictions"])
 
+# Contratos de erro do endpoint, declarados para entrarem no OpenAPI (e, por tabela, nos
+# tipos gerados no web). O 422 NÃO é declarado aqui de propósito: o FastAPI já o documenta
+# com o schema ``HTTPValidationError`` (validação de query + os casos de negócio do router --
+# lutadores não-distintos e lutador sem histórico); declará-lo aqui sobrescreveria esse schema.
+_MATCHUP_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
+    404: {"description": "Lutador não encontrado"},
+    503: {"description": "Modelo preditivo indisponível: artefato treinado ausente"},
+}
+
 
 def get_artifacts_dir() -> Path:
     """Dependência FastAPI: diretório do artefato do modelo (sobreposto nos testes)."""
@@ -50,7 +59,7 @@ def _neutral_prob_a_wins(
     return (forward.prob_a_wins + reverse.prob_b_wins) / 2.0
 
 
-@router.get("/matchup", response_model=MatchupPredictionOut)
+@router.get("/matchup", response_model=MatchupPredictionOut, responses=_MATCHUP_ERROR_RESPONSES)
 def predict_matchup_endpoint(
     session: Annotated[Session, Depends(get_session)],
     artifacts_dir: Annotated[Path, Depends(get_artifacts_dir)],
@@ -59,9 +68,10 @@ def predict_matchup_endpoint(
 ) -> MatchupPredictionOut:
     """Palpite neutro de canto para o confronto hipotético entre dois lutadores.
 
-    ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; artefato de modelo ausente
-    -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então a
-    ordem dos parâmetros não muda o vencedor previsto.
+    ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; lutador sem histórico no
+    granular (existe, mas não tem lutas para derivar features as-of) -> 422; artefato de modelo
+    ausente -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então
+    a ordem dos parâmetros não muda o vencedor previsto.
     """
     if fighter_a == fighter_b:
         raise HTTPException(
@@ -79,6 +89,11 @@ def predict_matchup_endpoint(
             status_code=503,
             detail="Modelo preditivo indisponível: artefato treinado não encontrado.",
         ) from exc
+    except ValueError as exc:
+        # Lutador válido (existe no banco), mas sem lutas no granular: a pipeline de features
+        # as-of não tem base para predizer. Traduzido para 422 (nunca 500 cru) para a SPA
+        # tratar "sem histórico" como estado esperado.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     prob_b_wins = 1.0 - prob_a_wins
     # O vencedor previsto é função pura do par (não da ordem dos parâmetros): maior
