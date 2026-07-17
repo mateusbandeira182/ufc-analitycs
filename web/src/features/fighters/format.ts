@@ -49,3 +49,19 @@ export function formatHeight(heightCm: number | null): string {
 export function formatReach(reachCm: number | null): string {
   return reachCm === null ? DASH : `${String(reachCm)} cm`;
 }
+
+/**
+ * Peso em quilos; traço quando ausente. Arredonda a uma casa decimal e a exibe em
+ * pt-BR (vírgula), omitindo a casa quando o valor é inteiro (ex.: `93` -> `"93 kg"`,
+ * `70.3` -> `"70,3 kg"`).
+ */
+export function formatWeight(weightKg: number | null): string {
+  if (weightKg === null) {
+    return DASH;
+  }
+  const rounded = Math.round(weightKg * 10) / 10;
+  const text = Number.isInteger(rounded)
+    ? String(rounded)
+    : rounded.toFixed(1).replace(".", ",");
+  return `${text} kg`;
+}

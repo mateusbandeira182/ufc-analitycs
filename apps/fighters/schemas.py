@@ -35,6 +35,7 @@ class FighterOut(BaseModel):
     height_cm: int | None
     reach_cm: int | None
     stance: Stance | None
+    weight_kg: float | None  # atributo físico do M5 (ADR 0004), nullable
     wins: int
     losses: int
     draws: int
@@ -63,12 +64,30 @@ class FighterBoutOut(BaseModel):
     opponent: FighterOpponentOut | None  # o outro canto; ``None`` em dados sujos
 
 
+class StrikingProfileOut(BaseModel):
+    """Perfil de striking agregado on demand: shares de golpe conectado por grupo.
+
+    Dois grupos que somam 1 quando definidos: alvo (cabeça/corpo/perna) e posição
+    (distância/clinch/solo). Cada share é razão de somas na carreira; denominador
+    zero -> ``None`` (nunca ``inf``/``NaN`` no JSON).
+    """
+
+    share_head: float | None
+    share_body: float | None
+    share_leg: float | None
+    share_distance: float | None
+    share_clinch: float | None
+    share_ground: float | None
+
+
 class FighterStatsOut(BaseModel):
     """Estatísticas resumidas do lutador, computadas on demand (Slice 06).
 
     Não inclui ``source``: RF-09 se aplica a schemas de item; o agregado é
     computado e mistura origens (kaggle/cito), não é um registro único (decisão
     do plano 003-06). Médias ``None`` quando não há valor a agregar.
+    ``striking_profile`` traz os shares de golpe por alvo/posição, agregados on
+    demand a partir dos splits granulares do M5.
     """
 
     fighter_id: int
@@ -77,3 +96,4 @@ class FighterStatsOut(BaseModel):
     avg_takedowns_landed: float | None
     avg_control_time_seconds: float | None
     wins_by_method: dict[str, int]
+    striking_profile: StrikingProfileOut

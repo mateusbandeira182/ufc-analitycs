@@ -61,6 +61,7 @@ def _seed_history(db_session: Session) -> int:
                 fighter_id=fighter.id,
                 corner=Corner.RED,
                 sig_strikes_landed=20,
+                head_landed=None,
             ),
             BoutFighterFactory.build(
                 bout_id=older_bout.id,
@@ -73,6 +74,7 @@ def _seed_history(db_session: Session) -> int:
                 fighter_id=fighter.id,
                 corner=Corner.RED,
                 sig_strikes_landed=50,
+                head_landed=30,
             ),
         ]
     )
@@ -177,6 +179,28 @@ def test_get_fighter_detalha(client: TestClient, db_session: Session) -> None:
     assert body["source"] == "kaggle"
 
 
+def test_get_fighter_expoe_weight_kg(client: TestClient, db_session: Session) -> None:
+    """O detalhe expõe ``weight_kg`` (M5, nullable) quando preenchido."""
+    fighter = FighterFactory.build(name="Jon Jones", weight_kg=93.0)
+    db_session.add(fighter)
+    db_session.flush()
+
+    body = client.get(f"/api/v1/fighters/{fighter.id}").json()
+
+    assert body["weight_kg"] == 93.0
+
+
+def test_get_fighter_weight_kg_ausente_sai_nulo(client: TestClient, db_session: Session) -> None:
+    """Lutador sem peso registrado expõe ``weight_kg`` nulo (aditivo/nullable)."""
+    fighter = FighterFactory.build(name="Royce Gracie", weight_kg=None)
+    db_session.add(fighter)
+    db_session.flush()
+
+    body = client.get(f"/api/v1/fighters/{fighter.id}").json()
+
+    assert body["weight_kg"] is None
+
+
 def test_get_fighter_inexistente_retorna_404(client: TestClient) -> None:
     """Id inexistente responde 404."""
     resposta = client.get("/api/v1/fighters/999999")
@@ -212,6 +236,9 @@ def test_fighter_history_ordem_cronologica_com_stats_e_won(
     assert body[0]["stats"]["sig_strikes_landed"] == 20
     assert body[0]["stats"]["source"] == "kaggle"
     assert body[1]["stats"]["sig_strikes_landed"] == 50
+    # Splits do M5 fluem pelo mesmo schema no histórico (nulos quando ausentes).
+    assert body[1]["stats"]["head_landed"] == 30
+    assert body[0]["stats"]["head_landed"] is None
     # Adversário daquela luta (o outro canto); nulo quando não houver segundo canto.
     assert body[0]["opponent"]["name"] == "Dustin Poirier"
     assert body[1]["opponent"] is None
@@ -242,16 +269,19 @@ def _seed_stats(db_session: Session) -> int:
 
     Luta 1 (ko_tko): sig 10, td 2, ctrl 60. Luta 2 (decision): sig 20, td 4,
     ctrl 120. Médias esperadas: sig 15, td 3, ctrl 90; vitórias por método
-    ``{"ko_tko": 1, "decision": 1}``.
+    ``{"ko_tko": 1, "decision": 1}``. Os splits são somados na carreira para o
+    perfil de striking: alvo head=20/body=10/leg=10 (shares 0.5/0.25/0.25);
+    posição distância=30/clinch=5/solo=5 (shares 0.75/0.125/0.125).
     """
     fighter = FighterFactory.build(name="Alexander Volkanovski")
     db_session.add(fighter)
     db_session.flush()
 
-    for method, sig, td, ctrl in (
-        (BoutMethod.KO_TKO, 10, 2, 60),
-        (BoutMethod.DECISION, 20, 4, 120),
+    for method, sig, td, ctrl, splits in (
+        (BoutMethod.KO_TKO, 10, 2, 60, (15, 5, 0, 20, 0, 0)),
+        (BoutMethod.DECISION, 20, 4, 120, (5, 5, 10, 10, 5, 5)),
     ):
+        head, body, leg, distance, clinch, ground = splits
         event = EventFactory.build(date=date(2023, 1, 1))
         db_session.add(event)
         db_session.flush()
@@ -266,6 +296,12 @@ def _seed_stats(db_session: Session) -> int:
                 sig_strikes_landed=sig,
                 takedowns_landed=td,
                 control_time_seconds=ctrl,
+                head_landed=head,
+                body_landed=body,
+                leg_landed=leg,
+                distance_landed=distance,
+                clinch_landed=clinch,
+                ground_landed=ground,
             )
         )
     db_session.flush()
@@ -294,6 +330,14 @@ def test_fighter_stats_retorna_agregado_on_demand(client: TestClient, db_session
         "avg_takedowns_landed": 3.0,
         "avg_control_time_seconds": 90.0,
         "wins_by_method": {"ko_tko": 1, "decision": 1},
+        "striking_profile": {
+            "share_head": 0.5,
+            "share_body": 0.25,
+            "share_leg": 0.25,
+            "share_distance": 0.75,
+            "share_clinch": 0.125,
+            "share_ground": 0.125,
+        },
     }
     # O agregado computado não expõe ``source`` (mistura origens -- decisão do plano).
     assert "source" not in body
@@ -314,6 +358,15 @@ def test_fighter_stats_sem_lutas_retorna_medias_nulas(
     assert body["avg_takedowns_landed"] is None
     assert body["avg_control_time_seconds"] is None
     assert body["wins_by_method"] == {}
+    # Sem lutas, o perfil de striking sai todo nulo (denominador zero -> null).
+    assert body["striking_profile"] == {
+        "share_head": None,
+        "share_body": None,
+        "share_leg": None,
+        "share_distance": None,
+        "share_clinch": None,
+        "share_ground": None,
+    }
 
 
 def test_fighter_stats_inexistente_retorna_404(client: TestClient) -> None:

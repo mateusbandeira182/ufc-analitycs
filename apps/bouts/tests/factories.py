@@ -18,7 +18,7 @@ from __future__ import annotations
 from polyfactory.factories.sqlalchemy_factory import SQLAlchemyFactory
 
 from apps.bouts.enums import BoutMethod
-from apps.bouts.models import Bout, BoutFighter
+from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 
 
@@ -69,3 +69,19 @@ class BoutFighterFactory(SQLAlchemyFactory[BoutFighter]):
     @classmethod
     def source(cls) -> str:
         return "kaggle"
+
+
+class BoutFighterRoundFactory(SQLAlchemyFactory[BoutFighterRound]):
+    """Constrói ``BoutFighterRound`` válido; passe ``bout_fighter_id``/``round``.
+
+    Origem ``cito`` por padrão (o round-a-round é populado pelo backfill da Cito no
+    M5), refletindo a fonte real desse dado granular por round.
+    """
+
+    __model__ = BoutFighterRound
+    __set_relationships__ = False
+    __set_primary_key__ = False
+
+    @classmethod
+    def source(cls) -> str:
+        return "cito"

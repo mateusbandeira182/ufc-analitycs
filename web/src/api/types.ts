@@ -168,6 +168,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/predict/matchup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Predict Matchup Endpoint
+         * @description Palpite neutro de canto para o confronto hipotético entre dois lutadores.
+         *
+         *     ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; lutador sem histórico no
+         *     granular (existe, mas não tem lutas para derivar features as-of) -> 422; artefato de modelo
+         *     ausente -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então
+         *     a ordem dos parâmetros não muda o vencedor previsto.
+         */
+        get: operations["predict_matchup_endpoint_api_v1_predict_matchup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -210,7 +235,7 @@ export interface components {
         };
         /**
          * BoutDetailOut
-         * @description Detalhe de uma luta: evento, resultado e os dois cantos com stats granulares.
+         * @description Detalhe de uma luta: evento, resultado, contexto, cantos e round-a-round.
          */
         BoutDetailOut: {
             /** Id */
@@ -225,10 +250,18 @@ export interface components {
             ending_time_seconds: number | null;
             /** Weight Class */
             weight_class: string | null;
+            /** Title Bout */
+            title_bout: boolean | null;
+            /** Scheduled Rounds */
+            scheduled_rounds: number | null;
+            /** Referee */
+            referee: string | null;
             /** Source */
             source: string;
             /** Fighters */
             fighters: components["schemas"]["BoutFighterStatsOut"][];
+            /** Rounds */
+            rounds: components["schemas"]["BoutFighterRoundOut"][];
         };
         /**
          * BoutEventOut
@@ -246,6 +279,68 @@ export interface components {
             date: string;
             /** Location */
             location: string | null;
+            /** Source */
+            source: string;
+        };
+        /**
+         * BoutFighterRoundOut
+         * @description Stats de um lutador num round (uma linha de ``bout_fighter_rounds``).
+         *
+         *     ``fighter_id`` e ``corner`` identificam o canto dono do round (herdados do
+         *     ``bout_fighter``, que é o dono do enum ``corner`` -- a tabela de rounds não o
+         *     duplica). ``round`` é o número do round. Todas as stats são granulares por
+         *     round e nullable (a Cito preenche o round-a-round só a partir de 2019).
+         */
+        BoutFighterRoundOut: {
+            /** Fighter Id */
+            fighter_id: number;
+            corner: components["schemas"]["Corner"];
+            /** Round */
+            round: number;
+            /** Knockdowns */
+            knockdowns: number | null;
+            /** Sig Strikes Landed */
+            sig_strikes_landed: number | null;
+            /** Sig Strikes Attempted */
+            sig_strikes_attempted: number | null;
+            /** Takedowns Landed */
+            takedowns_landed: number | null;
+            /** Takedowns Attempted */
+            takedowns_attempted: number | null;
+            /** Submission Attempts */
+            submission_attempts: number | null;
+            /** Control Time Seconds */
+            control_time_seconds: number | null;
+            /** Total Strikes Landed */
+            total_strikes_landed: number | null;
+            /** Total Strikes Attempted */
+            total_strikes_attempted: number | null;
+            /** Head Landed */
+            head_landed: number | null;
+            /** Head Attempted */
+            head_attempted: number | null;
+            /** Body Landed */
+            body_landed: number | null;
+            /** Body Attempted */
+            body_attempted: number | null;
+            /** Leg Landed */
+            leg_landed: number | null;
+            /** Leg Attempted */
+            leg_attempted: number | null;
+            /** Distance Landed */
+            distance_landed: number | null;
+            /** Distance Attempted */
+            distance_attempted: number | null;
+            /** Clinch Landed */
+            clinch_landed: number | null;
+            /** Clinch Attempted */
+            clinch_attempted: number | null;
+            /** Ground Landed */
+            ground_landed: number | null;
+            /** Ground Attempted */
+            ground_attempted: number | null;
+            /** Reversals */
+            reversals: number | null;
             /** Source */
             source: string;
         };
@@ -273,6 +368,36 @@ export interface components {
             submission_attempts: number | null;
             /** Control Time Seconds */
             control_time_seconds: number | null;
+            /** Total Strikes Landed */
+            total_strikes_landed: number | null;
+            /** Total Strikes Attempted */
+            total_strikes_attempted: number | null;
+            /** Head Landed */
+            head_landed: number | null;
+            /** Head Attempted */
+            head_attempted: number | null;
+            /** Body Landed */
+            body_landed: number | null;
+            /** Body Attempted */
+            body_attempted: number | null;
+            /** Leg Landed */
+            leg_landed: number | null;
+            /** Leg Attempted */
+            leg_attempted: number | null;
+            /** Distance Landed */
+            distance_landed: number | null;
+            /** Distance Attempted */
+            distance_attempted: number | null;
+            /** Clinch Landed */
+            clinch_landed: number | null;
+            /** Clinch Attempted */
+            clinch_attempted: number | null;
+            /** Ground Landed */
+            ground_landed: number | null;
+            /** Ground Attempted */
+            ground_attempted: number | null;
+            /** Reversals */
+            reversals: number | null;
             /** Source */
             source: string;
         };
@@ -386,6 +511,8 @@ export interface components {
             /** Reach Cm */
             reach_cm: number | null;
             stance: components["schemas"]["Stance"] | null;
+            /** Weight Kg */
+            weight_kg: number | null;
             /** Wins */
             wins: number;
             /** Losses */
@@ -402,6 +529,8 @@ export interface components {
          *     Não inclui ``source``: RF-09 se aplica a schemas de item; o agregado é
          *     computado e mistura origens (kaggle/cito), não é um registro único (decisão
          *     do plano 003-06). Médias ``None`` quando não há valor a agregar.
+         *     ``striking_profile`` traz os shares de golpe por alvo/posição, agregados on
+         *     demand a partir dos splits granulares do M5.
          */
         FighterStatsOut: {
             /** Fighter Id */
@@ -418,6 +547,7 @@ export interface components {
             wins_by_method: {
                 [key: string]: number;
             };
+            striking_profile: components["schemas"]["StrikingProfileOut"];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -439,6 +569,33 @@ export interface components {
             fighter_b_id: number;
             /** Bouts */
             bouts: components["schemas"]["BoutDetailOut"][];
+        };
+        /**
+         * MatchupFighterOut
+         * @description Lutador resolvido do banco, exposto no palpite (id + nome).
+         */
+        MatchupFighterOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+        };
+        /**
+         * MatchupPredictionOut
+         * @description Palpite neutro de canto para um confronto hipotético A vs B.
+         *
+         *     ``prob_a_wins`` e ``prob_b_wins`` são complementares (somam 1) e já neutralizadas de
+         *     canto; ``predicted_winner_id`` é o ``fighter_id`` de maior probabilidade neutra.
+         */
+        MatchupPredictionOut: {
+            fighter_a: components["schemas"]["MatchupFighterOut"];
+            fighter_b: components["schemas"]["MatchupFighterOut"];
+            /** Prob A Wins */
+            prob_a_wins: number;
+            /** Prob B Wins */
+            prob_b_wins: number;
+            /** Predicted Winner Id */
+            predicted_winner_id: number;
         };
         /** Page[EventOut] */
         Page_EventOut_: {
@@ -468,6 +625,28 @@ export interface components {
          * @enum {string}
          */
         Stance: "orthodox" | "southpaw" | "switch";
+        /**
+         * StrikingProfileOut
+         * @description Perfil de striking agregado on demand: shares de golpe conectado por grupo.
+         *
+         *     Dois grupos que somam 1 quando definidos: alvo (cabeça/corpo/perna) e posição
+         *     (distância/clinch/solo). Cada share é razão de somas na carreira; denominador
+         *     zero -> ``None`` (nunca ``inf``/``NaN`` no JSON).
+         */
+        StrikingProfileOut: {
+            /** Share Head */
+            share_head: number | null;
+            /** Share Body */
+            share_body: number | null;
+            /** Share Leg */
+            share_leg: number | null;
+            /** Share Distance */
+            share_distance: number | null;
+            /** Share Clinch */
+            share_clinch: number | null;
+            /** Share Ground */
+            share_ground: number | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -741,6 +920,54 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    predict_matchup_endpoint_api_v1_predict_matchup_get: {
+        parameters: {
+            query: {
+                /** @description Id do primeiro lutador */
+                fighter_a: number;
+                /** @description Id do segundo lutador */
+                fighter_b: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatchupPredictionOut"];
+                };
+            };
+            /** @description Lutador não encontrado */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Modelo preditivo indisponível: artefato treinado ausente */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

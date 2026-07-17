@@ -7,6 +7,7 @@ import type { BoutMethod, FighterBoutOut } from "@/api/schema";
 import { FighterPage } from "@/features/fighters/FighterPage";
 import { FighterStatsPage } from "@/features/fighters/FighterStatsPage";
 import { server } from "@/mocks/server";
+import { NULL_STRIKE_SPLITS } from "@/mocks/strikeSplits";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
 /*
@@ -49,6 +50,7 @@ function makeBout(overrides: BoutOverrides): FighterBoutOut {
       takedowns_attempted: null,
       submission_attempts: null,
       control_time_seconds: overrides.control ?? null,
+      ...NULL_STRIKE_SPLITS,
       source: "kaggle",
     },
   };
@@ -261,6 +263,56 @@ describe("FighterStatsPage", () => {
     expect(
       screen.queryByRole("list", { name: /como venceu/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("exibe o perfil de striking com os shares por alvo e por posição", async () => {
+    renderStatsPage(1);
+
+    // Aguarda o perfil carregar (o título aparece já no estado de carregamento).
+    expect(await screen.findByText("55%")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /perfil de striking/i }),
+    ).toBeInTheDocument();
+
+    // Por alvo: cabeça 55%, corpo 20%, perna 25%.
+    expect(screen.getByText("Cabeça")).toBeInTheDocument();
+    expect(screen.getByText("Corpo")).toBeInTheDocument();
+    expect(screen.getByText("Perna")).toBeInTheDocument();
+    expect(screen.getByText("25%")).toBeInTheDocument();
+
+    // Por posição: distância 70%, clinch 20%, solo 10%.
+    expect(screen.getByText("Distância")).toBeInTheDocument();
+    expect(screen.getByText("70%")).toBeInTheDocument();
+    expect(screen.getByText("Clinch")).toBeInTheDocument();
+    expect(screen.getByText("Solo")).toBeInTheDocument();
+    expect(screen.getByText("10%")).toBeInTheDocument();
+  });
+
+  it("mostra 'sem dado' em cada share quando não há perfil de striking", async () => {
+    // Adesanya (id 3): a fixture de stats traz o perfil todo nulo.
+    renderStatsPage(3);
+
+    // Seis shares (alvo + posição), todos sem dado — nunca NaN/Infinity na tela.
+    expect(await screen.findAllByText(/sem dado/i)).toHaveLength(6);
+    expect(
+      screen.getByRole("heading", { name: /perfil de striking/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("mostra mensagem legível quando o perfil de striking falha", async () => {
+    server.use(
+      http.get("*/api/v1/fighters/:id/stats", () =>
+        HttpResponse.json({ detail: "boom" }, { status: 500 }),
+      ),
+    );
+
+    renderStatsPage(1);
+
+    expect(
+      await screen.findByText(
+        /não foi possível carregar o perfil de striking/i,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("volta para a página do lutador pelo link do cabeçalho", async () => {

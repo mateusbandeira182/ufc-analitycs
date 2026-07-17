@@ -18,7 +18,12 @@ from sqlalchemy.orm import Session
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout
 from apps.bouts.selectors import get_bout_by_id, get_head_to_head
-from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
+from apps.bouts.tests.factories import (
+    BoutFactory,
+    BoutFighterFactory,
+    BoutFighterRoundFactory,
+    EventFactory,
+)
 from apps.fighters.models import Fighter
 from apps.fighters.tests.factories import FighterFactory
 
@@ -104,6 +109,46 @@ def test_get_bout_by_id_preserva_stats_granulares_por_canto(db_session: Session)
     assert por_canto[Corner.RED].control_time_seconds == 90
     assert por_canto[Corner.BLUE].sig_strikes_landed == 12
     assert por_canto[Corner.BLUE].takedowns_landed == 1
+
+
+def test_get_bout_by_id_carrega_rounds_por_canto(db_session: Session) -> None:
+    """Devolve o breakdown round-a-round com o canto e o lutador de cada round."""
+    bout = _persistir_bout_completo(db_session)
+    detail = get_bout_by_id(db_session, bout.id)
+    assert detail is not None
+    por_canto = {bf.corner: bf for bf in detail.fighters}
+    red_bf = por_canto[Corner.RED]
+    db_session.add_all(
+        [
+            BoutFighterRoundFactory.build(
+                bout_fighter_id=red_bf.id, round=1, sig_strikes_landed=18, head_landed=10
+            ),
+            BoutFighterRoundFactory.build(
+                bout_fighter_id=red_bf.id, round=2, sig_strikes_landed=22, head_landed=15
+            ),
+        ]
+    )
+    db_session.flush()
+
+    detail = get_bout_by_id(db_session, bout.id)
+
+    assert detail is not None
+    red_rounds = [r for r in detail.rounds if r.corner == Corner.RED]
+    assert [r.round.round for r in red_rounds] == [1, 2]
+    assert [r.round.sig_strikes_landed for r in red_rounds] == [18, 22]
+    assert [r.round.head_landed for r in red_rounds] == [10, 15]
+    assert {r.fighter_id for r in red_rounds} == {red_bf.fighter_id}
+    assert red_rounds[0].round.source == "cito"
+
+
+def test_get_bout_by_id_sem_rounds_devolve_rounds_vazio(db_session: Session) -> None:
+    """Luta sem round-a-round (backfill parcial) devolve ``rounds`` vazio, sem quebrar."""
+    bout = _persistir_bout_completo(db_session)
+
+    detail = get_bout_by_id(db_session, bout.id)
+
+    assert detail is not None
+    assert detail.rounds == []
 
 
 def test_get_bout_by_id_inexistente_devolve_none(db_session: Session) -> None:
@@ -236,6 +281,30 @@ def test_head_to_head_sem_confronto_direto_devolve_lista_vazia(db_session: Sessi
     )
 
     assert get_head_to_head(db_session, a.id, b.id) == []
+
+
+def test_head_to_head_carrega_rounds_de_cada_confronto(db_session: Session) -> None:
+    """Cada bout do head-to-head carrega o breakdown round-a-round dos seus cantos."""
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b])
+    db_session.flush()
+    bout = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=b, winner=a
+    )
+    a_bf = next(bf for bf in get_bout_by_id(db_session, bout.id).fighters if bf.fighter_id == a.id)  # type: ignore[union-attr]
+    db_session.add(
+        BoutFighterRoundFactory.build(bout_fighter_id=a_bf.id, round=1, sig_strikes_landed=12)
+    )
+    db_session.flush()
+
+    detalhes = get_head_to_head(db_session, a.id, b.id)
+
+    assert len(detalhes) == 1
+    rounds = detalhes[0].rounds
+    assert [r.round.round for r in rounds] == [1]
+    assert rounds[0].fighter_id == a.id
+    assert rounds[0].round.sig_strikes_landed == 12
 
 
 def test_head_to_head_carrega_cantos_em_lote_sem_n_mais_1(db_session: Session) -> None:

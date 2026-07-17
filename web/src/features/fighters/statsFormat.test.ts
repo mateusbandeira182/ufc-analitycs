@@ -4,6 +4,7 @@ import {
   finishSegments,
   formatAvgControlTime,
   formatAverage,
+  formatShare,
 } from "@/features/fighters/statsFormat";
 import { DASH } from "@/lib/format";
 
@@ -40,6 +41,27 @@ describe("formatAvgControlTime", () => {
 
   it("retorna traço quando a média é nula", () => {
     expect(formatAvgControlTime(null)).toBe(DASH);
+  });
+});
+
+describe("formatShare", () => {
+  it("formata a fração como percentual inteiro", () => {
+    expect(formatShare(0.453)).toBe("45%");
+    expect(formatShare(0.5)).toBe("50%");
+  });
+
+  it("preserva os extremos (0 e 1)", () => {
+    expect(formatShare(0)).toBe("0%");
+    expect(formatShare(1)).toBe("100%");
+  });
+
+  it("retorna 'sem dado' quando o share é nulo", () => {
+    expect(formatShare(null)).toBe("sem dado");
+  });
+
+  it("trata valor não finito como 'sem dado' (nunca NaN/Infinity na tela)", () => {
+    expect(formatShare(Number.NaN)).toBe("sem dado");
+    expect(formatShare(Number.POSITIVE_INFINITY)).toBe("sem dado");
   });
 });
 

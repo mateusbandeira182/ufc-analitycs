@@ -16,8 +16,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from apps.bouts.models import BoutFighter
-from apps.bouts.schemas import BoutDetailOut, BoutEventOut, BoutFighterStatsOut, HeadToHeadOut
-from apps.bouts.selectors import BoutDetail, get_bout_by_id, get_head_to_head
+from apps.bouts.schemas import (
+    BoutDetailOut,
+    BoutEventOut,
+    BoutFighterRoundOut,
+    BoutFighterStatsOut,
+    HeadToHeadOut,
+)
+from apps.bouts.selectors import BoutDetail, BoutFighterRoundRow, get_bout_by_id, get_head_to_head
 from apps.fighters.selectors import get_fighter_by_id
 from mma_analytics.db import get_session
 
@@ -43,7 +49,59 @@ def bout_fighter_stats_out(bf: BoutFighter) -> BoutFighterStatsOut:
         takedowns_attempted=bf.takedowns_attempted,
         submission_attempts=bf.submission_attempts,
         control_time_seconds=bf.control_time_seconds,
+        total_strikes_landed=bf.total_strikes_landed,
+        total_strikes_attempted=bf.total_strikes_attempted,
+        head_landed=bf.head_landed,
+        head_attempted=bf.head_attempted,
+        body_landed=bf.body_landed,
+        body_attempted=bf.body_attempted,
+        leg_landed=bf.leg_landed,
+        leg_attempted=bf.leg_attempted,
+        distance_landed=bf.distance_landed,
+        distance_attempted=bf.distance_attempted,
+        clinch_landed=bf.clinch_landed,
+        clinch_attempted=bf.clinch_attempted,
+        ground_landed=bf.ground_landed,
+        ground_attempted=bf.ground_attempted,
+        reversals=bf.reversals,
         source=bf.source,
+    )
+
+
+def bout_fighter_round_out(row: BoutFighterRoundRow) -> BoutFighterRoundOut:
+    """Monta o schema de um round incluindo o canto e o lutador dono (``row``).
+
+    O ``fighter_id`` e o ``corner`` vêm do ``bout_fighter`` dono do round (resolvido
+    no selector); as stats vêm da linha de ``bout_fighter_rounds`` (``row.round``).
+    """
+    r = row.round
+    return BoutFighterRoundOut(
+        fighter_id=row.fighter_id,
+        corner=row.corner,
+        round=r.round,
+        knockdowns=r.knockdowns,
+        sig_strikes_landed=r.sig_strikes_landed,
+        sig_strikes_attempted=r.sig_strikes_attempted,
+        takedowns_landed=r.takedowns_landed,
+        takedowns_attempted=r.takedowns_attempted,
+        submission_attempts=r.submission_attempts,
+        control_time_seconds=r.control_time_seconds,
+        total_strikes_landed=r.total_strikes_landed,
+        total_strikes_attempted=r.total_strikes_attempted,
+        head_landed=r.head_landed,
+        head_attempted=r.head_attempted,
+        body_landed=r.body_landed,
+        body_attempted=r.body_attempted,
+        leg_landed=r.leg_landed,
+        leg_attempted=r.leg_attempted,
+        distance_landed=r.distance_landed,
+        distance_attempted=r.distance_attempted,
+        clinch_landed=r.clinch_landed,
+        clinch_attempted=r.clinch_attempted,
+        ground_landed=r.ground_landed,
+        ground_attempted=r.ground_attempted,
+        reversals=r.reversals,
+        source=r.source,
     )
 
 
@@ -57,8 +115,12 @@ def _to_bout_detail_out(detail: BoutDetail) -> BoutDetailOut:
         round=detail.bout.round,
         ending_time_seconds=detail.bout.ending_time_seconds,
         weight_class=detail.bout.weight_class,
+        title_bout=detail.bout.title_bout,
+        scheduled_rounds=detail.bout.scheduled_rounds,
+        referee=detail.bout.referee,
         source=detail.bout.source,
         fighters=[bout_fighter_stats_out(bf) for bf in detail.fighters],
+        rounds=[bout_fighter_round_out(row) for row in detail.rounds],
     )
 
 

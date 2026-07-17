@@ -8,6 +8,7 @@ import { FighterPage } from "@/features/fighters/FighterPage";
 import { FighterStatsPage } from "@/features/fighters/FighterStatsPage";
 import { FightersPage } from "@/features/fighters/FightersPage";
 import { HeadToHeadPage } from "@/features/head-to-head/HeadToHeadPage";
+import { MatchupPage } from "@/features/matchup/MatchupPage";
 import { HomePage } from "@/routes/HomePage";
 
 export const router = createBrowserRouter([
@@ -22,6 +23,7 @@ export const router = createBrowserRouter([
       { path: "/events/:id", element: <EventPage /> },
       { path: "/bouts/:id", element: <BoutDetail /> },
       { path: "/head-to-head", element: <HeadToHeadPage /> },
+      { path: "/matchup", element: <MatchupPage /> },
     ],
   },
 ]);

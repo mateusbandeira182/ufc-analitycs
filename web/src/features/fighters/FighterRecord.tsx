@@ -6,6 +6,7 @@ import {
   formatReach,
   formatRecord,
   formatStance,
+  formatWeight,
 } from "@/features/fighters/format";
 
 interface FighterRecordProps {
@@ -21,6 +22,7 @@ export function FighterRecord({ fighter }: FighterRecordProps) {
   const attributes = [
     { label: "Altura", value: formatHeight(fighter.height_cm) },
     { label: "Alcance", value: formatReach(fighter.reach_cm) },
+    { label: "Peso", value: formatWeight(fighter.weight_kg) },
     { label: "Base", value: formatStance(fighter.stance) },
     { label: "Nascimento", value: formatIsoDate(fighter.date_of_birth) },
   ];

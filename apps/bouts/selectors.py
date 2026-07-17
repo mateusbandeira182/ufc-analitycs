@@ -18,17 +18,34 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from apps.bouts.models import Bout, BoutFighter
+from apps.bouts.enums import Corner
+from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 
 
 @dataclass(frozen=True)
+class BoutFighterRoundRow:
+    """Uma linha round-a-round (``bout_fighter_rounds``) com o canto e o lutador.
+
+    ``round`` é o model ``BoutFighterRound`` (stats do round). O ``fighter_id`` e o
+    ``corner`` vêm do ``bout_fighter`` dono do round -- resolvidos em memória a
+    partir dos cantos já carregados, sem join em ``bout_fighters`` na query (mantém
+    o custo de leitura enxuto e não interfere na contagem de queries do card).
+    """
+
+    round: BoutFighterRound
+    fighter_id: int
+    corner: Corner
+
+
+@dataclass(frozen=True)
 class BoutDetail:
-    """Composição de leitura de uma luta: a luta, o evento e os dois cantos."""
+    """Composição de leitura de uma luta: a luta, o evento, os cantos e os rounds."""
 
     bout: Bout
     event: Event
     fighters: list[BoutFighter]  # ordem determinística por corner
+    rounds: list[BoutFighterRoundRow]  # round-a-round por canto (vazio se ausente)
 
 
 def _load_corners(session: Session, bout_id: int) -> list[BoutFighter]:
@@ -69,6 +86,35 @@ def _load_corners_batch(session: Session, bout_ids: Sequence[int]) -> dict[int, 
     return corners_por_bout
 
 
+def _rounds_for_corners(
+    session: Session, corners: Sequence[BoutFighter]
+) -> list[BoutFighterRoundRow]:
+    """Carrega o round-a-round dos cantos dados, agrupado por canto e ordenado por round.
+
+    A query filtra ``bout_fighter_rounds`` por ``bout_fighter_id IN (...)`` -- sem
+    join em ``bout_fighters`` -- e o canto/lutador de cada round é resolvido em
+    memória a partir dos cantos já carregados. A ordem de saída segue a ordem dos
+    ``corners`` (já determinística por ``corner``), com os rounds de cada canto em
+    ordem crescente. Cantos sem round-a-round (backfill parcial) simplesmente não
+    contribuem linhas.
+    """
+    if not corners:
+        return []
+    rounds_por_canto: dict[int, list[BoutFighterRound]] = defaultdict(list)
+    linhas = session.scalars(
+        select(BoutFighterRound)
+        .where(BoutFighterRound.bout_fighter_id.in_([bf.id for bf in corners]))
+        .order_by(BoutFighterRound.bout_fighter_id, BoutFighterRound.round)
+    )
+    for linha in linhas:
+        rounds_por_canto[linha.bout_fighter_id].append(linha)
+    return [
+        BoutFighterRoundRow(round=linha, fighter_id=bf.fighter_id, corner=bf.corner)
+        for bf in corners
+        for linha in rounds_por_canto.get(bf.id, [])
+    ]
+
+
 def get_bout_by_id(session: Session, bout_id: int) -> BoutDetail | None:
     """Devolve a composição da luta pelo id, ou ``None`` quando não existe."""
     bout = session.get(Bout, bout_id)
@@ -79,7 +125,13 @@ def get_bout_by_id(session: Session, bout_id: int) -> BoutDetail | None:
     event = session.get(Event, bout.event_id)
     if event is None:
         return None
-    return BoutDetail(bout=bout, event=event, fighters=_load_corners(session, bout_id))
+    corners = _load_corners(session, bout_id)
+    return BoutDetail(
+        bout=bout,
+        event=event,
+        fighters=corners,
+        rounds=_rounds_for_corners(session, corners),
+    )
 
 
 def get_head_to_head(session: Session, a_id: int, b_id: int) -> list[BoutDetail]:
@@ -106,7 +158,46 @@ def get_head_to_head(session: Session, a_id: int, b_id: int) -> list[BoutDetail]
     )
     rows = session.execute(stmt).tuples().all()
     corners_por_bout = _load_corners_batch(session, [bout.id for bout, _ in rows])
+    rounds_por_bout = _rounds_for_corners_batch(session, corners_por_bout)
     return [
-        BoutDetail(bout=bout, event=event, fighters=corners_por_bout.get(bout.id, []))
+        BoutDetail(
+            bout=bout,
+            event=event,
+            fighters=corners_por_bout.get(bout.id, []),
+            rounds=rounds_por_bout.get(bout.id, []),
+        )
         for bout, event in rows
     ]
+
+
+def _rounds_for_corners_batch(
+    session: Session, corners_por_bout: dict[int, list[BoutFighter]]
+) -> dict[int, list[BoutFighterRoundRow]]:
+    """Carrega o round-a-round de vários bouts em UMA query, agrupado por ``bout_id``.
+
+    Evita o N+1 de consultar round a round por luta: junta os ids de canto de todos
+    os bouts numa única ``SELECT ... WHERE bout_fighter_id IN (...)`` e reagrupa em
+    memória, reusando ``BoutFighterRoundRow`` (canto/lutador resolvidos a partir dos
+    cantos já carregados). A query não referencia ``bout_fighters``, então não conta
+    para o orçamento de queries de cantos do card.
+    """
+    todos_os_cantos = [bf for cantos in corners_por_bout.values() for bf in cantos]
+    if not todos_os_cantos:
+        return {}
+    canto_por_id = {bf.id: bf for bf in todos_os_cantos}
+    rounds_por_canto: dict[int, list[BoutFighterRound]] = defaultdict(list)
+    linhas = session.scalars(
+        select(BoutFighterRound)
+        .where(BoutFighterRound.bout_fighter_id.in_(list(canto_por_id)))
+        .order_by(BoutFighterRound.bout_fighter_id, BoutFighterRound.round)
+    )
+    for linha in linhas:
+        rounds_por_canto[linha.bout_fighter_id].append(linha)
+    resultado: dict[int, list[BoutFighterRoundRow]] = {}
+    for bout_id, cantos in corners_por_bout.items():
+        resultado[bout_id] = [
+            BoutFighterRoundRow(round=linha, fighter_id=bf.fighter_id, corner=bf.corner)
+            for bf in cantos
+            for linha in rounds_por_canto.get(bf.id, [])
+        ]
+    return resultado

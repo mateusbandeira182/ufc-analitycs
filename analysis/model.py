@@ -42,6 +42,19 @@ ARTIFACT_NAME = "fight_winner_model.joblib"
 
 
 @dataclass(frozen=True)
+class LoadedModel:
+    """Modelo recarregado do artefato, pronto para servir a predição.
+
+    Simetria com ``save_artifact``/``TrainingResult``: expõe o classificador treinado e a
+    lista ordenada de features (``feature_names``) que ele consome -- a mesma ordem/colunas
+    do treino, contrato de alinhamento do vetor de features no momento da predição.
+    """
+
+    model: HistGradientBoostingClassifier
+    feature_names: list[str]
+
+
+@dataclass(frozen=True)
 class TrainingResult:
     """Saída coesa de uma execução de treino: modelo, features, métricas e metadados."""
 
@@ -131,3 +144,30 @@ def save_artifact(result: TrainingResult, directory: Path = ARTIFACTS_DIR) -> Pa
     }
     joblib.dump(payload, path)
     return path
+
+
+def load_artifact(directory: Path = ARTIFACTS_DIR) -> LoadedModel:
+    """Recarrega o modelo e a lista de features do artefato joblib persistido.
+
+    Simetria de ``save_artifact``: devolve o classificador pronto para predição e as
+    ``feature_names`` na ordem do treino. O joblib é fronteira dinâmica (``joblib.load``
+    devolve ``Any``): o tipo é estreitado na borda -- o dicionário e o modelo são validados
+    por ``isinstance`` e as features convertidas para ``list[str]``, sem propagar ``Any``.
+    Levanta ``FileNotFoundError`` se o artefato não existe (nunca devolve modelo vazio).
+    """
+    path = directory / ARTIFACT_NAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Artefato do modelo não encontrado em {path}; treine com 'python -m analysis.train'."
+        )
+    raw = joblib.load(path)
+    if not isinstance(raw, dict):
+        raise TypeError(f"Artefato inesperado em {path}: esperado dict, obtido {type(raw)!r}.")
+    model = raw["model"]
+    if not isinstance(model, HistGradientBoostingClassifier):
+        raise TypeError(
+            f"Modelo do artefato com tipo inesperado: {type(model)!r} "
+            f"(esperado HistGradientBoostingClassifier)."
+        )
+    feature_names = [str(name) for name in raw["feature_names"]]
+    return LoadedModel(model=model, feature_names=feature_names)

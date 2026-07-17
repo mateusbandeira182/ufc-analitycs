@@ -3,6 +3,7 @@ import type {
   BoutFighterStatsOut,
   FighterBoutOut,
 } from "@/api/schema";
+import { NULL_STRIKE_SPLITS } from "@/mocks/strikeSplits";
 
 /*
   Fixtures do histórico de lutas para os testes e handlers MSW.
@@ -24,6 +25,7 @@ function stubStats(fighterId: number, name: string): BoutFighterStatsOut {
     takedowns_attempted: null,
     submission_attempts: null,
     control_time_seconds: null,
+    ...NULL_STRIKE_SPLITS,
     source: "kaggle",
   };
 }
@@ -124,7 +126,14 @@ function cornerStats(
     | "control_time_seconds"
   >,
 ): BoutFighterStatsOut {
-  return { fighter_id: fighterId, name, corner, source: "kaggle", ...box };
+  return {
+    fighter_id: fighterId,
+    name,
+    corner,
+    ...NULL_STRIKE_SPLITS,
+    source: "kaggle",
+    ...box,
+  };
 }
 
 /*
@@ -145,6 +154,10 @@ const PEREIRA_HILL: BoutDetailOut = {
   round: 2,
   ending_time_seconds: 225,
   weight_class: "Light Heavyweight",
+  title_bout: true,
+  scheduled_rounds: 5,
+  referee: "Marc Goddard",
+  rounds: [],
   source: "kaggle",
   fighters: [
     cornerStats(100, "Alex Pereira", "red", {
@@ -186,6 +199,10 @@ const OLIVEIRA_TSARUKYAN: BoutDetailOut = {
   round: null,
   ending_time_seconds: null,
   weight_class: null,
+  title_bout: false,
+  scheduled_rounds: 3,
+  referee: null,
+  rounds: [],
   source: "kaggle",
   fighters: [
     cornerStats(300, "Charles Oliveira", "red", {
@@ -227,6 +244,10 @@ const HOLLOWAY_POIRIER: BoutDetailOut = {
   round: 5,
   ending_time_seconds: 300,
   weight_class: "Lightweight",
+  title_bout: false,
+  scheduled_rounds: 5,
+  referee: "Herb Dean",
+  rounds: [],
   source: "kaggle",
   fighters: [
     cornerStats(500, "Max Holloway", "red", {

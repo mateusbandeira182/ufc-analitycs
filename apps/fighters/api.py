@@ -18,6 +18,7 @@ from apps.fighters.schemas import (
     FighterOpponentOut,
     FighterOut,
     FighterStatsOut,
+    StrikingProfileOut,
 )
 from apps.fighters.selectors import (
     get_fighter_by_id,
@@ -106,4 +107,12 @@ def get_fighter_stats_endpoint(
         avg_takedowns_landed=stats.avg_takedowns_landed,
         avg_control_time_seconds=stats.avg_control_time_seconds,
         wins_by_method=stats.wins_by_method,
+        striking_profile=StrikingProfileOut(
+            share_head=stats.striking_profile.share_head,
+            share_body=stats.striking_profile.share_body,
+            share_leg=stats.striking_profile.share_leg,
+            share_distance=stats.striking_profile.share_distance,
+            share_clinch=stats.striking_profile.share_clinch,
+            share_ground=stats.striking_profile.share_ground,
+        ),
     )

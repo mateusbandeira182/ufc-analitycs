@@ -24,6 +24,22 @@ export function formatAvgControlTime(seconds: number | null): string {
   return seconds === null ? DASH : formatDuration(Math.round(seconds));
 }
 
+/** Rótulo explícito para share de striking sem dado (denominador zero no backend). */
+export const NO_DATA = "sem dado";
+
+/**
+ * Formata uma fração de golpes conectados (0..1) como percentual inteiro em pt-BR
+ * (ex.: `0.453` -> `"45%"`). O share vem do backend como número ou nulo; nulo — e
+ * qualquer valor não finito, por garantia — vira "sem dado" (nunca NaN/Infinity
+ * na tela).
+ */
+export function formatShare(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return NO_DATA;
+  }
+  return `${String(Math.round(value * 100))}%`;
+}
+
 /** Um método de encerramento com sua contagem de vitórias, já rotulado. */
 export interface FinishSegment {
   method: BoutMethod;

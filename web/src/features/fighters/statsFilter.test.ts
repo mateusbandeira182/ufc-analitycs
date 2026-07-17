@@ -7,6 +7,7 @@ import {
   selectBouts,
   type StatsFilter,
 } from "@/features/fighters/statsFilter";
+import { NULL_STRIKE_SPLITS } from "@/mocks/strikeSplits";
 
 /*
   Filtragem e agregação client-side das estatísticas do lutador. O histórico chega
@@ -47,6 +48,7 @@ function makeBout(id: number, overrides: BoutOverrides): FighterBoutOut {
       takedowns_attempted: null,
       submission_attempts: null,
       control_time_seconds: overrides.control ?? null,
+      ...NULL_STRIKE_SPLITS,
       source: "kaggle",
     },
   };
