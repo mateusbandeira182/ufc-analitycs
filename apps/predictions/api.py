@@ -1,17 +1,23 @@
-"""Router fino de predições (somente leitura): serving do modelo na API v1.
+"""Router fino de predições: serving do modelo na API v1.
 
-Expõe ``GET /api/v1/predict/matchup``: valida a entrada, resolve os dois lutadores do banco e
-delega o cálculo ao serving já pronto (``analysis.predict.predict_matchup``), devolvendo o
-palpite **neutro de canto**. O modelo cru é sensível ao canto (aprendeu a vantagem do
-vermelho), logo a predição de uma única ordem não é simétrica; o router chama o serving nas
-duas ordens (A vs B e B vs A) e usa a média como probabilidade neutra de A vencer -- assim a
-ordem dos parâmetros não altera o resultado.
+Expõe ``GET /api/v1/predict/matchup`` (um confronto hipotético) e
+``GET /api/v1/predict/event/{event_id}`` (o card completo de um evento): valida a entrada,
+resolve os lutadores do banco e delega o cálculo ao serving já pronto (``analysis.predict``),
+devolvendo o palpite **neutro de canto**. O modelo cru é sensível ao canto (aprendeu a vantagem
+do vermelho), logo a predição de uma única ordem não é simétrica; o serving é chamado nas duas
+ordens (A vs B e B vs A) e a média é a probabilidade neutra de A vencer -- assim a ordem dos
+parâmetros não altera o resultado.
 
 Validação no próprio router (padrão do head-to-head, ADR 0003): ``fighter_a == fighter_b`` ->
 422, checado ANTES da existência (dois ids iguais e inexistentes ainda respondem 422); lutador
 inexistente -> 404 (via ``get_fighter_by_id``); artefato de modelo ausente -> 503 (mensagem
 clara, nunca 500 cru). O diretório do artefato é uma dependência (``get_artifacts_dir``) para
 ser sobreposta nos testes.
+
+O endpoint de card é o primeiro da API v1 que **escreve** (registra cada predição em
+``bout_predictions``): a gravação e o commit ficam no service, o router segue fino. Nele, a
+ausência de histórico é estado de uma luta (``unavailable_reason``, status 200) e não 422 --
+no card, uma luta impredizível não é erro da requisição.
 """
 
 from __future__ import annotations
@@ -24,8 +30,20 @@ from sqlalchemy.orm import Session
 
 from analysis.model import ARTIFACTS_DIR
 from analysis.predict import predict_matchup
+from apps.bouts.models import BoutFighter
+from apps.events.selectors import get_event_by_id
 from apps.fighters.selectors import get_fighter_by_id
-from apps.predictions.schemas import MatchupFighterOut, MatchupPredictionOut
+from apps.predictions.schemas import (
+    CardBoutPredictionOut,
+    EventPredictionOut,
+    MatchupFighterOut,
+    MatchupPredictionOut,
+)
+from apps.predictions.services import (
+    BoutCardPrediction,
+    predict_event_card,
+    predicted_winner_id,
+)
 from mma_analytics.db import get_session
 
 router = APIRouter(prefix="/predict", tags=["predictions"])
@@ -38,6 +56,15 @@ _MATCHUP_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     404: {"description": "Lutador não encontrado"},
     503: {"description": "Modelo preditivo indisponível: artefato treinado ausente"},
 }
+
+# O card não declara 422 de negócio: lutador sem histórico ali é estado de UMA luta
+# (``unavailable_reason``), não erro da requisição -- ver o docstring do endpoint.
+_EVENT_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
+    404: {"description": "Event não encontrado"},
+    503: {"description": "Modelo preditivo indisponível: artefato treinado ausente"},
+}
+
+_MODEL_UNAVAILABLE_DETAIL = "Modelo preditivo indisponível: artefato treinado não encontrado."
 
 
 def get_artifacts_dir() -> Path:
@@ -85,30 +112,70 @@ def predict_matchup_endpoint(
     try:
         prob_a_wins = _neutral_prob_a_wins(session, fighter_a, fighter_b, artifacts_dir)
     except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Modelo preditivo indisponível: artefato treinado não encontrado.",
-        ) from exc
+        raise HTTPException(status_code=503, detail=_MODEL_UNAVAILABLE_DETAIL) from exc
     except ValueError as exc:
         # Lutador válido (existe no banco), mas sem lutas no granular: a pipeline de features
         # as-of não tem base para predizer. Traduzido para 422 (nunca 500 cru) para a SPA
         # tratar "sem histórico" como estado esperado.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    prob_b_wins = 1.0 - prob_a_wins
-    # O vencedor previsto é função pura do par (não da ordem dos parâmetros): maior
-    # probabilidade vence e, no empate exato, desempata pelo menor id -- assim (A, B) e
-    # (B, A) elegem sempre o mesmo lutador, coerente com a neutralidade das probabilidades.
-    if prob_a_wins > prob_b_wins:
-        predicted_winner_id = fighter_a
-    elif prob_b_wins > prob_a_wins:
-        predicted_winner_id = fighter_b
-    else:
-        predicted_winner_id = min(fighter_a, fighter_b)
     return MatchupPredictionOut(
         fighter_a=MatchupFighterOut(id=a.id, name=a.name),
         fighter_b=MatchupFighterOut(id=b.id, name=b.name),
         prob_a_wins=prob_a_wins,
-        prob_b_wins=prob_b_wins,
-        predicted_winner_id=predicted_winner_id,
+        prob_b_wins=1.0 - prob_a_wins,
+        predicted_winner_id=predicted_winner_id(fighter_a, fighter_b, prob_a_wins),
+    )
+
+
+def _corner_out(bout_fighter: BoutFighter | None) -> MatchupFighterOut | None:
+    """Identidade do canto (id + nome), ``None`` quando a luta não tem esse canto cadastrado."""
+    if bout_fighter is None:
+        return None
+    return MatchupFighterOut(id=bout_fighter.fighter_id, name=bout_fighter.fighter.name)
+
+
+def _to_card_bout_out(previsao: BoutCardPrediction) -> CardBoutPredictionOut:
+    """Converte a predição de uma luta do card no schema de saída."""
+    return CardBoutPredictionOut(
+        bout_id=previsao.bout_id,
+        fighter_red=_corner_out(previsao.red),
+        fighter_blue=_corner_out(previsao.blue),
+        prob_red_wins=previsao.prob_red_wins,
+        prob_blue_wins=previsao.prob_blue_wins,
+        predicted_winner_id=previsao.predicted_winner_id,
+        unavailable_reason=previsao.unavailable_reason,
+    )
+
+
+@router.get(
+    "/event/{event_id}", response_model=EventPredictionOut, responses=_EVENT_ERROR_RESPONSES
+)
+def predict_event_card_endpoint(
+    event_id: int,
+    session: Annotated[Session, Depends(get_session)],
+    artifacts_dir: Annotated[Path, Depends(get_artifacts_dir)],
+) -> EventPredictionOut:
+    """Palpite neutro de canto para todas as lutas do card de um evento.
+
+    Event inexistente -> 404; artefato de modelo ausente -> 503; evento sem lutas -> 200 com
+    ``bouts`` vazio. Uma luta impredizível (lutador sem histórico no granular, card mal
+    formado) **não** derruba o card: volta com probabilidades nulas e ``unavailable_reason``
+    preenchido, status 200 -- diferença deliberada em relação ao matchup isolado, onde a mesma
+    situação é 422 porque é erro da própria requisição.
+
+    Cada luta predita é registrada em ``bout_predictions`` com ``source="api"``, idempotente
+    por ``(bout_id, model_version)``.
+    """
+    if get_event_by_id(session, event_id) is None:
+        raise HTTPException(status_code=404, detail="Event não encontrado")
+    try:
+        card = predict_event_card(session, event_id, artifacts_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=_MODEL_UNAVAILABLE_DETAIL) from exc
+    return EventPredictionOut(
+        event_id=card.event_id,
+        model_version=card.model_version,
+        n_features=card.n_features,
+        bouts=[_to_card_bout_out(previsao) for previsao in card.bouts],
     )

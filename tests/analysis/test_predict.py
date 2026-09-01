@@ -9,18 +9,23 @@ granular sintético, roda a pipeline real (``run_materialize`` -> ``bout_feature
 persiste um modelo pequeno num ``tmp_path`` e prediz um confronto entre dois lutadores desse
 histórico. As asserções são estruturais (probabilidades coerentes, vencedor entre os dois) e
 de **determinismo** -- a predição não afirma acurácia (o teto real é a linha de mercado).
+
+Cobrem também o recorte de "ter histórico" da Slice 08: não basta o lutador aparecer no
+granular, é preciso ter luta **anterior a hoje**. O caso que discrimina isso é o do lutador
+cuja única luta cadastrada é a futura do próprio card (``_seed_future_bout``) -- sem o recorte,
+a predição sairia fabricada sobre um vetor inteiramente ``NaN``.
 """
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy.orm import Session
 
-from analysis.model import run_training, save_artifact
-from analysis.predict import MatchupPrediction, predict_matchup
+from analysis.model import load_artifact, run_training, save_artifact
+from analysis.predict import MatchupPrediction, predict_card, predict_matchup
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
@@ -134,6 +139,44 @@ def _train_and_persist(session: Session, directory: Path) -> None:
     save_artifact(result, directory=directory)
 
 
+def _seed_future_bout(session: Session, red_fighter_id: int, blue_fighter_id: int) -> int:
+    """Semeia uma luta ainda **não realizada** (evento datado à frente de hoje).
+
+    Devolve o ``bout_id``. Sem vencedor e sem box-score: é o estado exato de um card por vir,
+    já cadastrado no granular mas sem nada a extrair dele. A data é relativa a hoje, e não
+    fixa, porque a "futuridade" da luta é justamente o que o cenário exerce. O ``method`` é
+    placeholder (a coluna é NOT NULL no schema atual, que nasceu para eventos já ocorridos);
+    nada na predição o consome.
+    """
+    futuro = datetime.now(UTC).date() + timedelta(days=90)
+    event = Event(name="UFC Card Futuro", date=futuro, location=None, source="kaggle")
+    session.add(event)
+    session.flush()
+    bout = Bout(
+        event_id=event.id,
+        winner_id=None,
+        method=BoutMethod.DECISION,
+        round=None,
+        ending_time_seconds=None,
+        weight_class=None,
+        source="kaggle",
+    )
+    session.add(bout)
+    session.flush()
+    session.add_all(
+        [
+            BoutFighter(
+                bout_id=bout.id, fighter_id=red_fighter_id, corner=Corner.RED, source="kaggle"
+            ),
+            BoutFighter(
+                bout_id=bout.id, fighter_id=blue_fighter_id, corner=Corner.BLUE, source="kaggle"
+            ),
+        ]
+    )
+    session.flush()
+    return int(bout.id)
+
+
 def test_predict_matchup_devolve_probabilidades_coerentes(
     db_session: Session, tmp_path: Path
 ) -> None:
@@ -205,3 +248,116 @@ def test_predict_matchup_lutador_sem_historico_falha_claro(
 
     with pytest.raises(ValueError, match="histórico"):
         predict_matchup(db_session, ids["Fighter Alpha"], int(sem_historico.id), directory=tmp_path)
+
+
+def test_predict_matchup_lutador_so_com_luta_futura_falha_claro(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Lutador cuja ÚNICA luta cadastrada é **futura** não tem histórico -- falha, não fabrica.
+
+    Regressão do bug corrigido na Slice 08: aparecer no granular não basta. A luta do card
+    ainda não aconteceu, então todo o box-score dela é nulo e o ``shift(1)`` a descarta da
+    própria linha. Sem o recorte por data de ``_fighters_with_past_bouts``, o estreante passaria
+    no teste de histórico **pela própria luta que se quer prever** e a predição sairia como um
+    0.5 fabricado sobre um vetor inteiramente ``NaN``. Distinto de
+    ``test_predict_matchup_lutador_sem_historico_falha_claro``, onde o lutador não aparece no
+    granular de forma alguma -- aquele cenário passaria mesmo com o recorte revertido.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    estreante = _make_fighter("Fighter Estreante", 195)
+    db_session.add(estreante)
+    db_session.flush()
+    _seed_future_bout(db_session, ids["Fighter Alpha"], int(estreante.id))
+
+    with pytest.raises(ValueError, match="histórico"):
+        predict_matchup(db_session, ids["Fighter Alpha"], int(estreante.id), directory=tmp_path)
+
+
+def test_predict_card_equivale_as_chamadas_individuais(db_session: Session, tmp_path: Path) -> None:
+    """Predizer N pares numa passada dá as MESMAS probabilidades que N chamadas isoladas.
+
+    É a prova de que reaproveitar a frame longa entre as lutas do card não contamina as
+    features: cada lutador tem uma única luta sintética no lote, então o ``shift(1)`` por
+    lutador enxerga exatamente o mesmo histórico que enxergaria numa chamada isolada.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    pares = [
+        (ids["Fighter Alpha"], ids["Fighter Delta"]),
+        (ids["Fighter Bravo"], ids["Fighter Charlie"]),
+    ]
+
+    card = predict_card(db_session, pares, directory=tmp_path)
+
+    assert card.model_version == load_artifact(tmp_path).trained_at
+    assert card.n_features == len(load_artifact(tmp_path).feature_names)
+    assert [(m.fighter_a_id, m.fighter_b_id) for m in card.matchups] == pares
+    for par, previsto in zip(pares, card.matchups, strict=True):
+        individual = predict_matchup(db_session, par[0], par[1], directory=tmp_path)
+        assert previsto.prob_a_wins == pytest.approx(individual.prob_a_wins)
+        assert previsto.missing_history_ids == ()
+
+
+def test_predict_card_marca_par_sem_historico_sem_afetar_os_demais(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Um par impredizível volta marcado; os outros pares do mesmo lote seguem preditos.
+
+    Diferença deliberada em relação a ``predict_matchup``: no lote, a ausência de histórico
+    é **estado de um item**, não erro da chamada -- uma luta impredizível não derruba o card.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    sem_historico = _make_fighter("Fighter Sem Historico", 195)
+    db_session.add(sem_historico)
+    db_session.flush()
+    orfao = int(sem_historico.id)
+
+    card = predict_card(
+        db_session,
+        [(ids["Fighter Alpha"], orfao), (ids["Fighter Bravo"], ids["Fighter Charlie"])],
+        directory=tmp_path,
+    )
+
+    impredizivel, predito = card.matchups
+    assert impredizivel.prob_a_wins is None
+    assert impredizivel.missing_history_ids == (orfao,)
+    assert predito.prob_a_wins is not None
+    assert predito.missing_history_ids == ()
+
+
+def test_predict_card_recusa_lutador_repetido_no_lote(db_session: Session, tmp_path: Path) -> None:
+    """Um ``fighter_id`` em dois pares do mesmo lote levanta ``ValueError`` (invariante).
+
+    Duas lutas sintéticas do mesmo lutador na mesma passada fariam a segunda consumir a
+    primeira via ``shift(1)`` -- e a primeira tem box-score todo nulo. Em vez de devolver
+    features corrompidas em silêncio, o lote falha visível.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+
+    with pytest.raises(ValueError, match="mais de uma luta"):
+        predict_card(
+            db_session,
+            [
+                (ids["Fighter Alpha"], ids["Fighter Delta"]),
+                (ids["Fighter Alpha"], ids["Fighter Bravo"]),
+            ],
+            directory=tmp_path,
+        )
+
+
+def test_predict_card_sem_pares_nao_toca_o_granular(db_session: Session, tmp_path: Path) -> None:
+    """Lote vazio devolve só a identidade do modelo -- a pipeline não roda sem pares.
+
+    Sustenta o card vazio da API: um evento sem lutas ainda responde a versão do modelo,
+    sem pagar a leitura do granular nem quebrar o pivô com uma frame sintética vazia.
+    """
+    _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+
+    card = predict_card(db_session, [], directory=tmp_path)
+
+    assert card.matchups == []
+    assert card.model_version == load_artifact(tmp_path).trained_at
