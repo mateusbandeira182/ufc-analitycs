@@ -2,7 +2,8 @@
 
 Cobrem o CA-05 da SPEC decomposto: escrita idempotente em ``bout_fighter_rounds`` por
 ``(bout_fighter_id, round)`` com ``source="cito"``; cache em disco resumável (hit não chama
-``fetch`` nem cobra ``CallBudget``); janela fixa 2019-2025; SAVEPOINT por evento; ``CallBudget``
+``fetch`` nem cobra ``CallBudget``); janela do piloto 2023-2025; SAVEPOINT por evento;
+``CallBudget``
 cobrado por fetch não-cacheado com teto respeitado; rate-limit entre eventos não-cacheados; e o
 gate humano que aborta antes de qualquer chamada contra a rede real. Nenhum teste toca a rede: o
 cliente roda em modo fixture (JSON local) e o gate é exercitado com um spy que prova zero chamadas.
@@ -15,6 +16,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -26,14 +28,22 @@ from ingestion.cito.backfill_rounds import (
     WINDOW_END,
     WINDOW_START,
     BackfillRoundsSummary,
+    _parse_args,
     _select_events_in_window,
+    fill_bout_context,
+    fill_bout_fighter_totals,
     main,
     run_backfill_rounds,
     upsert_bout_fighter_rounds,
 )
 from ingestion.cito.cache import EventStatsCache
 from ingestion.cito.client import CallBudget, CitoClient, QuotaExceededError
-from ingestion.cito.dto import CitoEventStats, CitoRoundStatLine
+from ingestion.cito.dto import (
+    CitoBoutBlock,
+    CitoBoutStatLine,
+    CitoEventStats,
+    CitoRoundStatLine,
+)
 from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
 from ingestion.normalize import normalize_name
 
@@ -41,6 +51,14 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 # Canto vermelho de UFC 319 na fixture -- as linhas de stat identificam o lutador pelo slug.
 _RED_SLUG_319 = "dricus-du-plessis"
+
+# Fixture do payload REAL da Cito (sondagem autorizada de 2026-08-31): 13 lutas, 26 totais,
+# 52 rounds. É a única que exercita o caminho completo sobre dado não editado.
+_REAL_PAYLOAD_SLUG = "ufc-fight-night-august-22-2026"
+
+# Fixture mínima de evento **sem** round-a-round (``roundStats: []``): prova que a ausência
+# vira zero inserção e cobertura 0, nunca dado fabricado.
+_SEM_ROUNDS_SLUG = "ufc-321-sem-rounds"
 
 
 # --------------------------------------------------------------------------- #
@@ -76,6 +94,7 @@ def _seed_event_bout(
     red_name: str,
     blue_name: str,
     cito_slug: str | None,
+    weight_class: str | None = "Middleweight",
 ) -> tuple[Event, dict[str, int]]:
     """Semeia um evento com uma luta e os dois cantos; devolve o evento e os ``bout_fighter`` ids.
 
@@ -96,7 +115,7 @@ def _seed_event_bout(
         method=BoutMethod.DECISION,
         round=3,
         ending_time_seconds=None,
-        weight_class="Middleweight",
+        weight_class=weight_class,
         source="kaggle",
     )
     session.add(bout)
@@ -109,28 +128,71 @@ def _seed_event_bout(
     return event, {"red": red_bf.id, "blue": blue_bf.id}
 
 
-def _seed_ufc319(session: Session) -> tuple[Event, dict[str, int]]:
-    """Evento UFC 319 (2025-08-16) casável com a fixture ``event_stats_ufc-319.json``."""
+def _seed_ufc319(
+    session: Session, *, event_date: date = date(2025, 8, 16)
+) -> tuple[Event, dict[str, int]]:
+    """Evento UFC 319 casável com a fixture ``event_stats_ufc-319.json``.
+
+    A ``event_date`` é parametrizável porque os testes de teto por execução precisam ordenar
+    vários eventos dentro da janela; o default é a data real do card.
+    """
     return _seed_event_bout(
         session,
         name="UFC 319: Du Plessis vs. Chimaev",
-        event_date=date(2025, 8, 16),
+        event_date=event_date,
         red_name="Dricus du Plessis",
         blue_name="Khamzat Chimaev",
         cito_slug="ufc-319",
     )
 
 
-def _seed_ufc320(session: Session) -> tuple[Event, dict[str, int]]:
-    """Evento UFC 320 (2025-10-04) casável com a fixture ``event_stats_ufc-320.json``."""
+def _seed_ufc320(
+    session: Session,
+    *,
+    event_date: date = date(2025, 10, 4),
+    weight_class: str | None = "Middleweight",
+) -> tuple[Event, dict[str, int]]:
+    """Evento UFC 320 casável com a fixture ``event_stats_ufc-320.json``.
+
+    A ``weight_class`` é parametrizável para separar os dois casos do contexto de card: nula
+    (o payload preenche) e já presente do seed (o payload nunca sobrescreve).
+    """
     return _seed_event_bout(
         session,
         name="UFC 320: Jones vs. Miocic",
-        event_date=date(2025, 10, 4),
+        event_date=event_date,
         red_name="Jon Jones",
         blue_name="Stipe Miocic",
         cito_slug="ufc-320",
+        weight_class=weight_class,
     )
+
+
+def _seed_fight_night(
+    session: Session, *, event_date: date = date(2025, 3, 1)
+) -> tuple[Event, dict[str, int]]:
+    """Evento casável com a fixture do **payload real** (Fight Night de 2026-08-22).
+
+    Só a luta principal do card é semeada; as outras 12 lutas do payload real ficam sem
+    ``bout_fighter`` correspondente -- é exatamente o cenário de canto não-casado (CA-08). A
+    ``event_date`` persistida não precisa ser a do payload: o identificador vem do catálogo
+    (``cito_slug``), nunca da data.
+    """
+    return _seed_event_bout(
+        session,
+        name="UFC Fight Night: Hernandez vs Rodrigues",
+        event_date=event_date,
+        red_name="Anthony Hernandez",
+        blue_name="Gregory Rodrigues",
+        cito_slug=_REAL_PAYLOAD_SLUG,
+    )
+
+
+def _bout_id_de(session: Session, bout_fighter_id: int) -> int:
+    """O ``bouts.id`` do canto persistido (os builders devolvem ``bout_fighter`` ids)."""
+    bout_fighter = session.get(BoutFighter, bout_fighter_id)
+    assert bout_fighter is not None
+    return bout_fighter.bout_id
 
 
 def _fixture_client(budget: CallBudget | None = None) -> CitoClient:
@@ -313,29 +375,122 @@ def test_event_stats_cache_hit_preserva_splits_round_a_round(tmp_path: Path) -> 
 
 
 # --------------------------------------------------------------------------- #
-# CA-05 -- janela fixa 2019-2025
+# CA-05 -- janela do piloto: 2023-2025
 # --------------------------------------------------------------------------- #
 
 
 def test_window_constantes_incluem_fronteiras() -> None:
-    """CA-05: a janela é fixa 2019-01-01 a 2025-12-31 (inclui as fronteiras, exclui 2026)."""
-    assert date(2019, 1, 1) == WINDOW_START
+    """CA-05: a janela do piloto é 2023-01-01 a 2025-12-31 (fronteiras inclusivas)."""
+    assert date(2023, 1, 1) == WINDOW_START
     assert date(2025, 12, 31) == WINDOW_END
 
 
-def test_select_events_in_window_inclui_2019_2025_exclui_2018_2026(db_session: Session) -> None:
-    """CA-05: só eventos com ``date`` em [2019, 2025]; 2018 e 2026 ficam de fora."""
-    e2018 = Event(name="UFC 200", date=date(2018, 7, 9), location=None, source="kaggle")
+def test_select_events_in_window_inclui_2023_2025_exclui_2022_2026(db_session: Session) -> None:
+    """CA-05: só eventos com ``date`` em [2023, 2025]; 2019, 2022 e 2026 ficam de fora.
+
+    A janela encolheu de 2019-2025 para 2023-2025 quando o piloto medido substituiu o lote
+    (decisão do humano após o bootstrap pareado da Sprint 007-01): 2019 e 2022 provam que o
+    corte inferior se moveu, 2026 prova que o superior não.
+    """
     e2019 = Event(name="UFC 234", date=date(2019, 2, 9), location=None, source="kaggle")
+    e2022 = Event(name="UFC 282", date=date(2022, 12, 10), location=None, source="kaggle")
+    e2023 = Event(name="UFC 283", date=date(2023, 1, 21), location=None, source="kaggle")
     e2025 = Event(name="UFC 319", date=date(2025, 8, 16), location=None, source="kaggle")
     e2026 = Event(name="UFC 400", date=date(2026, 1, 17), location=None, source="kaggle")
-    db_session.add_all([e2018, e2019, e2025, e2026])
+    db_session.add_all([e2019, e2022, e2023, e2025, e2026])
     db_session.flush()
 
     selected = _select_events_in_window(db_session)
 
     names = {event.name for event in selected}
-    assert names == {"UFC 234", "UFC 319"}
+    assert names == {"UFC 283", "UFC 319"}
+
+
+# --------------------------------------------------------------------------- #
+# CA-01 -- teto de eventos por execução (--max-events), a trava da sondagem
+# --------------------------------------------------------------------------- #
+
+
+def test_run_backfill_rounds_max_events_processa_so_os_n_mais_antigos(
+    db_session: Session,
+) -> None:
+    """CA-01: ``max_events=2`` processa só os DOIS eventos mais antigos da janela.
+
+    É a trava da sondagem: o piloto autoriza 115 chamadas, e um erro de laço deve interromper
+    cedo em vez de consumir o orçamento inteiro. A ordem é a cronológica de
+    ``_select_events_in_window`` (``date, id``), então o evento de 2025 fica de fora.
+    """
+    _seed_ufc319(db_session, event_date=date(2023, 1, 21))
+    _seed_ufc320(db_session, event_date=date(2024, 6, 1))
+    _seed_fight_night(db_session, event_date=date(2025, 8, 16))
+    budget = CallBudget(limit=10)
+    client = _RecordingClient(budget)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    summary = run_backfill_rounds(db_session, client, budget, cache, max_events=2)
+    db_session.flush()
+
+    assert client.fetched == ["ufc-319", "ufc-320"]
+    assert budget.used == 2
+    assert summary.events_processed == 2
+    assert summary.cito_calls_used == 2
+
+
+def test_run_backfill_rounds_max_events_none_processa_a_janela_inteira(
+    db_session: Session,
+) -> None:
+    """CA-01: sem teto (``max_events=None``, o default), a janela inteira é processada."""
+    _seed_ufc319(db_session, event_date=date(2023, 1, 21))
+    _seed_ufc320(db_session, event_date=date(2024, 6, 1))
+    budget = CallBudget(limit=10)
+    client = _RecordingClient(budget)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    summary = run_backfill_rounds(db_session, client, budget, cache)
+
+    assert client.fetched == ["ufc-319", "ufc-320"]
+    assert summary.events_processed == 2
+
+
+def test_run_backfill_rounds_sondagem_limitada_vira_cache_hit_no_lote(db_session: Session) -> None:
+    """CA-01/CA-09: a sondagem limitada não re-gasta quota no lote completo (mesmo ``cache-dir``).
+
+    É o que faz as 10 chamadas da sondagem contarem **dentro** das 115 do piloto: o run 1
+    (``max_events=1``) baixa o evento mais antigo; o run 2, sem teto e com o mesmo diretório de
+    cache, o reaproveita por cache hit e só cobra quota do evento novo.
+    """
+    _seed_ufc319(db_session, event_date=date(2023, 1, 21))
+    _seed_ufc320(db_session, event_date=date(2024, 6, 1))
+    cache_dir = _cache_dir(db_session)
+
+    budget_sondagem = CallBudget(limit=10)
+    client_sondagem = _RecordingClient(budget_sondagem)
+    run_backfill_rounds(
+        db_session,
+        client_sondagem,
+        budget_sondagem,
+        EventStatsCache(cache_dir),
+        max_events=1,
+    )
+    db_session.flush()
+
+    budget_lote = CallBudget(limit=10)
+    client_lote = _RecordingClient(budget_lote)
+    lote = run_backfill_rounds(db_session, client_lote, budget_lote, EventStatsCache(cache_dir))
+    db_session.flush()
+
+    assert client_sondagem.fetched == ["ufc-319"]
+    assert budget_sondagem.used == 1
+    # O lote só bateu na Cito pelo evento que a sondagem não baixou.
+    assert client_lote.fetched == ["ufc-320"]
+    assert budget_lote.used == 1
+    assert lote.cache_hits == 1
+
+
+def test_cli_expoe_max_events_com_default_sem_teto() -> None:
+    """CA-01: a CLI expõe ``--max-events``; ausente, o default é ``None`` (janela inteira)."""
+    assert _parse_args(["--max-events", "10"]).max_events == 10
+    assert _parse_args([]).max_events is None
 
 
 # --------------------------------------------------------------------------- #
@@ -384,7 +539,7 @@ def test_run_backfill_rounds_pula_evento_sem_cito_slug(
     _seed_event_bout(
         db_session,
         name="UFC 250: Nunes vs. Spencer",
-        event_date=date(2020, 6, 6),
+        event_date=date(2023, 6, 6),
         red_name="Amanda Nunes",
         blue_name="Felicia Spencer",
         cito_slug=None,
@@ -502,6 +657,433 @@ def test_run_backfill_rounds_resumivel_nao_refaz_fetch_do_evento_ja_cacheado(
     # Run 2 não refez nenhum fetch: ambos vieram do cache em disco (0 quota gasta na retomada).
     assert client_2.fetched == []
     assert budget_2.used == 0
+
+
+# --------------------------------------------------------------------------- #
+# CA-02 -- cobertura round-a-round observável no resumo e no log por evento
+# --------------------------------------------------------------------------- #
+
+
+def test_run_backfill_rounds_resumo_reporta_cobertura_round_a_round(db_session: Session) -> None:
+    """CA-02: o resumo traz lutas do payload x lutas com round-a-round, e a fração derivada.
+
+    A cobertura é medida **sobre o payload**, não sobre o que foi gravado: é ela que responde a
+    pergunta do piloto -- a Cito expõe round-a-round para estes eventos? -- independentemente de
+    quantos cantos casaram com a base persistida.
+    """
+    _seed_fight_night(db_session, event_date=date(2025, 3, 1))
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    summary = run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+
+    # Payload real: 13 lutas com box-score, 13 com round-a-round -> cobertura total.
+    assert summary.bouts_total == 13
+    assert summary.bouts_with_rounds == 13
+    assert summary.round_coverage == 1.0
+    assert summary.events_without_round_stats == 0
+
+
+def test_run_backfill_rounds_evento_sem_round_stats_e_ausencia_legitima(
+    db_session: Session,
+) -> None:
+    """CA-02/CA-04: evento sem ``roundStats`` dá cobertura 0, 0 inserção e nenhuma fabricação.
+
+    A API marca o round-a-round como enriquecimento "quando disponível": a ausência é achado
+    legítimo do piloto, vira nulo e é contada -- nunca preenchida com zero.
+    """
+    _seed_event_bout(
+        db_session,
+        name="UFC 321: Sem round-a-round",
+        event_date=date(2025, 11, 8),
+        red_name="Jon Jones",
+        blue_name="Stipe Miocic",
+        cito_slug=_SEM_ROUNDS_SLUG,
+    )
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    summary = run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+    db_session.flush()
+
+    assert summary.events_processed == 1
+    assert summary.bouts_total == 1
+    assert summary.bouts_with_rounds == 0
+    assert summary.round_coverage == 0.0
+    assert summary.events_without_round_stats == 1
+    assert summary.rounds_inserted == 0
+    assert db_session.scalar(select(func.count()).select_from(BoutFighterRound)) == 0
+
+
+def test_run_backfill_rounds_loga_uma_linha_por_evento_processado(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CA-02: cada evento processado emite uma linha de log com a própria cobertura."""
+    _seed_ufc319(db_session, event_date=date(2023, 1, 21))
+    _seed_ufc320(db_session, event_date=date(2024, 6, 1))
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    with caplog.at_level(logging.INFO, logger="ingestion.cito.backfill_rounds"):
+        run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+
+    # A linha do resumo agregado também cita cobertura; o recorte é pelas linhas POR EVENTO.
+    linhas_por_evento = [
+        registro
+        for registro in caplog.records
+        if registro.getMessage().startswith("Evento ") and "cobertura" in registro.getMessage()
+    ]
+    assert len(linhas_por_evento) == 2
+    assert "ufc-319" in linhas_por_evento[0].getMessage()
+    assert "ufc-320" in linhas_por_evento[1].getMessage()
+
+
+def test_round_coverage_sem_lutas_nao_divide_por_zero(db_session: Session) -> None:
+    """CA-02: janela sem nenhum evento devolve cobertura ``0.0`` em vez de dividir por zero."""
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    vazio = run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+
+    assert vazio.bouts_total == 0
+    assert vazio.round_coverage == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# CA-05 -- reversals e tempo de controle: preenche só o que está nulo
+# --------------------------------------------------------------------------- #
+
+
+def _bout_stat_line(slug: str, fighter_slug: str) -> CitoBoutStatLine:
+    """A linha de ``boutStats`` de um lutador na fixture do evento ``slug``."""
+    linhas = [
+        line for line in _fixture_event_stats(slug).bout_stats if line.fighter_slug == fighter_slug
+    ]
+    return linhas[0]
+
+
+def test_fill_bout_fighter_totals_preenche_reversals_e_tempo_de_controle_nulos(
+    db_session: Session,
+) -> None:
+    """CA-05: ``reversals`` e o tempo de controle nulos são preenchidos a partir de ``boutStats``.
+
+    A linha do canto continua com ``source="kaggle"``: ``source`` é a origem da LINHA (quem a
+    criou), não de cada campo. A procedência do enriquecimento fica rastreável nas linhas de
+    ``bout_fighter_rounds``, que gravam ``source="cito"``.
+    """
+    _event, bf_ids = _seed_ufc320(db_session)
+    canto = db_session.get(BoutFighter, bf_ids["red"])
+    assert canto is not None
+    assert canto.reversals is None
+    assert canto.control_time_seconds is None
+
+    preenchidos = fill_bout_fighter_totals(
+        db_session, bf_ids["red"], _bout_stat_line("ufc-320", "jon-jones")
+    )
+    db_session.flush()
+
+    assert preenchidos == 2
+    assert canto.reversals == 1
+    assert canto.control_time_seconds == 135  # "2:15"
+    assert canto.source == "kaggle"
+
+
+def test_fill_bout_fighter_totals_nunca_sobrescreve_valor_ja_presente(
+    db_session: Session,
+) -> None:
+    """CA-05: valor já gravado pelo seed permanece intacto; só o nulo é preenchido."""
+    _event, bf_ids = _seed_ufc320(db_session)
+    canto = db_session.get(BoutFighter, bf_ids["red"])
+    assert canto is not None
+    canto.control_time_seconds = 999  # já veio do seed do Kaggle
+    db_session.flush()
+
+    preenchidos = fill_bout_fighter_totals(
+        db_session, bf_ids["red"], _bout_stat_line("ufc-320", "jon-jones")
+    )
+    db_session.flush()
+
+    assert preenchidos == 1  # só ``reversals`` estava nulo
+    assert canto.control_time_seconds == 999
+    assert canto.reversals == 1
+
+
+def test_fill_bout_fighter_totals_ausencia_no_payload_permanece_nula(
+    db_session: Session,
+) -> None:
+    """CA-05: campo ausente no payload não vira zero -- a coluna permanece nula."""
+    _event, bf_ids = _seed_ufc320(db_session)
+    linha_sem_dado = CitoBoutStatLine.model_validate(
+        {"boutId": "ufc-320-bout-1", "fighterSlug": "jon-jones"}
+    )
+
+    preenchidos = fill_bout_fighter_totals(db_session, bf_ids["red"], linha_sem_dado)
+    db_session.flush()
+
+    canto = db_session.get(BoutFighter, bf_ids["red"])
+    assert canto is not None
+    assert preenchidos == 0
+    assert canto.reversals is None
+    assert canto.control_time_seconds is None
+
+
+def test_fill_bout_fighter_totals_rerun_nao_altera_nada(db_session: Session) -> None:
+    """CA-05: a segunda execução é no-op -- 0 campos preenchidos e nenhum valor alterado."""
+    _event, bf_ids = _seed_ufc320(db_session)
+    linha = _bout_stat_line("ufc-320", "jon-jones")
+
+    fill_bout_fighter_totals(db_session, bf_ids["red"], linha)
+    db_session.flush()
+    segundo = fill_bout_fighter_totals(db_session, bf_ids["red"], linha)
+    db_session.flush()
+
+    canto = db_session.get(BoutFighter, bf_ids["red"])
+    assert canto is not None
+    assert segundo == 0
+    assert (canto.reversals, canto.control_time_seconds) == (1, 135)
+
+
+# --------------------------------------------------------------------------- #
+# CA-06 -- contexto de card em bouts (aditivo, nunca sobrescreve o desfecho do seed)
+# --------------------------------------------------------------------------- #
+
+
+def _bout_block(slug: str, cito_bout_id: str) -> CitoBoutBlock:
+    """A linha do card (``bouts[]``) de uma luta na fixture do evento ``slug``."""
+    return next(b for b in _fixture_event_stats(slug).bouts if b.id == cito_bout_id)
+
+
+def test_fill_bout_context_grava_card_section_e_bout_order(db_session: Session) -> None:
+    """CA-06: ``card_section`` recebe o rótulo **cru** e ``bout_order`` a posição do payload.
+
+    ``bout_order`` é ordenável, não sequencial: o payload real traz 1001 na luta principal.
+    Nada aqui assume intervalo, densidade, nem que 1 seja a principal.
+    """
+    _event, bf_ids = _seed_ufc320(db_session)
+    bout_id = _bout_id_de(db_session, bf_ids["red"])
+
+    preenchidos = fill_bout_context(db_session, bout_id, _bout_block("ufc-320", "ufc-320-bout-1"))
+    db_session.flush()
+
+    bout = db_session.get(Bout, bout_id)
+    assert bout is not None
+    assert preenchidos == 2  # weight_class já estava preenchida pelo seed
+    assert bout.card_section == "Main Card"
+    assert bout.bout_order == 1001
+
+
+def test_fill_bout_context_preenche_weight_class_nula_e_preserva_a_existente(
+    db_session: Session,
+) -> None:
+    """CA-06: ``weight_class`` nula é preenchida; a já presente do seed permanece intacta."""
+    _e_nula, bf_nula = _seed_ufc320(db_session, weight_class=None)
+    _e_cheia, bf_cheia = _seed_ufc320(db_session, event_date=date(2025, 10, 5))
+    linha = _bout_block("ufc-320", "ufc-320-bout-1")
+
+    fill_bout_context(db_session, _bout_id_de(db_session, bf_nula["red"]), linha)
+    fill_bout_context(db_session, _bout_id_de(db_session, bf_cheia["red"]), linha)
+    db_session.flush()
+
+    bout_nula = db_session.get(Bout, _bout_id_de(db_session, bf_nula["red"]))
+    bout_cheia = db_session.get(Bout, _bout_id_de(db_session, bf_cheia["red"]))
+    assert bout_nula is not None and bout_cheia is not None
+    assert bout_nula.weight_class == "Heavyweight"  # veio do payload
+    assert bout_cheia.weight_class == "Middleweight"  # do seed, preservada
+
+
+def test_fill_bout_context_nao_sobrescreve_method_nem_winner_do_seed(
+    db_session: Session,
+) -> None:
+    """CA-06: o **desfecho** continua sendo do seed -- ``method`` e ``winner_id`` intactos.
+
+    Trocar a fonte da verdade do resultado no meio de um backfill de enriquecimento mudaria
+    silenciosamente o dado que o modelo treina como rótulo. O payload traz o desfecho, e ele é
+    deliberadamente ignorado aqui.
+    """
+    _event, bf_ids = _seed_ufc320(db_session)
+    bout_id = _bout_id_de(db_session, bf_ids["red"])
+    bout = db_session.get(Bout, bout_id)
+    assert bout is not None
+    method_do_seed, winner_do_seed = bout.method, bout.winner_id
+
+    fill_bout_context(db_session, bout_id, _bout_block("ufc-320", "ufc-320-bout-1"))
+    db_session.flush()
+
+    assert bout.method == method_do_seed
+    assert bout.winner_id == winner_do_seed
+
+
+def test_fill_bout_context_bout_order_nulo_bloqueia_tambem_o_card_section(
+    db_session: Session,
+) -> None:
+    """CA-06: ``boutOrder`` nulo -> **ambas** as colunas de card ficam nulas, mesmo com seção.
+
+    Nos eventos de 2023 a Cito devolve ``cardSection: "Main Card"`` para **todas** as lutas --
+    as 15 de UFC 283 inclusive, que obviamente não são todas card principal. O campo é um
+    **default não-discriminante**, não um rótulo. Persistir isso verbatim não é gravar dado
+    ausente: é gravar dado **falso**, que é pior, porque uma feature ou uma tela construída
+    depois herdaria o erro com aparência de sinal.
+
+    Os dois campos viajam juntos no enriquecimento da Cito (quando um existe, o outro existe),
+    então ``boutOrder`` nulo é o sinal confiável de que o enriquecimento não está disponível
+    para aquele evento -- e serve de porteiro dos dois. ``weight_class`` não é afetada: ela é
+    dado real do card, independente do enriquecimento.
+    """
+    _event, bf_ids = _seed_ufc320(db_session, weight_class=None)
+    bout_id = _bout_id_de(db_session, bf_ids["red"])
+    sem_enriquecimento = CitoBoutBlock.model_validate(
+        {
+            "id": "ufc-320-bout-1",
+            "cardSection": "Main Card",
+            "boutOrder": None,
+            "weightClass": "Heavyweight",
+            "fighters": [],
+        }
+    )
+
+    preenchidos = fill_bout_context(db_session, bout_id, sem_enriquecimento)
+    db_session.flush()
+
+    bout = db_session.get(Bout, bout_id)
+    assert bout is not None
+    assert preenchidos == 1  # só o peso, que é dado real do card
+    assert bout.weight_class == "Heavyweight"
+    assert bout.card_section is None
+    assert bout.bout_order is None
+
+
+def test_fill_bout_context_rerun_nao_altera_nada(db_session: Session) -> None:
+    """CA-06: a segunda execução é no-op -- 0 campos preenchidos, nenhum valor alterado."""
+    _event, bf_ids = _seed_ufc320(db_session, weight_class=None)
+    bout_id = _bout_id_de(db_session, bf_ids["red"])
+    linha = _bout_block("ufc-320", "ufc-320-bout-1")
+
+    fill_bout_context(db_session, bout_id, linha)
+    db_session.flush()
+    segundo = fill_bout_context(db_session, bout_id, linha)
+    db_session.flush()
+
+    bout = db_session.get(Bout, bout_id)
+    assert bout is not None
+    assert segundo == 0
+    assert (bout.card_section, bout.bout_order, bout.weight_class) == (
+        "Main Card",
+        1001,
+        "Heavyweight",
+    )
+
+
+def test_fill_bout_context_ausencia_no_payload_permanece_nula(db_session: Session) -> None:
+    """CA-06: contexto ausente no payload não vira sentinela -- as colunas seguem nulas."""
+    _event, bf_ids = _seed_ufc320(db_session, weight_class=None)
+    bout_id = _bout_id_de(db_session, bf_ids["red"])
+    sem_contexto = CitoBoutBlock.model_validate({"id": "ufc-320-bout-1", "fighters": []})
+
+    preenchidos = fill_bout_context(db_session, bout_id, sem_contexto)
+    db_session.flush()
+
+    bout = db_session.get(Bout, bout_id)
+    assert bout is not None
+    assert preenchidos == 0
+    assert bout.card_section is None
+    assert bout.bout_order is None
+    assert bout.weight_class is None
+
+
+# --------------------------------------------------------------------------- #
+# CA-07 -- efeito observável na API (ponta a ponta) + CA-08 (não-casados contados)
+# --------------------------------------------------------------------------- #
+
+
+def test_api_apos_backfill_devolve_rounds_populado_e_reversals_nao_nulo(
+    db_session: Session, client: TestClient
+) -> None:
+    """CA-07: após o backfill, ``GET /api/v1/bouts/{id}`` devolve ``rounds`` e ``reversals``.
+
+    É o valor demonstrável da slice: hoje ``rounds`` vem ``[]`` e ``reversals`` vem nulo em
+    16.632 linhas. O teste roda o backfill em modo fixture sobre a mesma ``Session``
+    transacional da API, então a asserção enxerga exatamente o que o backfill gravou.
+    """
+    _event, bf_ids = _seed_ufc320(db_session)
+    bout_id = _bout_id_de(db_session, bf_ids["red"])
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+    db_session.flush()
+
+    payload = client.get(f"/api/v1/bouts/{bout_id}").json()
+
+    # Uma linha por (canto, round) do payload: 2 cantos x 1 round na fixture de UFC 320.
+    assert len(payload["rounds"]) == 2
+    assert {(r["fighter_id"], r["round"]) for r in payload["rounds"]} == {
+        (row["fighter_id"], 1) for row in payload["fighters"]
+    }
+    assert all(r["source"] == "cito" for r in payload["rounds"])
+    # ``reversals`` deixa de vir nulo nos totais por canto (preenchido de ``boutStats``).
+    assert [row["reversals"] for row in payload["fighters"]] == [1, 0]
+    # As linhas do canto continuam sendo do seed -- ``source`` é a origem da LINHA.
+    assert all(row["source"] == "kaggle" for row in payload["fighters"])
+
+
+def test_run_backfill_rounds_conta_cantos_nao_casados_sem_fabricar(db_session: Session) -> None:
+    """CA-08: canto do payload sem ``bout_fighter`` correspondente é contado, nunca gravado.
+
+    A fixture do payload real traz 13 lutas (26 cantos) e a base persiste só a luta principal:
+    24 cantos ficam sem correspondência. Nada é criado para eles -- o restante do evento é
+    processado normalmente e o resumo reporta a lacuna.
+    """
+    _event, bf_ids = _seed_fight_night(db_session)
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    summary = run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+    db_session.flush()
+
+    assert summary.unmatched_stat_lines == 24
+    assert summary.events_processed == 1
+    # Só os rounds dos dois cantos casados foram gravados (5 rounds cada).
+    linhas = db_session.execute(select(BoutFighterRound)).scalars().all()
+    assert {linha.bout_fighter_id for linha in linhas} == {bf_ids["red"], bf_ids["blue"]}
+
+
+def test_run_backfill_rounds_ambiguidade_de_nome_continua_falhando_alto(
+    db_session: Session,
+) -> None:
+    """CA-08: dois cantos com o mesmo nome normalizado seguem levantando erro tipado.
+
+    Não-casado é lacuna (contada e reportada); ambíguo é risco de gravar no lutador errado --
+    a política de entity resolution do M1 falha alto e não muda nesta slice.
+    """
+    from ingestion.cito.matching import AmbiguousBoutFighterMatchError
+
+    _seed_event_bout(
+        db_session,
+        name="UFC 320: Jones vs. Miocic",
+        event_date=date(2025, 10, 4),
+        red_name="Jon Jones",
+        blue_name="Jon Jones",
+        cito_slug="ufc-320",
+    )
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    with pytest.raises(AmbiguousBoutFighterMatchError):
+        run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+
+
+def test_run_backfill_rounds_resumo_conta_campos_preenchidos(db_session: Session) -> None:
+    """CA-05/CA-06: o resumo reporta quantos campos de canto e de card foram preenchidos."""
+    _event, _bf = _seed_ufc320(db_session, weight_class=None)
+    budget = CallBudget(limit=10)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    summary = run_backfill_rounds(db_session, _fixture_client(budget), budget, cache)
+    db_session.flush()
+
+    # 2 cantos x (reversals + control time) = 4; card = weight_class + section + order = 3.
+    assert summary.bout_fighter_fields_filled == 4
+    assert summary.bout_context_fields_filled == 3
 
 
 # --------------------------------------------------------------------------- #

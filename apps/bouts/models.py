@@ -47,6 +47,20 @@ class Bout(Base):
     title_bout: Mapped[bool | None]
     scheduled_rounds: Mapped[int | None]
     referee: Mapped[str | None] = mapped_column(String(128))
+    # Contexto de card (M6, SPEC 007, Slice 05). Aditivo/nullable, origem Cito: vem no mesmo
+    # payload já pago pelo backfill round-a-round, então deixá-lo de fora custaria re-gastar
+    # quota depois para capturar dois campos que já estavam na resposta.
+    #
+    # ``card_section`` guarda o rótulo **cru** da Cito ('Main Card' / 'Prelims'), sem normalizar
+    # nem mapear para enum: o vocabulário é dela, e um enum obrigaria migration a cada rótulo
+    # novo. Serve de proxy do nível de oposição (topo do card vs. preliminares).
+    #
+    # ``bout_order`` é **ordenável, não sequencial nem denso**: o payload real traz 1001 na luta
+    # principal do card sondado. Nenhuma query, feature ou teste pode assumir intervalo,
+    # densidade, ou que 1 seja a luta principal -- só a ordem relativa dentro do evento.
+    # ``cardPosition`` ('Main Card 1') NÃO é persistido: é derivável destes dois.
+    card_section: Mapped[str | None] = mapped_column(String(32))
+    bout_order: Mapped[int | None]
     source: Mapped[str] = mapped_column(String(32))
 
     # Relationship ORM (só leitura, sem migration): os cantos desta luta, ordenados

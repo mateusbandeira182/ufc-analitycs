@@ -1,0 +1,101 @@
+{
+  "success": true,
+  "data": {
+    "event": {
+      "id": "8c1f0d20-0000-4000-8000-000000000321",
+      "slug": "ufc-321-sem-rounds",
+      "title": "UFC 321: Sem round-a-round",
+      "shortTitle": "Sem round-a-round",
+      "status": "completed",
+      "startsAt": "2025-11-09T02:00:00.000Z",
+      "eventDate": "2025-11-08",
+      "venue": "Etihad Arena",
+      "city": "Abu Dhabi",
+      "country": "United Arab Emirates"
+    },
+    "bouts": [
+      {
+        "id": "ufc-321-bout-1",
+        "eventSlug": "ufc-321-sem-rounds",
+        "cardSection": "Main Card",
+        "cardSectionOrder": 1,
+        "boutOrder": 1001,
+        "weightClass": "Heavyweight",
+        "titleBout": true,
+        "status": "completed",
+        "isCancelled": false,
+        "winnerFighterSlug": "jon-jones",
+        "resultRound": 1,
+        "resultTime": "2:30",
+        "method": "KO/TKO",
+        "methodDetails": null,
+        "dataAvailability": {
+          "result": "available",
+          "roundStats": "ufcstats_enrichment_when_available"
+        },
+        "fighters": [
+          {
+            "id": "f0000000-0000-4000-8000-000000000021",
+            "boutId": "ufc-321-bout-1",
+            "fighterSlug": "jon-jones",
+            "fighterName": "Jon Jones",
+            "corner": "red",
+            "outcome": "win"
+          },
+          {
+            "id": "f0000000-0000-4000-8000-000000000022",
+            "boutId": "ufc-321-bout-1",
+            "fighterSlug": "stipe-miocic",
+            "fighterName": "Stipe Miocic",
+            "corner": "blue",
+            "outcome": "loss"
+          }
+        ]
+      }
+    ],
+    "boutStats": [
+      {
+        "id": "b0000000-0000-4000-8000-000000000021",
+        "boutId": "ufc-321-bout-1",
+        "fighterSlug": "jon-jones",
+        "fighterName": "Jon Jones",
+        "knockdowns": 1,
+        "significantStrikes": "18 of 25",
+        "totalStrikes": "22 of 30",
+        "head": "14 of 20",
+        "body": "3 of 4",
+        "leg": "1 of 1",
+        "distance": "10 of 16",
+        "clinch": "4 of 5",
+        "ground": "4 of 4",
+        "takedowns": "1 of 1",
+        "submissionAttempts": 0,
+        "reversals": 0,
+        "controlTime": "1:12"
+      },
+      {
+        "id": "b0000000-0000-4000-8000-000000000022",
+        "boutId": "ufc-321-bout-1",
+        "fighterSlug": "stipe-miocic",
+        "fighterName": "Stipe Miocic",
+        "knockdowns": 0,
+        "significantStrikes": "6 of 19",
+        "totalStrikes": "8 of 22",
+        "head": "4 of 15",
+        "body": "2 of 3",
+        "leg": "0 of 1",
+        "distance": "6 of 18",
+        "clinch": "0 of 1",
+        "ground": "0 of 0",
+        "takedowns": "0 of 0",
+        "submissionAttempts": 0,
+        "reversals": 2,
+        "controlTime": "0:04"
+      }
+    ],
+    "roundStats": []
+  },
+  "meta": {
+    "source": "cito"
+  }
+}
