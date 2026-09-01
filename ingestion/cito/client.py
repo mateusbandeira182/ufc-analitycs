@@ -36,8 +36,10 @@ from ingestion.cito.dto import (
     CitoEvent,
     CitoEventStats,
     CitoFighter,
+    CitoFighterEnvelope,
     CitoStatsEnvelope,
 )
+from mma_analytics.settings import settings
 
 _EVENTS_PATH = "/api/v1/ufc/events"
 _FIGHTERS_PATH = "/api/v1/ufc/fighters"
@@ -139,10 +141,17 @@ class CitoClient:
     def get_fighter(self, slug: str) -> CitoFighter:
         """Busca o perfil do lutador ``slug`` e devolve um ``CitoFighter`` tipado.
 
+        O payload real é o envelope ``{success, data, meta}`` em camelCase, desembrulhado e
+        traduzido ao domínio por ``CitoFighterDetail.to_fighter`` -- a forma foi medida na
+        sondagem de 2026-09-01, quando a primeira execução real revelou que o objeto cru em
+        snake_case que o M1 supunha nunca existiu na API (mesma classe de divergência que a
+        ADR 0005 corrigiu para o endpoint de stats).
+
         Em modo fixture lê ``{fixture_dir}/fighter_{slug}.json``; caso contrário faz a
-        chamada HTTP autenticada ``GET {base_url}/api/v1/ufc/fighters/{slug}``. Erros HTTP
-        viram ``CitoError``/``CitoRateLimitError``, sem vazar a exceção crua do ``httpx``.
-        Cobra uma unidade do orçamento (``CallBudget``) antes do fetch.
+        chamada HTTP autenticada ``GET {base_url}/api/v1/ufc/fighters/{slug}``. Um envelope
+        com ``success=false`` vira ``CitoError``; erros HTTP viram
+        ``CitoError``/``CitoRateLimitError``, sem vazar a exceção crua do ``httpx``. Cobra uma
+        unidade do orçamento (``CallBudget``) antes do fetch.
         """
         self._charge()
         payload = (
@@ -150,7 +159,10 @@ class CitoClient:
             if self._fixture_dir is not None
             else self._get_json(f"{_FIGHTERS_PATH}/{slug}", f"o lutador {slug!r}")
         )
-        return CitoFighter.model_validate(payload)
+        envelope = CitoFighterEnvelope.model_validate(payload)
+        if not envelope.success:
+            raise CitoError(f"Cito retornou success=false para o perfil do lutador {slug!r}.")
+        return envelope.data.to_fighter()
 
     def fetch_bout_stats(self, bout_id: str) -> CitoBoutStats:
         """Busca as stats granulares por canto da luta ``bout_id`` e devolve ``CitoBoutStats``.
@@ -316,3 +328,22 @@ class CitoClient:
             raise CitoRateLimitError(f"Rate-limit da Cito (429) ao buscar {target}.")
         if response.is_error:
             raise CitoError(f"Erro HTTP {response.status_code} da Cito ao buscar {target}.")
+
+
+def build_cito_client(*, fixture: bool, fixture_dir: Path, budget: CallBudget) -> CitoClient:
+    """Constrói o ``CitoClient`` de um comando de ingestão: modo fixture ou HTTP autenticado.
+
+    Extraído no M6 (Slice 06) quando a **quinta** cópia idêntica ia nascer -- ``incremental``,
+    ``matching``, ``sync_catalog``, ``backfill_rounds`` e ``gap_sync`` construíam o cliente com
+    exatamente o mesmo corpo. Movido como está, sem generalização: o modo fixture lê JSON local
+    (0 quota real) e o modo HTTP usa o token e a base URL das ``settings``. O orçamento é
+    cobrado a cada fetch inclusive em modo fixture (o custo modela o free tier).
+    """
+    if fixture:
+        return CitoClient(
+            token=settings.cito_api_token,
+            base_url=settings.cito_base_url,
+            fixture_dir=fixture_dir,
+            budget=budget,
+        )
+    return CitoClient(token=settings.cito_api_token, base_url=settings.cito_base_url, budget=budget)

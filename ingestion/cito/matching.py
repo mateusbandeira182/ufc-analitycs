@@ -46,11 +46,15 @@ from sqlalchemy.orm import Session
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
-from ingestion.cito.client import DEFAULT_CALL_BUDGET, CallBudget, CitoClient
+from ingestion.cito.client import (
+    DEFAULT_CALL_BUDGET,
+    CallBudget,
+    CitoClient,
+    build_cito_client,
+)
 from ingestion.cito.dto import CitoCatalogItem, CitoEventStats
 from ingestion.normalize import normalize_name
 from mma_analytics.db import SessionLocal
-from mma_analytics.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -204,18 +208,6 @@ def _find_event_by_cito_slug(session: Session, event_slug: str) -> Event:
     return event
 
 
-def _build_client(*, fixture: bool, fixture_dir: Path, budget: CallBudget) -> CitoClient:
-    """Constrói o ``CitoClient`` do dry-run: modo fixture (0 quota real) ou HTTP autenticado."""
-    if fixture:
-        return CitoClient(
-            token=settings.cito_api_token,
-            base_url=settings.cito_base_url,
-            fixture_dir=fixture_dir,
-            budget=budget,
-        )
-    return CitoClient(token=settings.cito_api_token, base_url=settings.cito_base_url, budget=budget)
-
-
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     """Interpreta os argumentos de linha de comando do dry-run."""
     parser = argparse.ArgumentParser(
@@ -253,7 +245,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO)
     args = _parse_args(argv)
     budget = CallBudget(limit=args.call_budget)
-    client = _build_client(fixture=args.fixture, fixture_dir=args.fixture_dir, budget=budget)
+    client = build_cito_client(fixture=args.fixture, fixture_dir=args.fixture_dir, budget=budget)
 
     with SessionLocal() as session:
         event = _find_event_by_cito_slug(session, args.event_slug)

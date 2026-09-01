@@ -80,3 +80,25 @@ def test_cache_hit_preserva_total_strikes(tmp_path: Path) -> None:
     red = next(line for line in stats.bout_stats if line.fighter_slug == "dricus-du-plessis")
     assert red.sig_strikes == (41, 120)
     assert red.total_strikes == (55, 140)
+
+
+def test_cache_hit_preserva_o_profile_embutido_no_canto(tmp_path: Path) -> None:
+    """O ``profile`` de cada canto sobrevive ao round-trip -- é dele que nasce o lutador novo.
+
+    O fechamento do gap (Slice 06) cria os lutadores inéditos a partir do ``profile`` embutido,
+    sem gastar chamada de perfil (RF-13). Se a serialização o esquecesse, retomar o gap depois
+    de uma interrupção de quota gravaria os lutadores sem apelido e com cartel zerado -- dado
+    falso, com aparência de dado.
+    """
+    cache = EventStatsCache(tmp_path)
+    slug = "ufc-fight-night-august-22-2026"
+
+    stats_miss, _ = cache.get_or_fetch(slug, _fixture_event_stats)
+    stats_hit, hit = cache.get_or_fetch(slug, _fixture_event_stats)
+
+    assert hit is True
+    assert stats_hit == stats_miss
+    (canto,) = [f for f in stats_hit.bouts[0].fighters if f.fighter_slug == "anthony-hernandez"]
+    assert canto.profile is not None
+    assert canto.profile.nickname == "Fluffy"
+    assert (canto.profile.record.wins, canto.profile.record.losses) == (15, 4)

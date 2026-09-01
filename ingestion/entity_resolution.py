@@ -239,3 +239,75 @@ def match_fighter_id(
         f"Candidato {candidate.name!r} sem DOB casa com {len(same_name)} fighters "
         "de mesmo nome; resolução ambígua."
     )
+
+
+# --- Desempate por idade (M6, Slice 06) -----------------------------------------------
+#
+# O perfil real da Cito (``GET /api/v1/ufc/fighters/{slug}``) devolve ``birthDate`` nulo e
+# publica ``age`` -- medido na sondagem de 2026-09-01. Sem a data, o desempate original do
+# RF-13 fica sem o dado do lado da fonte, e o homônimo travaria a ingestão do card inteiro.
+#
+# A idade calculada a partir do ``date_of_birth`` persistido é o **mesmo atributo de
+# identidade**, só em granularidade mais grossa -- diferente de cartel ou divisão, que mudam
+# com a carreira e seriam heurística. Decisão do humano em 2026-09-01.
+
+
+def _age_at(date_of_birth: date, today: date) -> int:
+    """Idade em anos completos na data ``today`` (a subtração de aniversário, sem biblioteca)."""
+    aniversario_passou = (today.month, today.day) >= (date_of_birth.month, date_of_birth.day)
+    return today.year - date_of_birth.year - (0 if aniversario_passou else 1)
+
+
+def match_fighter_id_by_age(
+    name: str,
+    age: int | None,
+    existing: Sequence[ExistingFighter],
+    *,
+    today: date,
+) -> int | None:
+    """Desempata homônimos pela idade informada no perfil; sem unicidade -> ``None``.
+
+    Considera apenas os já persistidos de mesmo nome normalizado **com** ``date_of_birth``:
+    sem a data não há idade a calcular, e estimá-la seria inventar o dado que o desempate
+    existe para conferir. O casamento é **exato**: idade calculada igual à informada, e nada
+    além disso.
+
+    Não há tolerância de um ano, e a ausência dela é deliberada. Ela existia para cobrir a
+    hipótese de um perfil servido de cache anterior ao último aniversário -- especulativa, que
+    nenhum caso observado exigiu. Em compensação, o único caso real em que ela disparava
+    produzia um casamento **errado**: o `bruno-silva-blindado` da sondagem de 2026-09-01 informa
+    ``age: 35`` contra homônimos de 36 e 37 anos, e a tolerância o casaria com o de 36 -- o
+    peso-mosca "Bulldog" (163 cm, cartel 14-7-2) --, quando o perfil descreve o peso-médio
+    "Blindado". Uma regra cujo único uso concreto é produzir erro não se conserta com mais
+    condições: remove-se. **Não reintroduzir sem um caso real de perfil defasado.**
+
+    Devolve o id **apenas** quando exatamente um candidato tem a idade informada. Zero
+    candidatos, mais de um, ou ``age`` ausente devolvem ``None``, e quem chama trata isso como
+    ambiguidade irresolvível: nunca escolher o "mais provável" (mesma política de
+    ``match_fighter_id``). Um evento a menos, com o motivo registrado, é melhor que um evento a
+    mais com dois lutadores fundidos.
+
+    A ``today`` entra por parâmetro (determinismo no teste; ``date.today()`` é proibido pela
+    regra DTZ011 do ruff).
+    """
+    if age is None:
+        return None
+
+    normalized = normalize_name(name)
+    matches = [
+        fighter
+        for fighter in existing
+        if fighter.name_normalized == normalized
+        and fighter.date_of_birth is not None
+        and _age_at(fighter.date_of_birth, today) == age
+    ]
+    if len(matches) != 1:
+        logger.info(
+            "Desempate por idade de %r inconclusivo: %d candidato(s) com %d anos.",
+            name,
+            len(matches),
+            age,
+        )
+        return None
+    logger.info("Desempate por idade de %r resolvido ao id %d", name, matches[0].id)
+    return matches[0].id

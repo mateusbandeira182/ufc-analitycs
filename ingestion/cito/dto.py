@@ -109,6 +109,11 @@ class CitoFighter(BaseModel):
     slug: str
     name: str
     date_of_birth: date | None = None
+    # Idade publicada pelo perfil real. Existe porque a Cito devolve ``birthDate`` nulo e
+    # ``age`` preenchido (medido em 2026-09-01): é o insumo do desempate por idade da entity
+    # resolution (``match_fighter_id_by_age``). Nunca é usada para DERIVAR ``date_of_birth`` --
+    # uma data inventada com precisão de um ano entraria na chave que separa homônimos.
+    age: int | None = None
     nickname: str | None = None
     height_cm: int | None = None
     reach_cm: int | None = None
@@ -184,6 +189,40 @@ class CitoEventBlock(BaseModel):
     starts_at: AwareDatetime | None = None
 
 
+class CitoFighterRecord(BaseModel):
+    """Cartel do lutador dentro do ``profile`` embutido no canto do card.
+
+    Cada componente é opcional: ausência degrada para ``0`` no mapeamento (as colunas de
+    ``fighters`` são NOT NULL), nunca para sentinela. ``noContest`` é ignorado -- não há coluna.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    wins: int | None = None
+    losses: int | None = None
+    draws: int | None = None
+
+
+class CitoFighterProfile(BaseModel):
+    """Perfil do lutador **embutido** no canto do card (``bouts[].fighters[].profile``).
+
+    É o que permite criar um lutador novo do gap com **zero** chamadas de perfil (RF-13): nome,
+    slug, apelido e cartel já vêm no payload de stats que a ingestão do evento pagou. Não traz
+    data de nascimento, stance nem antropometria -- esses só existem em
+    ``GET /fighters/{slug}``, cuja chamada é reservada ao desempate de ambiguidade.
+
+    ``division`` é deliberadamente **não** modelada: não há coluna em ``fighters`` e
+    ``bouts.weight_class`` já cobre a categoria da luta (que é o dado por luta, não por atleta).
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    slug: str
+    name: str
+    nickname: str | None = None
+    record: CitoFighterRecord = Field(default_factory=CitoFighterRecord)
+
+
 class CitoBoutFighterRef(BaseModel):
     """Um canto do card (``bouts[].fighters[]``) -- é daqui que o ``corner`` vem.
 
@@ -197,6 +236,7 @@ class CitoBoutFighterRef(BaseModel):
     fighter_name: str | None = None
     corner: Corner
     outcome: str | None = None  # "win" | "loss" | "draw" | ...
+    profile: CitoFighterProfile | None = None
 
 
 class CitoBoutBlock(BaseModel):
@@ -304,6 +344,101 @@ class CitoStatsEnvelope(BaseModel):
 
     success: bool
     data: CitoEventStats
+
+
+# ---------------------------------------------------------------------------
+# DTO do endpoint real ``GET /api/v1/ufc/fighters/{slug}`` (envelope camelCase).
+#
+# Aditivo: ``CitoFighter`` acima permanece o DTO de **domínio** da ingestão (o que o M1
+# consome e o que a Slice 06 monta a partir do card). Aqui fica a forma **wire** medida na
+# sondagem de 2026-09-01 -- envelope ``{success, data, meta}``, camelCase, cartel em campos
+# planos e antropometria em POLEGADAS, como string. O payload que o M1 supunha (objeto cru,
+# snake_case, centímetros) nunca existiu na API real: mesma classe de erro que a ADR 0005
+# corrigiu para o endpoint de stats, encontrada aqui pela primeira execução real do perfil.
+# ---------------------------------------------------------------------------
+
+# 1 polegada = 2,54 cm. A conversão acontece na borda para que a unidade da fonte não vaze
+# para o domínio (o schema guarda centímetros desde o M0).
+_CM_PER_INCH = 2.54
+
+
+def _inches_to_cm(value: str | float | None) -> int | None:
+    """Converte polegadas (a Cito publica como string) em centímetros inteiros; vazio -> ``None``.
+
+    Valor não-numérico degrada para ``None`` com aviso -- nunca zero, nunca sentinela.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return round(float(value) * _CM_PER_INCH)
+    except (TypeError, ValueError):
+        return None
+
+
+class CitoFighterDetail(BaseModel):
+    """Bloco ``data`` do perfil real de um lutador; converte-se em ``CitoFighter`` no domínio.
+
+    Só os campos com consumidor concreto entram; o resto do payload (imagens, rankings, bio,
+    ``dataAvailability``) segue tolerado por ``extra="ignore"``.
+
+    ``birth_date`` é a base do desempate da entity resolution e **pode vir nula** -- foi o que
+    a sondagem de 2026-09-01 mediu em 'bruno-silva', que traz ``age`` mas não a data. A idade
+    **não** é usada para derivá-la: uma DOB inventada com precisão de um ano entraria na chave
+    que separa homônimos, que é exatamente o que ela existe para impedir.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    slug: str
+    name: str
+    nickname: str | None = None
+    birth_date: date | None = None
+    age: int | None = None
+    height_inches: str | float | None = None
+    reach_inches: str | float | None = None
+    stance: str | None = None
+    record_wins: int | None = None
+    record_losses: int | None = None
+    record_draws: int | None = None
+
+    @field_validator("birth_date", mode="before")
+    @classmethod
+    def _birth_date(cls, value: object) -> object:
+        """Aceita o instante ISO-8601 que a Cito às vezes usa para a data; vazio -> ``None``."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, str) and "T" in value:
+            return value.split("T", 1)[0]
+        return value
+
+    def to_fighter(self) -> CitoFighter:
+        """Traduz o perfil wire no ``CitoFighter`` do domínio (unidades e cartel normalizados).
+
+        Cartel ausente degrada para ``0`` (as colunas de ``fighters`` são NOT NULL); a stance
+        passa pelo mesmo ``field_validator`` tolerante de ``CitoFighter``.
+        """
+        return CitoFighter(
+            slug=self.slug,
+            name=self.name,
+            nickname=self.nickname,
+            date_of_birth=self.birth_date,
+            age=self.age,
+            height_cm=_inches_to_cm(self.height_inches),
+            reach_cm=_inches_to_cm(self.reach_inches),
+            stance=self.stance,  # type: ignore[arg-type]  # o validador do DTO coage o rótulo
+            wins=self.record_wins or 0,
+            losses=self.record_losses or 0,
+            draws=self.record_draws or 0,
+        )
+
+
+class CitoFighterEnvelope(BaseModel):
+    """Envelope ``{success, data, meta}`` do endpoint real de perfil de lutador."""
+
+    model_config = _CAMEL_CONFIG
+
+    success: bool
+    data: CitoFighterDetail
 
 
 # ---------------------------------------------------------------------------

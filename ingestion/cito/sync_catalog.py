@@ -50,6 +50,7 @@ from ingestion.cito.client import (
     CallBudget,
     CitoClient,
     QuotaExceededError,
+    build_cito_client,
 )
 from ingestion.cito.dto import CitoCatalogItem
 from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
@@ -60,7 +61,6 @@ from ingestion.cito.matching import (
 )
 from ingestion.incremental import resolve_call_budget
 from mma_analytics.db import SessionLocal
-from mma_analytics.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -233,18 +233,6 @@ def sync_event_catalog(
     return report
 
 
-def _build_client(*, fixture: bool, fixture_dir: Path, budget: CallBudget) -> CitoClient:
-    """Constrói o ``CitoClient`` da sincronização: modo fixture (0 quota real) ou HTTP."""
-    if fixture:
-        return CitoClient(
-            token=settings.cito_api_token,
-            base_url=settings.cito_base_url,
-            fixture_dir=fixture_dir,
-            budget=budget,
-        )
-    return CitoClient(token=settings.cito_api_token, base_url=settings.cito_base_url, budget=budget)
-
-
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     """Interpreta os argumentos de linha de comando da sincronização de catálogo."""
     parser = argparse.ArgumentParser(
@@ -330,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.exit(2)
 
     budget = CallBudget(limit=limit)
-    client = _build_client(fixture=args.fixture, fixture_dir=args.fixture_dir, budget=budget)
+    client = build_cito_client(fixture=args.fixture, fixture_dir=args.fixture_dir, budget=budget)
     cache = CatalogPageCache(args.cache_dir)
 
     with SessionLocal() as session:

@@ -40,6 +40,7 @@ from ingestion.cito.dto import (
     CitoBoutStatLine,
     CitoEventBlock,
     CitoEventStats,
+    CitoFighterProfile,
     CitoRoundStatLine,
 )
 
@@ -106,13 +107,38 @@ def _event_to_storable(event: CitoEventBlock) -> dict[str, object]:
     }
 
 
+def _profile_to_storable(profile: CitoFighterProfile) -> dict[str, object]:
+    """Serializa o ``profile`` embutido no canto (identidade + cartel), sem inventar campo.
+
+    Cada componente do cartel mantém a própria ausência (``None`` permanece ``None``): é o
+    mapeamento para ``fighters`` que degrada para zero, e antecipar isso aqui gravaria um
+    cartel 0/0/0 indistinguível de um cartel realmente zerado.
+    """
+    return {
+        "slug": profile.slug,
+        "name": profile.name,
+        "nickname": profile.nickname,
+        "record": {
+            "wins": profile.record.wins,
+            "losses": profile.record.losses,
+            "draws": profile.record.draws,
+        },
+    }
+
+
 def _fighter_ref_to_storable(fighter: CitoBoutFighterRef) -> dict[str, object]:
-    """Serializa um canto do card; o ``corner`` vira o valor do enum (a forma wire da Cito)."""
+    """Serializa um canto do card; o ``corner`` vira o valor do enum (a forma wire da Cito).
+
+    O ``profile`` entra porque é dele que o fechamento do gap (Slice 06) cria os lutadores
+    inéditos sem gastar chamada de perfil (RF-13). Esquecê-lo faria um gap retomado do cache
+    criar lutador sem apelido e com cartel zerado -- dado falso com aparência de dado.
+    """
     return {
         "fighter_slug": fighter.fighter_slug,
         "fighter_name": fighter.fighter_name,
         "corner": fighter.corner.value,
         "outcome": fighter.outcome,
+        "profile": (_profile_to_storable(fighter.profile) if fighter.profile is not None else None),
     }
 
 
