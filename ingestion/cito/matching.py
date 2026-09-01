@@ -37,6 +37,7 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -47,7 +48,7 @@ from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
 from ingestion.cito.client import DEFAULT_CALL_BUDGET, CallBudget, CitoClient
-from ingestion.cito.dto import CitoEventStats
+from ingestion.cito.dto import CitoCatalogItem, CitoEventStats
 from ingestion.normalize import normalize_name
 from mma_analytics.db import SessionLocal
 from mma_analytics.settings import settings
@@ -292,3 +293,115 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Casamento evento persistido <-> item do catálogo Cito (M6, SPEC 007, Slice 03).
+#
+# Aditivo: o matching persisted-driven acima (Slice 04 do M5) permanece intocado. Aqui a
+# âncora continua sendo o evento **já persistido**, mas o identificador da Cito passa a vir
+# do **catálogo real** (RF-04) em vez de ser derivado do nome -- é o que destrava os Fight
+# Nights, cujo slug usa a data local e não tem convenção derivável com segurança.
+# ---------------------------------------------------------------------------
+
+# Pontuação e qualquer caractere não-alfanumérico remanescente viram separador de token.
+_NON_ALNUM = re.compile(r"[^0-9a-z]+")
+
+# Promoções fora do escopo desta fase (decisão do humano, SPEC 007): DWCS e Road to UFC.
+# O filtro é por EXCLUSÃO destes marcadores, nunca por allowlist de prefixo 'ufc-' no slug:
+# 'cryptocom-ufc-331' e 'ufc-freedom-250' são UFC e um prefixo os descartaria, enquanto
+# 'road-to-ufc-season-5-semifinals' contém 'ufc' no meio e NÃO é UFC.
+_NON_UFC_MARKERS = ("dwcs", "dana white", "contender series", "road to ufc")
+
+# A data persistida em ``events.date`` é a data LOCAL do evento (seed do Kaggle/ufcstats) e a
+# do catálogo é ``CitoCatalogItem.local_date`` (``eventDate`` quando exposto, senão a data UTC
+# de ``startsAt``). Uma janela simétrica de um dia absorve tanto a divergência residual entre
+# as fontes quanto o caso em que o catálogo não expõe ``eventDate`` e a data cai para a UTC
+# (card noturno nos EUA vira o dia seguinte; fusos a leste deslocam no sentido oposto).
+# NÃO é heurística de slug: a data é dado das duas pontas.
+_EVENT_DATE_TOLERANCE = timedelta(days=1)
+
+
+class EventMatchError(Exception):
+    """Falha ao resolver o item de catálogo Cito de um evento persistido."""
+
+
+class AmbiguousEventMatchError(EventMatchError):
+    """Mais de um item de catálogo casa e o nome não desempata -- nunca casar em silêncio.
+
+    Espelha ``AmbiguousBoutFighterMatchError`` (M5) e a entity resolution do M1: a
+    ambiguidade **falha alto**; quem chama decide se aborta ou conta e segue (RF-05).
+    """
+
+
+def normalize_event_name(name: str) -> str:
+    """'UFC 319: Du Plessis vs. Chimaev' -> 'ufc 319 du plessis vs chimaev'.
+
+    Aplica ``normalize_name`` PRIMEIRO (NFKD -> ASCII, caixa, espaços) e só então troca a
+    pontuação restante por espaço. A ordem importa: remover não-alfanuméricos antes do NFKD
+    comeria letras acentuadas ('Šarić' -> 'ari').
+    """
+    return " ".join(_NON_ALNUM.sub(" ", normalize_name(name)).split())
+
+
+def is_ufc_catalog_item(item: CitoCatalogItem) -> bool:
+    """Mantém só eventos do UFC; descarta DWCS e Road to UFC (fora do escopo desta fase).
+
+    Filtro por **exclusão** de marcadores, nunca por prefixo 'ufc-' no slug -- ver o
+    comentário de ``_NON_UFC_MARKERS`` para os casos reais que justificam a escolha.
+    """
+    haystack = f"{item.slug.replace('-', ' ')} {normalize_event_name(item.title)}"
+    return not any(marker in haystack for marker in _NON_UFC_MARKERS)
+
+
+@dataclass(frozen=True)
+class EventMatch:
+    """Item de catálogo casado a um evento persistido, com o critério que o resolveu.
+
+    ``matched_by_name`` distingue os dois graus de confiança: ``True`` quando o nome
+    normalizado concordou (casamento forte), ``False`` quando só a data sustentou o
+    casamento (candidato único na janela) -- este último é reportado à parte para inspeção
+    humana antes de a Slice 05 gastar quota em cima do slug.
+    """
+
+    item: CitoCatalogItem
+    matched_by_name: bool
+
+
+def resolve_event_match(event: Event, catalog: Sequence[CitoCatalogItem]) -> EventMatch | None:
+    """Casa ``event`` com um item do catálogo por data local (+/-1 dia) + nome normalizado.
+
+    Fase 1 -- **candidatos**: itens cuja ``local_date`` está a no máximo um dia da
+    ``event.date`` persistida. Fase 2 -- **desempate**: entre os candidatos, os de
+    ``normalize_event_name`` igual ao do evento vencem; exatamente um -> casa
+    (``matched_by_name=True``); mais de um -> ``AmbiguousEventMatchError``. Sem nenhum
+    concordante, um único candidato na janela é aceito (``matched_by_name=False``,
+    reportado à parte); mais de um -> ``AmbiguousEventMatchError``; nenhum -> ``None``
+    (não casado).
+
+    Função pura: não toca o banco e não escreve. O slug **nunca** é derivado -- ele vem do
+    item de catálogo (RF-04).
+    """
+    candidates = [
+        item for item in catalog if abs(item.local_date - event.date) <= _EVENT_DATE_TOLERANCE
+    ]
+    if not candidates:
+        return None
+
+    event_key = normalize_event_name(event.name)
+    by_name = [item for item in candidates if normalize_event_name(item.title) == event_key]
+    if len(by_name) == 1:
+        return EventMatch(item=by_name[0], matched_by_name=True)
+    if len(by_name) > 1:
+        raise AmbiguousEventMatchError(
+            f"O evento {event.name!r} ({event.date}) casa por nome com {len(by_name)} itens do "
+            f"catálogo Cito ({', '.join(item.slug for item in by_name)}); nunca casar em silêncio."
+        )
+
+    if len(candidates) > 1:
+        raise AmbiguousEventMatchError(
+            f"O evento {event.name!r} ({event.date}) tem {len(candidates)} candidatos na janela de "
+            f"+/-1 dia ({', '.join(item.slug for item in candidates)}) e nenhum concorda por nome; "
+            "nunca escolher arbitrariamente."
+        )
+    return EventMatch(item=candidates[0], matched_by_name=False)

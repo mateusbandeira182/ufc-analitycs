@@ -25,7 +25,8 @@ Invariantes (reuso dos padrões do M1, ``ingestion.incremental``)
 - **Rate-limit entre eventos não-cacheados**: um sleeper injetável (``0`` nos testes) separa fetches
   sucessivos, poupando a API; cache hit não dorme.
 - **Gate humano antes da rede real**: rodar contra a Cito real sem ``--confirmar-gasto-de-quota``
-  aborta **antes** de qualquer chamada (``_enforce_human_gate``); o modo fixture não exige gate.
+  aborta **antes** de qualquer chamada (``ingestion.cito.gate.enforce_human_gate``, promovido a
+  módulo próprio no M6 ao ganhar um segundo callsite); o modo fixture não exige gate.
 
 A lógica testável opera sobre a ``Session`` recebida (transacional nos testes); ``main`` é fino:
 resolve o teto, aplica o gate, abre a sessão real e **commita** só no sucesso. Toda a suíte roda em
@@ -52,6 +53,7 @@ from apps.events.models import Event
 from ingestion.cito.cache import EventStatsCache
 from ingestion.cito.client import CallBudget, CitoClient, QuotaExceededError
 from ingestion.cito.dto import CitoRoundStatLine
+from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
 from ingestion.cito.matching import (
     UnsupportedEventSlugError,
     event_cito_slug,
@@ -76,24 +78,6 @@ _DEFAULT_FIXTURE_DIR = (
 
 # Diretório default do cache em disco resumável (relativo ao diretório de execução).
 _DEFAULT_CACHE_DIR = Path(".cache") / "cito"
-
-
-class HumanGateNotConfirmedError(RuntimeError):
-    """Backfill contra a rede real exigido sem a confirmação humana explícita do gasto de quota."""
-
-
-def _enforce_human_gate(*, fixture: bool, confirmed: bool) -> None:
-    """Modo rede real sem ``--confirmar-gasto-de-quota`` aborta ANTES de qualquer fetch.
-
-    O modo fixture (JSON local, 0 quota) não exige gate. Contra a Cito real, a confirmação
-    explícita é obrigatória: sem ela, levanta ``HumanGateNotConfirmedError`` antes de instanciar o
-    cliente ou tocar a rede.
-    """
-    if not fixture and not confirmed:
-        raise HumanGateNotConfirmedError(
-            "Backfill contra a Cito real exige --confirmar-gasto-de-quota; "
-            "nenhuma chamada foi disparada."
-        )
 
 
 def _select_events_in_window(session: Session) -> list[Event]:
@@ -355,7 +339,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = _parse_args(argv)
 
     try:
-        _enforce_human_gate(fixture=args.fixture, confirmed=args.confirmar_gasto_de_quota)
+        enforce_human_gate(fixture=args.fixture, confirmed=args.confirmar_gasto_de_quota)
     except HumanGateNotConfirmedError as exc:
         logger.error("Gate humano não confirmado: %s", exc)
         sys.exit(1)

@@ -1,14 +1,16 @@
 """Cliente HTTP tipado da Cito API (``mmaapi.dev``).
 
 Busca um evento (``CitoEvent``), o perfil de um lutador (``CitoFighter``), as stats
-granulares por canto de uma luta (``CitoBoutStats``) e as stats do endpoint real de evento
--- totais + round-a-round -- (``CitoEventStats`` via ``fetch_event_stats``). Dois caminhos:
+granulares por canto de uma luta (``CitoBoutStats``), as stats do endpoint real de evento
+-- totais + round-a-round -- (``CitoEventStats`` via ``fetch_event_stats``) e o **catálogo
+paginado** de eventos (``list[CitoCatalogItem]`` via ``fetch_event_catalog``, a fonte do
+identificador de um evento na Cito). Dois caminhos:
 
 - **Modo fixture** (``fixture_dir`` definido): lê um JSON local (``event_{id}.json`` /
-  ``fighter_{slug}.json`` / ``bout_stats_{bout_id}.json``) em vez de tocar a rede -- é o
-  caminho de teste e da execução de demonstração, e **não** consome a quota do free tier
-  (500 req/mês).
-- **Modo HTTP**: ``GET {base_url}/api/v1/ufc/events``,
+  ``fighter_{slug}.json`` / ``bout_stats_{bout_id}.json`` / ``events_catalog_page_{n}.json``)
+  em vez de tocar a rede -- é o caminho de teste e da execução de demonstração, e **não**
+  consome a quota do free tier (500 req/mês).
+- **Modo HTTP**: ``GET {base_url}/api/v1/ufc/events`` (evento por id e catálogo paginado),
   ``GET {base_url}/api/v1/ufc/fighters/{slug}`` e
   ``GET {base_url}/api/v1/ufc/bouts/{boutId}/stats`` autenticados por token, com o erro e o
   rate-limit convertidos em exceções tipadas (``CitoRateLimitError`` para 429, ``CitoError``
@@ -19,12 +21,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import httpx
 
+from ingestion.cito.cache import CatalogPageCache
 from ingestion.cito.dto import (
     CitoBoutStats,
+    CitoCatalogEnvelope,
+    CitoCatalogItem,
     CitoEvent,
     CitoEventStats,
     CitoFighter,
@@ -39,6 +45,13 @@ _HTTP_TOO_MANY_REQUESTS = 429
 
 # Teto default de chamadas à Cito por execução, alinhado ao free tier (500 req/mês).
 DEFAULT_CALL_BUDGET = 500
+
+# Limite por página do catálogo. A Cito **clampa** o valor em 100: uma sondagem autorizada de
+# uma chamada com ``limit=200`` (2026-08-31) devolveu ``meta.limit=100``, 100 itens e
+# ``totalPages=9`` -- sem erro e sem aviso. Usar 100 custa 9 páginas para os 811 eventos, contra
+# as 17 de ``limit=50`` (a captura da fixture versionada). A paginação nunca depende deste valor:
+# ela segue ``meta.hasNextPage``/``meta.nextPage``, então um clamp da API não a quebra.
+CATALOG_PAGE_LIMIT = 100
 
 
 class CitoError(Exception):
@@ -174,6 +187,94 @@ class CitoClient:
         if not envelope.success:
             raise CitoError(f"Cito retornou success=false para as stats do evento {slug!r}.")
         return envelope.data
+
+    def fetch_event_catalog(
+        self,
+        *,
+        limit: int = CATALOG_PAGE_LIMIT,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        cache: CatalogPageCache | None = None,
+    ) -> list[CitoCatalogItem]:
+        """Percorre TODAS as páginas do catálogo e devolve os itens na ordem em que vieram.
+
+        O catálogo (``GET {base_url}/api/v1/ufc/events``) é a **fonte do identificador** de um
+        evento na Cito: o ``slug`` e o ``id`` vêm de lá, nunca de uma regra sobre o nome
+        persistido (SPEC 007, RF-04). Cobra uma unidade de ``CallBudget`` **por página** (~17
+        páginas para os 811 eventos com ``limit=50``); ``date_from``/``date_to`` reduzem esse
+        custo quando só uma janela interessa.
+
+        Com um ``cache`` (``CatalogPageCache``), a paginação é **resumível**: uma página já
+        baixada é servida do disco, sem tocar a rede e **sem cobrar o ``CallBudget``**. Em modo
+        fixture lê ``{fixture_dir}/events_catalog_page_{page}.json``, sem tocar a rede.
+
+        A paginação encerra em ``meta.hasNextPage`` falso; um ``meta.nextPage`` que não avança
+        também encerra -- guarda contra laço infinito (e queima de quota) diante de um ``meta``
+        inconsistente da API.
+        """
+        items: list[CitoCatalogItem] = []
+        page = 1
+        while True:
+            envelope = self._fetch_catalog_page(page, limit, date_from, date_to, cache)
+            items.extend(envelope.data)
+            meta = envelope.meta
+            if not meta.has_next_page or meta.next_page is None or meta.next_page <= page:
+                return items
+            page = meta.next_page
+
+    @staticmethod
+    def _catalog_cache_key(
+        page: int, limit: int, date_from: date | None, date_to: date | None
+    ) -> str:
+        """Chave de cache de uma página, embutindo o recorte que a produziu.
+
+        Páginas de recortes diferentes não são intercambiáveis (a página 2 de ``limit=50`` não
+        tem os mesmos eventos que a de ``limit=200``), então ``limit``/``from``/``to`` entram na
+        chave -- reusar o arquivo entre recortes serviria dado errado.
+        """
+        inicio = date_from.isoformat() if date_from is not None else "all"
+        fim = date_to.isoformat() if date_to is not None else "all"
+        return f"catalog_l{limit}_f{inicio}_t{fim}_p{page}"
+
+    def _fetch_catalog_page(
+        self,
+        page: int,
+        limit: int,
+        date_from: date | None,
+        date_to: date | None,
+        cache: CatalogPageCache | None = None,
+    ) -> CitoCatalogEnvelope:
+        """Uma página do catálogo; cobra o orçamento no miss e valida o envelope.
+
+        Com cache, o ``_charge`` só acontece no **miss** (é ``_fetch_catalog_payload`` que
+        cobra) -- um hit não custa quota. Um envelope com ``success=false`` vira ``CitoError``
+        (payload inválido, nunca silencioso), como em ``fetch_event_stats``.
+        """
+        if cache is not None:
+            key = self._catalog_cache_key(page, limit, date_from, date_to)
+            payload, _hit = cache.get_or_fetch(
+                key, lambda: self._fetch_catalog_payload(page, limit, date_from, date_to)
+            )
+        else:
+            payload = self._fetch_catalog_payload(page, limit, date_from, date_to)
+        envelope = CitoCatalogEnvelope.model_validate(payload)
+        if not envelope.success:
+            raise CitoError(f"Cito retornou success=false para o catálogo (página {page}).")
+        return envelope
+
+    def _fetch_catalog_payload(
+        self, page: int, limit: int, date_from: date | None, date_to: date | None
+    ) -> object:
+        """Busca o payload **cru** de uma página; cobra uma unidade do orçamento antes do fetch."""
+        self._charge()
+        if self._fixture_dir is not None:
+            return self._read_fixture(f"events_catalog_page_{page}.json")
+        params = {"page": str(page), "limit": str(limit)}
+        if date_from is not None:
+            params["from"] = date_from.isoformat()
+        if date_to is not None:
+            params["to"] = date_to.isoformat()
+        return self._get_json(_EVENTS_PATH, f"o catálogo de eventos (página {page})", params=params)
 
     def _read_fixture(self, filename: str) -> object:
         """Lê e desserializa um JSON de fixture local; ausência vira ``CitoError`` explícito."""

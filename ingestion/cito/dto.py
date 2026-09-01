@@ -13,9 +13,9 @@ os rótulos ``corner`` das stats devem concordar.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from apps.bouts.enums import Corner
@@ -214,3 +214,76 @@ class CitoStatsEnvelope(BaseModel):
 
     success: bool
     data: CitoEventStats
+
+
+# ---------------------------------------------------------------------------
+# DTOs do catálogo paginado ``GET /api/v1/ufc/events`` (M6, SPEC 007, Slice 03).
+#
+# Aditivos: os DTOs acima permanecem intactos. O catálogo é a **fonte do identificador** do
+# evento na Cito -- o slug nunca é derivado por regra a partir do nome persistido (RF-04).
+# ---------------------------------------------------------------------------
+
+
+class CitoCatalogItem(BaseModel):
+    """Item do catálogo ``GET /api/v1/ufc/events`` -- a fonte do identificador do evento.
+
+    ``starts_at`` é o instante UTC do início; ``event_date`` é a **data local** do evento --
+    a mesma que o slug usa ('ufc-fight-night-august-22-2026' para um ``starts_at`` de
+    2026-08-23 UTC) e a mesma grandeza que o seed persistiu em ``events.date``. As duas
+    divergem em um dia sempre que o card noturno nos EUA atravessa a meia-noite UTC, o que
+    é o caso da maioria dos Fight Nights. Por isso o casamento usa ``local_date`` e uma
+    janela de tolerância -- e o slug **nunca** é derivado (ver
+    ``ingestion.cito.matching.resolve_event_match``).
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    id: str  # uuid textual -> events.cito_event_id
+    slug: str  # -> events.cito_slug
+    title: str
+    short_title: str | None = None
+    status: str  # "scheduled" | "completed"
+    starts_at: AwareDatetime
+    event_date: date | None = None  # data local do evento, quando o catálogo a expõe
+    venue: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    location_text: str | None = None
+
+    @property
+    def local_date(self) -> date:
+        """Data de calendário **local** do evento -- a base da janela de casamento.
+
+        Usa ``event_date`` quando o catálogo a expõe (o caso de todos os itens da captura
+        real de 2026-08-31); na ausência, degrada para a data UTC de ``starts_at``, que a
+        janela de tolerância cobre. Nunca inventa data.
+        """
+        return (
+            self.event_date
+            if self.event_date is not None
+            else self.starts_at.astimezone(UTC).date()
+        )
+
+
+class CitoCatalogMeta(BaseModel):
+    """Bloco ``meta`` da página do catálogo; só o necessário para paginar."""
+
+    model_config = _CAMEL_CONFIG
+
+    page: int
+    limit: int
+    total: int
+    total_pages: int
+    has_next_page: bool
+    next_page: int | None = None
+
+
+class CitoCatalogEnvelope(BaseModel):
+    """Envelope ``{success, data, meta}`` de uma página do catálogo paginado."""
+
+    model_config = _CAMEL_CONFIG
+
+    success: bool
+    data: list[CitoCatalogItem]
+    meta: CitoCatalogMeta

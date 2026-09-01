@@ -26,8 +26,6 @@ from ingestion.cito.backfill_rounds import (
     WINDOW_END,
     WINDOW_START,
     BackfillRoundsSummary,
-    HumanGateNotConfirmedError,
-    _enforce_human_gate,
     _select_events_in_window,
     main,
     run_backfill_rounds,
@@ -36,6 +34,7 @@ from ingestion.cito.backfill_rounds import (
 from ingestion.cito.cache import EventStatsCache
 from ingestion.cito.client import CallBudget, CitoClient, QuotaExceededError
 from ingestion.cito.dto import CitoEventStats, CitoRoundStatLine
+from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
 from ingestion.normalize import normalize_name
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -555,14 +554,14 @@ def test_run_backfill_rounds_rate_limit_entre_eventos_nao_cacheados(db_session: 
 def test_enforce_human_gate_rede_real_sem_confirmacao_levanta() -> None:
     """CA-04: modo rede real sem confirmação explícita levanta ``HumanGateNotConfirmedError``."""
     with pytest.raises(HumanGateNotConfirmedError):
-        _enforce_human_gate(fixture=False, confirmed=False)
+        enforce_human_gate(fixture=False, confirmed=False)
 
 
 def test_enforce_human_gate_demais_combinacoes_nao_levantam() -> None:
     """CA-04: fixture (com/sem confirmação) e rede real confirmada não bloqueiam."""
-    _enforce_human_gate(fixture=True, confirmed=False)
-    _enforce_human_gate(fixture=True, confirmed=True)
-    _enforce_human_gate(fixture=False, confirmed=True)
+    enforce_human_gate(fixture=True, confirmed=False)
+    enforce_human_gate(fixture=True, confirmed=True)
+    enforce_human_gate(fixture=False, confirmed=True)
 
 
 def test_main_rede_real_sem_confirmacao_nao_dispara_nenhuma_chamada(

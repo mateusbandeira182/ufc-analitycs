@@ -14,6 +14,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+# Cache em disco resumível das respostas da Cito (ingestion/cito/cache.py).
+# Reconstrutível gastando quota; ~870 KB só do catálogo -- nunca versionar.
+/.cache/
 # Frontend (SPA em web/) — artefatos não versionados.
 # Atenção: web/src/api/types.ts é gerado mas VERSIONADO (gate roda sem o backend).
 web/node_modules/

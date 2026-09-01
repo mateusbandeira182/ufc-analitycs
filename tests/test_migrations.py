@@ -16,6 +16,8 @@ TABELAS = {"fighters", "events", "bouts", "bout_fighters"}
 TIPOS_ENUM = {"stance", "bout_method", "corner"}
 TABELA_DERIVADA = "bout_features"
 TABELA_ROUNDS = "bout_fighter_rounds"
+# Identificadores externos da Cito acrescentados a ``events`` pelo M6 (SPEC 007, Slice 03).
+IDENTIFICADORES_CITO = {"cito_slug", "cito_event_id"}
 
 
 def _tabelas_existentes(engine: Engine) -> set[str]:
@@ -99,8 +101,13 @@ def test_downgrade_um_passo_remove_m5_preserva_granular_e_enum(
     A tabela ``bout_fighter_rounds`` e as colunas wide somem; o granular
     pré-existente (``bouts``/``bout_fighters``/``fighters``) e o enum ``corner``
     (dono: ``bout_fighters``) permanecem intactos.
+
+    Fixa a revisão-alvo (``ff6591f2d146``) em vez de ``head``: com a migration do M6
+    empilhada acima, ``head`` deixou de ser a M5, e um ``-1`` a partir do head
+    removeria os identificadores da Cito, não os artefatos do M5 -- mesmo ajuste que
+    o teste de ``bout_features`` já recebeu quando a M5 empilhou sobre ele.
     """
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "ff6591f2d146")
     assert TABELA_ROUNDS in _tabelas_existentes(migration_engine)
 
     command.downgrade(alembic_cfg, "-1")
@@ -112,3 +119,30 @@ def test_downgrade_um_passo_remove_m5_preserva_granular_e_enum(
     assert "referee" not in _colunas(migration_engine, "bouts")
     assert "weight_kg" not in _colunas(migration_engine, "fighters")
     assert "corner" in _tipos_enum_existentes(migration_engine)
+
+
+def test_upgrade_cria_identificadores_cito_em_events(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: a migration do M6 cria ``cito_slug``/``cito_event_id`` em ``events``."""
+    command.upgrade(alembic_cfg, "head")
+    assert _colunas(migration_engine, "events") >= IDENTIFICADORES_CITO
+
+
+def test_downgrade_um_passo_remove_identificadores_cito_preserva_events(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: o downgrade do M6 é simétrico -- dropa só as duas colunas aditivas.
+
+    O restante de ``events`` (e as demais tabelas) permanece intacto: a migration é
+    aditiva, então reverter não pode custar nenhum dado pré-existente.
+    """
+    command.upgrade(alembic_cfg, "head")
+    assert _colunas(migration_engine, "events") >= IDENTIFICADORES_CITO
+
+    command.downgrade(alembic_cfg, "-1")
+
+    colunas_events = _colunas(migration_engine, "events")
+    assert not (IDENTIFICADORES_CITO & colunas_events)
+    assert {"id", "name", "date", "location", "source"} <= colunas_events
+    assert _tabelas_existentes(migration_engine) >= TABELAS | {TABELA_ROUNDS}

@@ -1,4 +1,4 @@
-"""Cache em disco resumável das stats de evento da Cito (M5, Slice 05).
+"""Caches em disco resumíveis das respostas da Cito (M5, Slice 05; M6, Slice 03).
 
 O backfill round-a-round (``ingestion.cito.backfill_rounds``) consome a Cito uma vez por evento
 (``CitoClient.fetch_event_stats``), o que gasta a quota do free tier (500 req/mês). Este cache
@@ -15,6 +15,12 @@ forma **wire** da Cito (golpes como ``"L of A"``, tempo como ``"m:ss"``), não a
 (tuplas/segundos). Por isso a gravação reconstrói a forma wire (``_stats_to_storable``) e a leitura
 revalida via ``CitoEventStats.model_validate`` -- o mesmo caminho de validação da borda, sem ``Any``
 propagando do disco.
+
+``CatalogPageCache`` (M6, Slice 03)
+-----------------------------------
+Mesma disciplina para as páginas do **catálogo** de eventos, com uma diferença: ali o payload
+cru é gravado como veio, porque o ``CitoCatalogEnvelope`` valida a forma wire diretamente (não
+há golpes ``"L of A"`` nem tempo ``"m:ss"`` a reconstruir).
 """
 
 from __future__ import annotations
@@ -125,3 +131,41 @@ class EventStatsCache:
         path.write_text(json.dumps(_stats_to_storable(stats)), encoding="utf-8")
         logger.info("Cache miss do evento %r; resposta gravada em %s", event_slug, path)
         return stats, False
+
+
+class CatalogPageCache:
+    """Cache get-or-fetch em disco das páginas **cruas** do catálogo Cito (resumível).
+
+    O catálogo custa ~17 chamadas (811 eventos com ``limit=50``) e é relido pelas Slices 05 e
+    06. Cada página é gravada como o JSON **cru** que a Cito devolveu -- diferente do
+    ``EventStatsCache``, aqui não há reconstrução de forma wire: o payload do disco é o mesmo
+    que o da rede, então a validação em ``CitoCatalogEnvelope`` acontece pelo caminho de sempre,
+    na borda, sem ``Any`` propagando.
+
+    Um cache hit **não** chama o cliente e, portanto, **não cobra o ``CallBudget``** -- a mesma
+    regra do cache do M5. A chave é responsabilidade de quem chama e precisa embutir o recorte
+    (``limit``/``from``/``to``/página): páginas de recortes diferentes não são intercambiáveis.
+    """
+
+    def __init__(self, cache_dir: Path) -> None:
+        self._cache_dir = cache_dir
+
+    def _path(self, key: str) -> Path:
+        return self._cache_dir / f"{key}.json"
+
+    def get_or_fetch(self, key: str, fetch: Callable[[], object]) -> tuple[object, bool]:
+        """Devolve ``(payload_cru, cache_hit)``: hit lê do disco sem chamar ``fetch`` (0 quota).
+
+        Miss: chama ``fetch`` (que cobra o ``CallBudget`` no cliente), grava a resposta crua e
+        devolve ``cache_hit=False``.
+        """
+        path = self._path(key)
+        if path.is_file():
+            logger.info("Cache hit da página de catálogo %r (lida do disco, 0 quota)", key)
+            return json.loads(path.read_text(encoding="utf-8")), True
+
+        payload = fetch()
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        logger.info("Cache miss da página de catálogo %r; resposta gravada em %s", key, path)
+        return payload, False
