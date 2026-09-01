@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     cito_api_token: str = ""
     cito_base_url: str = "https://api.citoapi.com"
 
+    # API oficial da UFC (SPEC 008), o feed JSON que o próprio ufc.com consome. Pública: sem
+    # token, sem quota -- por isso não há campo de credencial ao lado.
+    ufc_official_base_url: str = "https://d29dxerjsp82wz.cloudfront.net"
+
     @property
     def effective_db_name(self) -> str:
         """Nome do banco efetivo: ``ufc_bum_test`` em teste, ``db_name`` fora dele."""
