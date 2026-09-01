@@ -63,6 +63,15 @@ def record_prediction(
     modelo sobre aquela luta -- além de ``DO NOTHING`` não devolver linha no ``RETURNING``,
     o que apagaria a prova de idempotência pelo id.
 
+    O ``DO UPDATE`` atualiza **só** o que é a predição recomputada (vencedor previsto,
+    probabilidade, contagem de features). ``predicted_at`` e ``source`` são deliberadamente
+    preservados da primeira gravação: o instante é o eixo da série temporal que a tabela
+    existe para guardar (a curva walk-forward ordena por ele) e a origem diz de onde a
+    predição veio. Refrescá-los faria cada reexecução -- inclusive cada request de
+    ``GET /api/v1/predict/event/{event_id}``, que grava -- envelhecer o registro histórico
+    para a frente. Com eles fixos, regravar é idempotente de verdade: sem consequência
+    observável quando a predição não muda.
+
     Não faz commit: a transação é do chamador.
     """
     stmt = insert(BoutPrediction).values(
@@ -80,8 +89,6 @@ def record_prediction(
             "predicted_winner_id": stmt.excluded.predicted_winner_id,
             "prob_predicted_winner": stmt.excluded.prob_predicted_winner,
             "n_features": stmt.excluded.n_features,
-            "predicted_at": stmt.excluded.predicted_at,
-            "source": stmt.excluded.source,
         },
     ).returning(BoutPrediction.id)
     # ``scalar_one()`` devolve ``Any`` (fronteira dinâmica do Core): estreitado na borda.

@@ -165,7 +165,10 @@ def predict_event_card_endpoint(
     situação é 422 porque é erro da própria requisição.
 
     Cada luta predita é registrada em ``bout_predictions`` com ``source="api"``, idempotente
-    por ``(bout_id, model_version)``.
+    por ``(bout_id, model_version)``. A idempotência é **observável**: repetir o request não
+    envelhece o registro histórico, porque ``record_prediction`` preserva ``predicted_at`` e
+    ``source`` da primeira gravação. É o que sustenta o verbo GET aqui apesar da escrita --
+    render repetido da tela não muda nada que alguém possa ler depois.
     """
     if get_event_by_id(session, event_id) is None:
         raise HTTPException(status_code=404, detail="Event não encontrado")

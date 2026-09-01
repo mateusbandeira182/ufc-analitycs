@@ -71,8 +71,14 @@ _CATALOG_DIR = _FIXTURES / "catalog_paginado_derivado"
 
 # Conjunto de fixtures da slice: catálogo e stats no MESMO diretório, que é o que o modo fixture
 # do cliente exige para percorrer o fluxo inteiro (catálogo -> stats) sem tocar a rede. Ambos são
-# **derivados** das capturas reais de 2026-08-31 -- a página de catálogo é um recorte dos itens
-# reais e as stats são recortes de lutas do card real --, nunca dado inventado.
+# **recortes** de capturas reais -- a página de catálogo recorta itens reais da captura de
+# 2026-08-31, e cada payload de stats recorta lutas de um card real --, nunca dado inventado.
+#
+# ``event_stats_ufc-freedom-250.json`` foi refeito na revisão da SPEC 007 (R-04): a versão
+# anterior era uma quimera (bloco ``event`` de um evento, luta de outro). O recorte atual sai da
+# captura ``.cache/cito-includebouts/gap_includebouts_p1_l50.json`` (2026-09-01), com a luta
+# principal do card verbatim; o bloco ``meta`` ficou de fora porque a captura disponível é a do
+# catálogo com lutas, e escrever um ``meta`` seria voltar a afirmar sobre a API sem medição.
 _GAP_FIXTURES = _FIXTURES / "gap_sync"
 
 # Data corrente injetada nos testes (determinismo: ``date.today()`` é proibido pelo ruff/DTZ011).
@@ -734,7 +740,7 @@ def test_run_gap_sync_ingests_the_missing_events_in_chronological_order(
     assert resumo.events_skipped == 0
     assert resumo.bouts.inserted == 3
     assert resumo.bout_fighters.inserted == 6
-    assert resumo.rounds_inserted == 18
+    assert resumo.rounds_inserted == 20  # 8 rounds do card de junho + 12 do de agosto
     assert resumo.fighters_created == 6
     assert resumo.profile_calls_used == 0
     assert resumo.stats_calls_used == 2

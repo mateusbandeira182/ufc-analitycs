@@ -16,6 +16,7 @@ helpers dos testes de serving e de API, para não duplicar seed.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -94,8 +95,10 @@ def test_record_prediction_grava_a_predicao(db_session: Session) -> None:
 def test_record_prediction_e_idempotente_na_chave_natural(db_session: Session) -> None:
     """CA-08: gravar 2x a mesma ``(bout_id, model_version)`` mantém **uma** linha.
 
-    O id devolvido é o mesmo (é a mesma linha, não uma nova) e o conteúdo reflete a
-    última afirmação daquele modelo sobre aquela luta.
+    O id devolvido é o mesmo (é a mesma linha, não uma nova) e a **predição** reflete a
+    última afirmação daquele modelo sobre aquela luta. ``source`` fica de fora: ele registra
+    a procedência da primeira gravação e é preservado -- ver
+    ``test_record_prediction_preserva_o_instante_e_a_origem_da_primeira_gravacao``.
     """
     bout_id = _seed_bout(db_session)
     primeiro_previsto = _seed_fighter(db_session)
@@ -128,7 +131,61 @@ def test_record_prediction_e_idempotente_na_chave_natural(db_session: Session) -
     assert atualizada.predicted_winner_id == segundo_previsto
     assert atualizada.prob_predicted_winner == 0.71
     assert atualizada.n_features == 42
-    assert atualizada.source == SOURCE_WALK_FORWARD
+    assert atualizada.source == SOURCE_API
+
+
+def test_record_prediction_preserva_o_instante_e_a_origem_da_primeira_gravacao(
+    db_session: Session,
+) -> None:
+    """Reprever a mesma luta atualiza a predição, **nunca** o eixo temporal do registro.
+
+    ``predicted_at`` responde "quando esta predição foi feita", e é essa coluna que ordena a
+    série da curva walk-forward (``apps.predictions.selectors.get_prediction_outcomes``).
+    Refrescá-la no ``DO UPDATE`` a transformaria em "a última vez que alguém pediu a mesma
+    predição" -- e, como ``GET /api/v1/predict/event/{event_id}`` grava, cada render da tela
+    envelheceria o registro histórico para a frente. ``source`` é a mesma classe de dado: diz de
+    onde veio a **primeira** gravação daquela predição, e sobrescrevê-la apagaria a procedência.
+
+    A probabilidade e o vencedor previsto, ao contrário, são a mesma predição recomputada e
+    podem mudar -- é o que separa esta trava de um simples ``DO NOTHING``.
+    """
+    bout_id = _seed_bout(db_session)
+    fighter_id = _seed_fighter(db_session)
+
+    prediction_id = record_prediction(
+        db_session,
+        bout_id=bout_id,
+        predicted_winner_id=fighter_id,
+        prob_predicted_winner=0.55,
+        model_version=VERSAO,
+        n_features=39,
+        source=SOURCE_WALK_FORWARD,
+    )
+    gravada = db_session.get(BoutPrediction, prediction_id)
+    assert gravada is not None
+    instante_original = gravada.predicted_at
+
+    # Espera curta e explícita: sem ela, as duas gravações poderiam cair no mesmo microssegundo
+    # e o teste passaria mesmo com o refresh de volta.
+    time.sleep(0.01)
+
+    regravada_id = record_prediction(
+        db_session,
+        bout_id=bout_id,
+        predicted_winner_id=fighter_id,
+        prob_predicted_winner=0.83,
+        model_version=VERSAO,
+        n_features=39,
+        source=SOURCE_API,
+    )
+
+    assert regravada_id == prediction_id
+    regravada = db_session.get(BoutPrediction, regravada_id)
+    assert regravada is not None
+    db_session.refresh(regravada)
+    assert regravada.prob_predicted_winner == 0.83
+    assert regravada.predicted_at == instante_original
+    assert regravada.source == SOURCE_WALK_FORWARD
 
 
 def test_record_prediction_versao_nova_gera_linha_nova(db_session: Session) -> None:

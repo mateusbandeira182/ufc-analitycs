@@ -93,3 +93,149 @@ def test_a_trava_enxerga_os_identificadores_das_fixtures_de_payload() -> None:
     assert len(com_ids) >= 8
     assert "12cedec11b37ddc0" in com_ids["event_stats_ufc-319.json"]
     assert "12cedec11b37ddc0" in com_ids["event_ufc-319.json"]
+
+
+# --------------------------------------------------------------------------- #
+# Trava de coerência interna (revisão da SPEC 007, R-04).
+#
+# O formato do identificador é barato mas cego a uma segunda classe de fixture inventada: a
+# **quimera** -- blocos verdadeiros de eventos diferentes costurados no mesmo payload. Foi o que
+# aconteceu com ``gap_sync/event_stats_ufc-freedom-250.json``, que trazia o bloco ``event`` de um
+# evento e uma luta cujo ``eventSlug`` (e o ``meta`` inteiro) era de outro. Todos os ids eram
+# bem-formados, então a trava de formato passou.
+#
+# A invariante aqui é a que a API real cumpre em toda captura conferida: um payload de evento fala
+# de **um** evento, e cada bloco pendurado numa luta fala **daquela** luta.
+# --------------------------------------------------------------------------- #
+
+# Blocos internos de uma luta que repetem o identificador dela em ``boutId``.
+_BLOCOS_DA_LUTA = ("fighters", "boutStats", "roundStats")
+
+# Blocos do payload que espelham, no topo, as linhas penduradas em cada luta do card.
+_BLOCOS_DO_TOPO = ("boutStats", "roundStats")
+
+_PREFIXO_EVENT_STATS = "event_stats_"
+
+
+def _objeto(node: object) -> dict[str, object] | None:
+    """O nó como objeto JSON, ou ``None`` quando ele não é um objeto."""
+    return node if isinstance(node, dict) else None
+
+
+def _lista(node: object) -> list[object]:
+    """O nó como lista JSON; qualquer outra coisa vira lista vazia."""
+    return node if isinstance(node, list) else []
+
+
+def _valor(node: object, chave: str) -> object:
+    """O valor de ``chave`` quando o nó é um objeto JSON; ``None`` caso contrário."""
+    objeto = _objeto(node)
+    return objeto.get(chave) if objeto is not None else None
+
+
+def _texto(node: object, chave: str) -> str | None:
+    """O valor de ``chave`` no nó quando ele é uma string; ``None`` caso contrário."""
+    valor = _valor(node, chave)
+    return valor if isinstance(valor, str) else None
+
+
+def _payload_de_evento(payload: object) -> dict[str, object] | None:
+    """O bloco ``data`` de uma fixture de stats de evento; ``None`` se a fixture é de outro tipo."""
+    envelope = _objeto(payload)
+    if envelope is None:
+        return None
+    data = _objeto(envelope.get("data"))
+    if data is None or "event" not in data:
+        return None
+    return data
+
+
+def _incoerencias(fixture: Path, payload: object) -> list[str]:
+    """Lista, em pt-BR, tudo que no payload afirma pertencer a outro evento ou a outra luta."""
+    data = _payload_de_evento(payload)
+    if data is None:
+        return []
+
+    achados: list[str] = []
+    evento = data["event"]
+    slug = _texto(evento, "slug")
+    event_id = _texto(evento, "id")
+
+    nome = fixture.name.removesuffix(".json")
+    if nome.startswith(_PREFIXO_EVENT_STATS):
+        slug_do_arquivo = nome.removeprefix(_PREFIXO_EVENT_STATS)
+        if slug_do_arquivo != slug:
+            achados.append(
+                f"o nome do arquivo diz {slug_do_arquivo!r} e o bloco event diz {slug!r}"
+            )
+
+    ids_das_lutas: set[str] = set()
+    for luta in _lista(data.get("bouts")):
+        bout_id = _texto(luta, "id")
+        if bout_id is not None:
+            ids_das_lutas.add(bout_id)
+        event_slug = _texto(luta, "eventSlug")
+        if event_slug is not None and event_slug != slug:
+            achados.append(f"a luta {bout_id} tem eventSlug {event_slug!r}, e o evento é {slug!r}")
+        for bloco in _BLOCOS_DA_LUTA:
+            for linha in _lista(_valor(luta, bloco)):
+                referencia = _texto(linha, "boutId")
+                if referencia is not None and referencia != bout_id:
+                    achados.append(f"{bloco} da luta {bout_id} referencia a luta {referencia}")
+
+    for bloco in _BLOCOS_DO_TOPO:
+        for linha in _lista(data.get(bloco)):
+            referencia = _texto(linha, "boutId")
+            if referencia is not None and referencia not in ids_das_lutas:
+                achados.append(f"{bloco} do topo referencia a luta {referencia}, ausente do card")
+
+    meta = _valor(payload, "meta")
+    pedido = _texto(meta, "requestedIdentifier")
+    if pedido is not None and pedido not in {slug, event_id}:
+        achados.append(f"meta.requestedIdentifier é {pedido!r}, e o evento é {slug!r}")
+    resolvido = _valor(meta, "resolved")
+    if _texto(resolvido, "slug") not in {None, slug}:
+        achados.append(f"meta.resolved.slug é {_texto(resolvido, 'slug')!r}, e o evento é {slug!r}")
+    if _texto(resolvido, "id") not in {None, event_id}:
+        achados.append(f"meta.resolved.id é {_texto(resolvido, 'id')!r}, e o evento é {event_id!r}")
+
+    return achados
+
+
+@pytest.mark.parametrize("fixture", _fixtures_json(), ids=lambda caminho: caminho.name)
+def test_payload_de_evento_das_fixtures_fala_de_um_evento_so(fixture: Path) -> None:
+    """Nenhuma fixture costura blocos de eventos ou de lutas diferentes no mesmo payload."""
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+
+    achados = _incoerencias(fixture, payload)
+
+    assert not achados, (
+        f"{fixture.relative_to(_FIXTURES)} é um payload internamente incoerente: "
+        f"{achados}. A API real nunca devolveu isso -- recorte a fixture de uma resposta real "
+        f"(ver .cache/cito) em vez de costurar blocos de eventos diferentes."
+    )
+
+
+def test_a_trava_de_coerencia_enxerga_os_payloads_de_evento() -> None:
+    """Guarda da guarda: a trava de fato inspeciona payloads de evento e reprova uma quimera.
+
+    Sem isto, um erro no reconhecimento do payload (uma chave renomeada, o ``data`` mudando de
+    lugar) transformaria a asserção acima num verde vazio -- a mesma falha silenciosa que ela
+    existe para impedir.
+    """
+    inspecionadas = [
+        fixture
+        for fixture in _fixtures_json()
+        if _payload_de_evento(json.loads(fixture.read_text(encoding="utf-8"))) is not None
+    ]
+
+    assert len(inspecionadas) >= 6
+
+    quimera = json.loads(
+        (_FIXTURES / "gap_sync" / "event_stats_ufc-fight-night-august-22-2026.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    quimera["data"]["bouts"][0]["eventSlug"] = "ufc-freedom-250"
+
+    assert _incoerencias(Path("event_stats_ufc-fight-night-august-22-2026.json"), quimera)
