@@ -3,6 +3,7 @@
 CLAUDE.md
 .mcp.json
 /.devcontainer
+/.githooks
 /docs
 # Segredos locais (o .env.example versionado documenta as variáveis)
 .env
