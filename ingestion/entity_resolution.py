@@ -26,6 +26,9 @@ from ingestion.normalize import normalize_name
 logger = logging.getLogger(__name__)
 
 _DOB_FORMAT = "%b %d, %Y"
+# Faixa plausível de peso de lutador, em kg. O teto acomoda outliers reais do UFC antigo
+# (Emmanuel Yarborough, 349,27 kg); o piso barra zero, negativo e ruído de parsing.
+_WEIGHT_RANGE_KG = (40.0, 400.0)
 _STANCE_BY_LABEL = {
     "orthodox": Stance.ORTHODOX,
     "southpaw": Stance.SOUTHPAW,
@@ -40,6 +43,7 @@ class FighterRow(TypedDict):
     nick_name: str
     dob: str
     height: str
+    weight: str
     reach: str
     stance: str
     wins: str
@@ -56,6 +60,7 @@ class ResolvedFighter:
     nickname: str | None
     date_of_birth: date | None
     height_cm: int | None
+    weight_kg: float | None
     reach_cm: int | None
     stance: Stance | None
     wins: int
@@ -75,6 +80,32 @@ def _parse_measurement_cm(value: str) -> int | None:
     if not stripped:
         return None
     return round(float(stripped))
+
+
+def _parse_weight_kg(value: str) -> float | None:
+    """Peso em quilos (o dataset já publica kg com decimais) -> ``float`` ou ``None``.
+
+    Não há conversão de libras a fazer: o ``fighter_details.csv`` traz o limite da divisão
+    já convertido (``70.31`` = 155 lb, ``83.91`` = 185 lb). A faixa plausível vai até
+    ``_WEIGHT_RANGE_KG`` para acomodar outliers reais do UFC antigo (Emmanuel Yarborough,
+    349,27 kg) -- validação que descarta dado verdadeiro é pior que validação nenhuma.
+    Ausente, não-numérico ou fora da faixa degrada para ``None`` com log: nunca zero,
+    nunca sentinela.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        weight = float(stripped)
+    except ValueError:
+        logger.warning("Peso não-numérico %r no CSV; gravado como nulo", value)
+        return None
+
+    minimum, maximum = _WEIGHT_RANGE_KG
+    if not minimum <= weight <= maximum:
+        logger.warning("Peso %.2f kg fora da faixa plausível; gravado como nulo", weight)
+        return None
+    return weight
 
 
 def _parse_dob(value: str) -> date | None:
@@ -102,6 +133,7 @@ def _to_resolved(row: FighterRow) -> ResolvedFighter:
         nickname=_parse_optional_text(row["nick_name"]),
         date_of_birth=_parse_dob(row["dob"]),
         height_cm=_parse_measurement_cm(row["height"]),
+        weight_kg=_parse_weight_kg(row["weight"]),
         reach_cm=_parse_measurement_cm(row["reach"]),
         stance=_parse_stance(row["stance"]),
         wins=int(row["wins"]),

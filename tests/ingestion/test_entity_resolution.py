@@ -31,6 +31,7 @@ def _row(name: str, **overrides: str) -> FighterRow:
         "nick_name": "",
         "dob": "May 08, 1982",
         "height": "180.0",
+        "weight": "77.11",
         "reach": "185.0",
         "stance": "Orthodox",
         "wins": "10",
@@ -112,6 +113,36 @@ def test_medidas_e_nickname_ausentes_viram_none() -> None:
     assert fighter.height_cm is None
     assert fighter.reach_cm is None
     assert fighter.nickname is None
+
+
+def test_weight_em_kg_preserva_a_casa_decimal() -> None:
+    """O dataset já publica quilos: ``"65.77"`` chega ao domínio como ``float``, sem conversão."""
+    (fighter,) = resolve_fighters([_row("Alexander Volkanovski", weight="65.77")])
+    assert fighter.weight_kg == 65.77
+
+
+def test_weight_ausente_ou_nao_numerico_vira_none() -> None:
+    """Célula vazia ou texto não-numérico resolve para NULL -- nunca zero, nunca sentinela."""
+    resolved = resolve_fighters([_row("No Weight", weight=""), _row("Bad Weight", weight="n/a")])
+    assert [fighter.weight_kg for fighter in resolved] == [None, None]
+
+
+def test_weight_fora_da_faixa_plausivel_vira_none() -> None:
+    """Valor absurdo (zero, negativo, milhares) é descartado para NULL, não gravado."""
+    resolved = resolve_fighters(
+        [
+            _row("Zero Weight", weight="0"),
+            _row("Negative Weight", weight="-5"),
+            _row("Absurd Weight", weight="1500"),
+        ]
+    )
+    assert [fighter.weight_kg for fighter in resolved] == [None, None, None]
+
+
+def test_outlier_legitimo_do_ufc_antigo_e_preservado() -> None:
+    """Emmanuel Yarborough (349,27 kg) é dado real: a faixa não pode descartá-lo."""
+    (fighter,) = resolve_fighters([_row("Emmanuel Yarborough", weight="349.27")])
+    assert fighter.weight_kg == 349.27
 
 
 # --- Matching cross-source (Kaggle x Cito) -- CA-01, CA-04, CA-05, CA-06 --------------

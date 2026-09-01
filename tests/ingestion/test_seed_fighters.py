@@ -88,6 +88,7 @@ def test_atributos_mapeados_da_borda(db_session: Session) -> None:
     assert volk.reach_cm == 183
     assert volk.stance is Stance.ORTHODOX
     assert volk.nickname == "The Great"
+    assert volk.weight_kg == 65.77
     assert (volk.wins, volk.losses, volk.draws) == (26, 4, 0)
 
     # Stance fora do enum (Open Stance) e medidas ausentes -> NULL.
@@ -103,3 +104,5 @@ def test_atributos_mapeados_da_borda(db_session: Session) -> None:
     ).all()
     assert ghost.date_of_birth is None
     assert ghost.height_cm is None
+    # Peso ausente no CSV -> NULL (nunca zero); a carga não é bloqueada.
+    assert ghost.weight_kg is None
