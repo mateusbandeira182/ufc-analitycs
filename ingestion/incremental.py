@@ -67,12 +67,12 @@ from ingestion.cito.client import (
     CallBudget,
     CitoClient,
     QuotaExceededError,
+    build_cito_client,
 )
 from ingestion.cito.dto import CitoBout, CitoBoutStats, CitoEvent, CitoFighter
 from ingestion.entity_resolution import ExistingFighter, FighterCandidate, match_fighter_id
 from ingestion.normalize import normalize_name
 from mma_analytics.db import SessionLocal
-from mma_analytics.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -106,19 +106,44 @@ def resolve_call_budget(cli_value: int | None, env: Mapping[str, str]) -> int:
 
 # Mapa PRÓPRIO da Cito -> ``BoutMethod``. Deliberadamente **não** reusa o ``_METHOD_BY_TOKEN`` do
 # ``seed_bouts`` (Kaggle): os tokens da Cito são de outra fonte e podem divergir. Um token não
-# previsto degrada conservadoramente para ``NO_CONTEST`` com log (mesma política do M0). Ajustar
-# quando o payload real da Cito revelar tokens fora deste conjunto (ver relatório da Slice 03).
+# previsto degrada conservadoramente para ``NO_CONTEST`` com log (mesma política do M0).
+#
+# A Cito serve DUAS grafias no mesmo catálogo -- medido na sondagem de 2026-09-01 (SPEC 007,
+# Slice 06): a forma longa ('Decision - Unanimous') na maioria dos eventos e os códigos curtos
+# do ufcstats ('U-DEC', 'S-DEC', 'SUB', 'CNC') em outros. As duas mapeiam para o mesmo desfecho;
+# 'M-DEC' entra junto por ser o terceiro membro da mesma família de decisão (as outras duas
+# grafias longas já estão previstas). 'CNC' é 'Could Not Continue', o mesmo NO_CONTEST que o
+# seed já mapeia pela forma extensa.
 _CITO_METHOD_BY_TOKEN: dict[str, BoutMethod] = {
     "KO/TKO": BoutMethod.KO_TKO,
     "TKO": BoutMethod.KO_TKO,
+    "TKO - Doctor's Stoppage": BoutMethod.KO_TKO,
     "Submission": BoutMethod.SUBMISSION,
+    "SUB": BoutMethod.SUBMISSION,
     "Decision - Unanimous": BoutMethod.DECISION,
     "Decision - Split": BoutMethod.DECISION,
     "Decision - Majority": BoutMethod.DECISION,
+    "U-DEC": BoutMethod.DECISION,
+    "S-DEC": BoutMethod.DECISION,
+    "M-DEC": BoutMethod.DECISION,
     "DQ": BoutMethod.DQ,
     "No Contest": BoutMethod.NO_CONTEST,
+    "CNC": BoutMethod.NO_CONTEST,
+    "Could Not Continue": BoutMethod.NO_CONTEST,
     "Overturned": BoutMethod.NO_CONTEST,
+    "Other": BoutMethod.NO_CONTEST,
 }
+
+
+def is_known_method_token(token: str) -> bool:
+    """O token de método da Cito tem tradução conhecida para ``BoutMethod``?
+
+    Existe para que quem **cria** a luta (o fechamento do gap, Slice 06) possa recusar um token
+    desconhecido em vez de deixá-lo degradar para ``NO_CONTEST``: no caminho de enriquecimento
+    do M1 a degradação é conservadora, mas na criação ela gravaria o **rótulo do preditivo**
+    errado e em silêncio. Encapsula o mapa, que permanece privado.
+    """
+    return token.strip() in _CITO_METHOD_BY_TOKEN
 
 
 def upsert_event(session: Session, event: CitoEvent) -> int:
@@ -144,8 +169,13 @@ def upsert_event(session: Session, event: CitoEvent) -> int:
     return 1
 
 
-def _load_existing_fighters(session: Session) -> list[ExistingFighter]:
-    """Materializa a chave de matching de todos os fighters persistidos (id + nome + DOB)."""
+def load_existing_fighters(session: Session) -> list[ExistingFighter]:
+    """Materializa a chave de matching de todos os fighters persistidos (id + nome + DOB).
+
+    Público desde o M6 (Slice 06): o fechamento do gap materializa o mesmo índice uma vez por
+    evento, e a alternativa era duplicar o ``select`` ou importar um símbolo privado. Movido
+    como está, sem generalização -- mesma promoção que o gate humano recebeu na Slice 03.
+    """
     return [
         ExistingFighter(id=fighter_id, name_normalized=name_normalized, date_of_birth=dob)
         for fighter_id, name_normalized, dob in session.execute(
@@ -173,7 +203,7 @@ def resolve_or_create_fighter(
     coerente para as resoluções seguintes do mesmo evento. Se omitido, o índice é carregado
     do banco na própria chamada (uso direto, ex.: testes de uma única resolução).
     """
-    index = existing if existing is not None else _load_existing_fighters(session)
+    index = existing if existing is not None else load_existing_fighters(session)
     candidate = FighterCandidate(name=fighter.name, date_of_birth=fighter.date_of_birth)
     matched_id = match_fighter_id(candidate, index)
     if matched_id is not None:
@@ -221,7 +251,7 @@ def resolve_event_fighters(
     ``AmbiguousFighterMatchError`` -- a resolução falha alto, sem inserir parcial silencioso.
     """
     fighter_ids: dict[str, int] = {}
-    existing = _load_existing_fighters(session)
+    existing = load_existing_fighters(session)
     for bout in event.bouts:
         for corner in bout.corners:
             if corner.slug in fighter_ids:
@@ -573,21 +603,6 @@ def run_incremental(
     return summary
 
 
-def _build_client(*, fixture: bool, fixture_dir: Path, budget: CallBudget) -> CitoClient:
-    """Constrói o ``CitoClient`` com o ``budget`` da execução: modo fixture ou HTTP autenticado.
-
-    O orçamento é cobrado a cada fetch inclusive em modo fixture (o custo modela o free tier).
-    """
-    if fixture:
-        return CitoClient(
-            token=settings.cito_api_token,
-            base_url=settings.cito_base_url,
-            fixture_dir=fixture_dir,
-            budget=budget,
-        )
-    return CitoClient(token=settings.cito_api_token, base_url=settings.cito_base_url, budget=budget)
-
-
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     """Interpreta os argumentos de linha de comando do entrypoint."""
     parser = argparse.ArgumentParser(
@@ -637,7 +652,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger.error("Configuração inválida: %s", exc)
         sys.exit(2)
     budget = CallBudget(limit=limit)
-    client = _build_client(fixture=args.fixture, fixture_dir=args.fixture_dir, budget=budget)
+    client = build_cito_client(fixture=args.fixture, fixture_dir=args.fixture_dir, budget=budget)
 
     with SessionLocal() as session:
         try:

@@ -1,12 +1,26 @@
 {
+ "success": true,
+ "data": {
+  "id": "00000000-0000-4000-8000-227288699381",
   "slug": "dricus-du-plessis",
   "name": "Dricus du Plessis",
-  "date_of_birth": "1994-01-14",
   "nickname": "Stillknocks",
-  "height_cm": 185,
-  "reach_cm": 191,
-  "stance": "orthodox",
-  "wins": 23,
-  "losses": 2,
-  "draws": 0
+  "division": "Middleweight",
+  "status": "Active",
+  "isActive": true,
+  "championStatus": "none",
+  "recordWins": 23,
+  "recordLosses": 2,
+  "recordDraws": 0,
+  "recordNoContest": 0,
+  "recordText": "23-2-0 (W-L-D)",
+  "age": null,
+  "birthDate": "1994-01-14T00:00:00.000Z",
+  "heightInches": "73",
+  "weightLbs": null,
+  "reachInches": "75",
+  "stance": "Orthodox",
+  "dataFreshness": "cached"
+ },
+ "meta": {}
 }

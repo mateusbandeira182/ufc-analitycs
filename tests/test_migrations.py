@@ -16,6 +16,12 @@ TABELAS = {"fighters", "events", "bouts", "bout_fighters"}
 TIPOS_ENUM = {"stance", "bout_method", "corner"}
 TABELA_DERIVADA = "bout_features"
 TABELA_ROUNDS = "bout_fighter_rounds"
+# Identificadores externos da Cito acrescentados a ``events`` pelo M6 (SPEC 007, Slice 03).
+IDENTIFICADORES_CITO = {"cito_slug", "cito_event_id"}
+# Registro de predições (SPEC 007, Slice 07).
+TABELA_PREDICOES = "bout_predictions"
+# Contexto de card acrescentado a ``bouts`` pelo M6 (SPEC 007, Slice 05).
+CONTEXTO_DE_CARD = {"card_section", "bout_order"}
 
 
 def _tabelas_existentes(engine: Engine) -> set[str]:
@@ -99,8 +105,13 @@ def test_downgrade_um_passo_remove_m5_preserva_granular_e_enum(
     A tabela ``bout_fighter_rounds`` e as colunas wide somem; o granular
     pré-existente (``bouts``/``bout_fighters``/``fighters``) e o enum ``corner``
     (dono: ``bout_fighters``) permanecem intactos.
+
+    Fixa a revisão-alvo (``ff6591f2d146``) em vez de ``head``: com a migration do M6
+    empilhada acima, ``head`` deixou de ser a M5, e um ``-1`` a partir do head
+    removeria os identificadores da Cito, não os artefatos do M5 -- mesmo ajuste que
+    o teste de ``bout_features`` já recebeu quando a M5 empilhou sobre ele.
     """
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "ff6591f2d146")
     assert TABELA_ROUNDS in _tabelas_existentes(migration_engine)
 
     command.downgrade(alembic_cfg, "-1")
@@ -111,4 +122,112 @@ def test_downgrade_um_passo_remove_m5_preserva_granular_e_enum(
     assert "head_landed" not in _colunas(migration_engine, "bout_fighters")
     assert "referee" not in _colunas(migration_engine, "bouts")
     assert "weight_kg" not in _colunas(migration_engine, "fighters")
+    assert "corner" in _tipos_enum_existentes(migration_engine)
+
+
+def test_upgrade_cria_identificadores_cito_em_events(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: a migration do M6 cria ``cito_slug``/``cito_event_id`` em ``events``."""
+    command.upgrade(alembic_cfg, "head")
+    assert _colunas(migration_engine, "events") >= IDENTIFICADORES_CITO
+
+
+def test_downgrade_um_passo_remove_identificadores_cito_preserva_events(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: o downgrade do M6 é simétrico -- dropa só as duas colunas aditivas.
+
+    O restante de ``events`` (e as demais tabelas) permanece intacto: a migration é
+    aditiva, então reverter não pode custar nenhum dado pré-existente.
+
+    Fixa a revisão-alvo (``fd5a802eac7b``) em vez de ``head``: com a migration de
+    ``bout_predictions`` empilhada acima, ``head`` deixou de ser a dos identificadores
+    da Cito, e um ``-1`` a partir do head removeria a tabela de predições -- mesmo
+    ajuste que os testes de ``bout_features`` e da M5 já receberam.
+    """
+    command.upgrade(alembic_cfg, "fd5a802eac7b")
+    assert _colunas(migration_engine, "events") >= IDENTIFICADORES_CITO
+
+    command.downgrade(alembic_cfg, "-1")
+
+    colunas_events = _colunas(migration_engine, "events")
+    assert not (IDENTIFICADORES_CITO & colunas_events)
+    assert {"id", "name", "date", "location", "source"} <= colunas_events
+    assert _tabelas_existentes(migration_engine) >= TABELAS | {TABELA_ROUNDS}
+
+
+def test_upgrade_head_cria_bout_predictions(alembic_cfg: Config, migration_engine: Engine) -> None:
+    """CA-02: ``alembic upgrade head`` cria a tabela ``bout_predictions``."""
+    command.upgrade(alembic_cfg, "head")
+    assert TABELA_PREDICOES in _tabelas_existentes(migration_engine)
+    assert _colunas(migration_engine, TABELA_PREDICOES) >= {
+        "bout_id",
+        "predicted_winner_id",
+        "prob_predicted_winner",
+        "model_version",
+        "n_features",
+        "predicted_at",
+        "source",
+    }
+
+
+def test_downgrade_um_passo_remove_bout_predictions_preserva_o_resto(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-02: o downgrade da Slice 07 dropa **só** ``bout_predictions``.
+
+    A slice é inteiramente aditiva: reverter não pode custar o granular
+    (``bouts``/``bout_fighters``), o round-a-round do M5, o cache derivado, os
+    identificadores da Cito nem o enum ``corner`` (dono: ``bout_fighters``).
+
+    Fixa a revisão-alvo (``c584e0a18606``) em vez de ``head``: com o contexto de card da
+    Slice 05 empilhado acima, ``head`` deixou de ser a de ``bout_predictions``, e um ``-1``
+    a partir do head removeria as colunas de card -- mesmo ajuste que os testes de
+    ``bout_features``, da M5 e dos identificadores da Cito já receberam.
+    """
+    command.upgrade(alembic_cfg, "c584e0a18606")
+    assert TABELA_PREDICOES in _tabelas_existentes(migration_engine)
+
+    command.downgrade(alembic_cfg, "-1")
+
+    tabelas = _tabelas_existentes(migration_engine)
+    assert TABELA_PREDICOES not in tabelas
+    assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA}
+    assert _colunas(migration_engine, "events") >= IDENTIFICADORES_CITO
+    assert "corner" in _tipos_enum_existentes(migration_engine)
+
+
+def test_upgrade_cria_contexto_de_card_em_bouts(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-06: a migration da Slice 05 cria ``card_section``/``bout_order`` em ``bouts``."""
+    command.upgrade(alembic_cfg, "head")
+    assert _colunas(migration_engine, "bouts") >= CONTEXTO_DE_CARD
+
+
+def test_downgrade_um_passo_remove_contexto_de_card_preserva_bouts(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-06: o downgrade é simétrico -- dropa só as duas colunas aditivas de ``bouts``.
+
+    A migration é aditiva no padrão da ADR 0004: nenhuma coluna pré-existente muda de tipo ou
+    de nulidade, então reverter não pode custar nenhum dado já semeado (o contexto de luta do
+    M5, o resultado, o granular por round, o cache derivado nem o enum ``corner``).
+
+    Fixa a revisão-alvo (``3f1c38836a40``) em vez de ``head``, seguindo o precedente das
+    migrations anteriores: assim uma migration futura empilhada acima não faz este ``-1``
+    reverter o artefato errado.
+    """
+    command.upgrade(alembic_cfg, "3f1c38836a40")
+    assert _colunas(migration_engine, "bouts") >= CONTEXTO_DE_CARD
+
+    command.downgrade(alembic_cfg, "-1")
+
+    colunas_bouts = _colunas(migration_engine, "bouts")
+    assert not (CONTEXTO_DE_CARD & colunas_bouts)
+    assert {"event_id", "winner_id", "method", "weight_class"} <= colunas_bouts
+    assert {"title_bout", "scheduled_rounds", "referee"} <= colunas_bouts
+    tabelas = _tabelas_existentes(migration_engine)
+    assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA, TABELA_PREDICOES}
     assert "corner" in _tipos_enum_existentes(migration_engine)

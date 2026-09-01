@@ -27,6 +27,7 @@ from analysis.dataset import (
     TemporalSplit,
     build_dataset,
     read_bout_features,
+    restrict_to_trainable_columns,
     temporal_split,
 )
 from analysis.metrics import Metrics, baseline_metrics, compute_metrics
@@ -52,6 +53,13 @@ class LoadedModel:
 
     model: HistGradientBoostingClassifier
     feature_names: list[str]
+    # Instante do treino em ISO-8601, **a string crua persistida no artefato** -- não um
+    # ``datetime``. É o ``model_version`` de ``bout_predictions``, metade da chave única
+    # ``(bout_id, model_version)``: reformatá-lo (normalizar o fuso, truncar
+    # microssegundos) quebraria a idempotência em silêncio, gravando uma linha nova a cada
+    # predição da mesma luta com o mesmo modelo. ``load_artifact`` valida o formato ao
+    # carregar, mas guarda e expõe o valor original.
+    trained_at: str
 
 
 @dataclass(frozen=True)
@@ -98,7 +106,8 @@ def run_training(
 ) -> TrainingResult:
     """Roda a pipeline completa sobre o estado atual de ``bout_features`` (não commita).
 
-    Lê o dataset, faz o split temporal, treina o modelo e avalia modelo e baseline no
+    Lê o dataset, faz o split temporal, descarta as features sem nenhum valor **dentro da
+    fatia de treino** (com aviso no log), treina o modelo e avalia modelo e baseline no
     holdout. É read-only (código de análise sobre o granular derivado); o ``main`` de
     ``analysis.train`` abre a sessão. Levanta ``ValueError`` se não há linhas com alvo.
     """
@@ -106,11 +115,14 @@ def run_training(
     n_samples = len(dataset.target)
     if n_samples == 0:
         raise ValueError("bout_features não tem linhas com alvo definido; nada a treinar.")
-    split = temporal_split(dataset, test_fraction)
+    split = restrict_to_trainable_columns(temporal_split(dataset, test_fraction))
     model = train_model(split.x_train, split.y_train, random_state)
     return TrainingResult(
         model=model,
-        feature_names=dataset.feature_names,
+        # As colunas da fatia de treino, não as do dataset: uma feature sem nenhum valor antes
+        # do corte temporal é descartada por ``restrict_to_trainable_columns`` e não pode
+        # constar do contrato de realinhamento que o serving (``analysis.predict``) consome.
+        feature_names=[str(column) for column in split.x_train.columns],
         model_metrics=_evaluate_model(model, split),
         baseline_metrics=baseline_metrics(split.y_train, split.y_test),
         trained_at=datetime.now(UTC),
@@ -170,4 +182,31 @@ def load_artifact(directory: Path = ARTIFACTS_DIR) -> LoadedModel:
             f"(esperado HistGradientBoostingClassifier)."
         )
     feature_names = [str(name) for name in raw["feature_names"]]
-    return LoadedModel(model=model, feature_names=feature_names)
+    return LoadedModel(
+        model=model,
+        feature_names=feature_names,
+        trained_at=_validated_trained_at(str(raw["trained_at"]), path),
+    )
+
+
+def _validated_trained_at(trained_at: str, path: Path) -> str:
+    """Valida o ``trained_at`` do artefato e devolve a **string original**, intacta.
+
+    Falha rápido quando o valor é malformado ou naive -- um ``model_version`` inválido
+    só seria notado muito depois, já gravado em ``bout_predictions``. O parse serve
+    apenas de validação: reformatar o valor quebraria a chave única
+    ``(bout_id, model_version)`` em silêncio, então o que volta é a string crua.
+    """
+    try:
+        parsed = datetime.fromisoformat(trained_at)
+    except ValueError as exc:
+        raise ValueError(
+            f"Artefato em {path} tem trained_at malformado: {trained_at!r} "
+            f"(esperado ISO-8601 com fuso)."
+        ) from exc
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"Artefato em {path} tem trained_at sem fuso: {trained_at!r}; "
+            f"um instante naive não identifica o treino sem ambiguidade."
+        )
+    return trained_at

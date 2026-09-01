@@ -4,7 +4,8 @@ Núcleo de dados da fase 2 (modelo preditivo). Lê o cache reconstrutível ``bou
 (M4) juntando a data do evento (``bout_features`` -> ``bouts`` -> ``events``), expande o
 payload JSONB ``features`` em colunas **numéricas** (X) e mapeia o alvo
 ``target_winner_corner`` para binário (vermelho=1, azul=0), descartando as lutas de alvo
-nulo (NC/empate).
+nulo (NC/empate) e as anteriores a ``FIRST_RELIABLE_CORNER_DATE``, cujo canto o Kaggle
+fabricou (alvo falso; ver ADR 0006).
 
 Invariante load-bearing (mesma disciplina anti-leakage do M4): o split é **temporal**,
 nunca aleatório. Ordena por data de evento e reserva as lutas mais recentes como holdout
@@ -21,7 +22,7 @@ de X -- o classificador consome apenas numérico, com ``NaN`` explícito preserv
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 import pandas as pd
@@ -41,6 +42,35 @@ COL_FEATURES = "features"
 
 # Alvo binário: canto vermelho = 1 (o baseline ingênuo prevê sempre 1), azul = 0.
 _CORNER_TO_LABEL: dict[str, int] = {"red": 1, "blue": 0}
+
+# Data do primeiro evento cujo canto o Kaggle registra de verdade. Antes dela o canto do
+# dataset é **fabricado**: a taxa de vitória do vermelho é exatamente 100,0% em TODOS os anos
+# de 1994 a 2009 (1.249 lutas decididas), e passa a 61,2% em 2010, 59,7% em 2011 e a oscilar
+# entre 53,8% e 63,2% até 2025. O corte é seco, não gradiente -- naquelas linhas a coluna de
+# canto foi preenchida com a ordem do resultado, porque o ufcstats da época não registrava
+# canto. Confirmação independente: a convenção "o primeiro nome do título do evento é o canto
+# vermelho" acerta 99,4% (478/481) de 2010 em diante e só 64,3% (18/28) antes disso.
+#
+# É constante fixa, não parâmetro: não é ajuste de tuning que se calibra, é limitação
+# conhecida da fonte. Ver ADR 0006.
+FIRST_RELIABLE_CORNER_DATE = date(2010, 1, 1)
+
+# As 8 médias de carreira do ``fighter_details.csv`` são um **snapshot de 2025**: cada uma
+# resume a carreira inteira do lutador, inclusive as lutas posteriores àquela que se quer
+# prever. Usá-las como preditor é vazamento de futuro puro -- foi por isso que o dataset
+# orientado a apostas foi preterido no ADR 0002, e a SPEC 007 (CA-11) transformou a
+# proscrição em guarda executável.
+#
+# A guarda mora aqui, no único chokepoint por onde ``run_training`` e o walk-forward passam,
+# e é um conjunto **explícito** de nomes (nu + as três variantes da convenção do M4), não um
+# stripping heurístico de sufixo: uma feature legítima que por acaso comece com o mesmo
+# prefixo não pode ser descartada por engano.
+PROSCRIBED_FEATURE_BASES: frozenset[str] = frozenset(
+    {"splm", "str_acc", "sapm", "str_def", "td_avg", "td_avg_acc", "td_def", "sub_avg"}
+)
+_PROSCRIBED_COLUMNS: frozenset[str] = frozenset(
+    f"{base}{suffix}" for base in PROSCRIBED_FEATURE_BASES for suffix in ("", "_a", "_b", "_diff")
+)
 
 
 @dataclass(frozen=True)
@@ -134,6 +164,16 @@ def _numeric_feature_columns(expanded: pd.DataFrame) -> list[str]:
     return numeric
 
 
+def all_nan_columns(features: pd.DataFrame) -> list[str]:
+    """Nomes das colunas 100% ``NaN`` da frame dada, em ordem alfabética.
+
+    Pública porque o loop walk-forward aplica a mesma regra **por passo**, sobre a fatia
+    anterior ao corte daquele evento -- o mesmo motivo que fez ``restrict_to_trainable_columns``
+    existir para o split, sem que haja um ``TemporalSplit`` no loop para reusá-la.
+    """
+    return sorted(str(column) for column in features.columns if bool(features[column].isna().all()))
+
+
 def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
     """Descarta as colunas de feature 100% ``NaN`` antes do treino; loga quais saíram.
 
@@ -147,16 +187,72 @@ def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
     Colunas **parcialmente** ``NaN`` são preservadas intactas (o classificador trata a
     ausência nativamente). Descartar só a coluna toda-nula é degradação legítima de features
     ainda-não-backfillados -- não um silenciador genérico de ``NaN``.
+
+    Esta guarda olha o dataset **inteiro** e por isso não cobre o caso em que a coluna tem
+    dado apenas depois do corte temporal: para esse, ver ``restrict_to_trainable_columns``.
     """
-    all_nan = [str(column) for column in features.columns if bool(features[column].isna().all())]
+    all_nan = all_nan_columns(features)
     if not all_nan:
         return features
     logger.warning(
         "Descartando %d coluna(s) de feature 100%% NaN antes do treino (backfill parcial): %s",
         len(all_nan),
-        ", ".join(sorted(all_nan)),
+        ", ".join(all_nan),
     )
     return features.drop(columns=all_nan)
+
+
+def _drop_proscribed_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
+    """Descarta as colunas de média de carreira proscritas; loga quais saíram.
+
+    Guarda de vazamento, não degradação: se uma destas colunas chegou até aqui, alguém a
+    materializou em ``bout_features`` e o descarte precisa ser **visível** no log -- a
+    materialização é que está errada. Nenhum treino do projeto pode vê-las (SPEC 007 CA-11,
+    ADR 0002); o silêncio total é o cenário normal, porque hoje nada as produz.
+    """
+    presentes = sorted(str(column) for column in features.columns if column in _PROSCRIBED_COLUMNS)
+    if not presentes:
+        return features
+    logger.warning(
+        "Descartando %d coluna(s) de média de carreira proscrita(s) do conjunto de features: "
+        "%s. São snapshot de 2025 e embutem o futuro da carreira do lutador (ADR 0002, "
+        "SPEC 007 CA-11); nenhum treino pode vê-las.",
+        len(presentes),
+        ", ".join(presentes),
+    )
+    return features.drop(columns=presentes)
+
+
+def _drop_fabricated_corner_rows(raw: pd.DataFrame) -> pd.DataFrame:
+    """Descarta as lutas anteriores a ``FIRST_RELIABLE_CORNER_DATE``; loga quantas saíram.
+
+    O alvo do modelo é o **canto** (``target_winner_corner``), e nas lutas do Kaggle anteriores
+    a 2010 o canto é o vencedor renomeado (ver o comentário da constante). Treinar com rótulo
+    que sabemos ser falso é o mesmo defeito que barrou o ``cardSection`` default e o ``corner``
+    da Cito -- a fonte ser a nossa não abre exceção.
+
+    O filtro vive aqui, na camada de dataset, e não na materialização de features: as
+    **features** daquelas lutas estão corretas (idade, alcance, cartel prévio não dependem de
+    quem é o vermelho) e seguem alimentando as janelas móveis do histórico dos atletas. O que
+    não presta é o alvo, e o alvo só existe aqui.
+
+    O descarte nunca é silencioso: quem roda o treino vê no log quantas lutas saíram e por quê,
+    a mesma disciplina de ``_drop_all_nan_feature_columns``.
+    """
+    fabricated = raw[COL_EVENT_DATE] < FIRST_RELIABLE_CORNER_DATE
+    n_fabricated = int(fabricated.sum())
+    if n_fabricated == 0:
+        return raw
+    logger.warning(
+        "Descartando %d luta(s) anteriores a %s do dataset preditivo: nesses eventos o canto "
+        "do Kaggle é fabricado (o vermelho venceu 100%% das lutas em todos os anos de 1994 a "
+        "2009), logo o alvo é o vencedor renomeado, não o canto. Restam %d luta(s). "
+        "Ver ADR 0006.",
+        n_fabricated,
+        FIRST_RELIABLE_CORNER_DATE.isoformat(),
+        len(raw) - n_fabricated,
+    )
+    return raw[~fabricated]
 
 
 def build_dataset(raw: pd.DataFrame) -> Dataset:
@@ -165,12 +261,19 @@ def build_dataset(raw: pd.DataFrame) -> Dataset:
     Descarta linhas de alvo nulo (NC/empate), expande o JSONB ``features`` em colunas,
     seleciona apenas as numéricas (X) e mapeia o alvo para binário (y). O ``NaN`` das
     features é preservado (ausência explícita, sem imputação).
+
+    Duas guardas correm sobre X, nesta ordem: as médias de carreira proscritas (vazamento de
+    futuro, ADR 0002) e as colunas 100% ``NaN`` (backfill parcial). A ordem importa pouco no
+    resultado, mas a proscrição vem antes para que uma coluna proibida e vazia seja reportada
+    pelo motivo certo.
     """
-    decided = raw[raw[COL_TARGET].notna()].reset_index(drop=True)
+    trustworthy = _drop_fabricated_corner_rows(raw)
+    decided = trustworthy[trustworthy[COL_TARGET].notna()].reset_index(drop=True)
     expanded = pd.DataFrame(list(decided[COL_FEATURES]), index=decided.index)
     numeric_columns = _numeric_feature_columns(expanded)
     if numeric_columns:
         features = expanded[numeric_columns].apply(pd.to_numeric).astype("float64")
+        features = _drop_proscribed_feature_columns(features)
         features = _drop_all_nan_feature_columns(features)
     else:
         features = pd.DataFrame(index=decided.index)
@@ -222,4 +325,51 @@ def temporal_split(dataset: Dataset, test_fraction: float = 0.2) -> TemporalSpli
         event_train=event_train,
         event_test=dataset.event_date.iloc[test_pos],
         boundary_date=event_train.max(),
+    )
+
+
+def _descricao_da_coluna_descartada(column: str, x_test: pd.DataFrame) -> str:
+    """Rótulo da coluna descartada com quantos valores ela tinha do lado do holdout.
+
+    O número é o que torna o aviso acionável: separa "a feature não existe em lugar nenhum"
+    de "a feature existe, mas o corte temporal a deixou inteira do lado do teste".
+    """
+    preenchidas = int(x_test[column].notna().sum()) if column in x_test.columns else 0
+    return f"{column} ({preenchidas} valor(es), todos no holdout)"
+
+
+def restrict_to_trainable_columns(split: TemporalSplit) -> TemporalSplit:
+    """Descarta das **duas** fatias as colunas 100% ``NaN`` dentro do treino; loga quais saíram.
+
+    Complemento indispensável de ``_drop_all_nan_feature_columns``, que enxerga só o dataset
+    inteiro. Uma feature backfillada apenas para os anos recentes (o piloto de round-a-round
+    cobre 2023-2025) tem dado -- e portanto sobrevive à guarda global --, mas o split temporal
+    reserva justamente as lutas recentes para o holdout: dentro da fatia de treino ela é
+    inteiramente ``NaN`` e o ``HistGradientBoostingClassifier`` levanta ``ValueError`` no
+    binning do ``fit``.
+
+    O descarte sai das duas fatias de propósito: um modelo treinado sem a coluna não pode
+    recebê-la na predição. Coluna sem sinal no treino é coluna que o modelo não aprendeu --
+    mantê-la no holdout só desalinharia o vetor. Quem roda o treino vê no log quais features
+    saíram e quantos valores delas ficaram do lado do teste; o descarte nunca é silencioso.
+
+    Colunas **parcialmente** preenchidas no treino são preservadas (o classificador trata
+    ``NaN`` nativamente). O loop walk-forward aplica a mesma regra por passo, sobre a fatia
+    anterior ao corte daquele evento.
+    """
+    sem_sinal = all_nan_columns(split.x_train)
+    if not sem_sinal:
+        return split
+    logger.warning(
+        "Descartando %d coluna(s) de feature sem nenhum valor na fatia de treino "
+        "(corte temporal em %s; o dado existe apenas depois dele, invisível ao modelo): %s. "
+        "As mesmas colunas saem do holdout para manter treino e predição alinhados.",
+        len(sem_sinal),
+        split.boundary_date.isoformat(),
+        ", ".join(_descricao_da_coluna_descartada(column, split.x_test) for column in sem_sinal),
+    )
+    return replace(
+        split,
+        x_train=split.x_train.drop(columns=sem_sinal),
+        x_test=split.x_test.drop(columns=sem_sinal),
     )

@@ -26,9 +26,12 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 def get_session() -> Iterator[Session]:
     """Dependência FastAPI: sessão síncrona por request, fechada no teardown.
 
-    A API v1 é somente-leitura (SPEC RF somente-leitura): a sessão nunca abre
-    transação de escrita nem faz commit. Nos testes, esta dependência é
-    sobreposta (``dependency_overrides``) pela sessão transacional da fixture.
+    A sessão **não commita**: a API v1 nasceu somente-leitura e a dependência
+    apenas abre e fecha. A exceção é o endpoint de predição de card
+    (``apps.predictions.api``), primeiro a escrever -- lá o commit é explícito no
+    service (``apps.predictions.services.predict_event_card``), porque sem ele a
+    gravação se perderia no teardown. Nos testes, esta dependência é sobreposta
+    (``dependency_overrides``) pela sessão transacional da fixture.
     """
     session = SessionLocal()
     try:

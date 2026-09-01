@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from analysis.model import (
+    ARTIFACT_NAME,
     LoadedModel,
     load_artifact,
     run_training,
@@ -127,6 +128,43 @@ def test_run_training_produz_modelo_e_metricas(db_session: Session) -> None:
     assert result.trained_at.tzinfo is not None
 
 
+def _seed_com_feature_tardia(session: Session, n: int, n_preenchidas: int) -> None:
+    """Semeia ``n`` lutas em que a feature de round só tem valor nas ``n_preenchidas`` finais."""
+    for i in range(n):
+        _seed_bout_features(
+            session,
+            event_date=date(2018, 1, 1) + pd.Timedelta(days=30 * i),
+            target=Corner.RED if i % 2 == 0 else Corner.BLUE,
+            features={
+                "reach_cm_diff": float(i % 7) - 3,
+                "win_rate_prior_diff": float(i % 5) - 2,
+                "round1_sig_strike_share_r3_diff": (0.5 if i >= n - n_preenchidas else None),
+            },
+        )
+
+
+def test_run_training_treina_com_feature_preenchida_so_depois_do_corte(
+    db_session: Session,
+) -> None:
+    """A pipeline não quebra quando uma feature só tem dado do lado do teste.
+
+    Defeito observado contra o banco de desenvolvimento após a Sprint 007-05: o piloto de
+    round-a-round cobre só as lutas recentes, que o split temporal reserva para o holdout. A
+    coluna sobrevive à guarda global (tem dado no dataset inteiro) e chega toda ``NaN`` ao
+    ``fit``, que levanta ``ValueError: window shape cannot be larger than input array shape``.
+    A guarda por fatia de treino descarta a coluna e o treino roda até o fim.
+    """
+    _seed_com_feature_tardia(db_session, 20, n_preenchidas=5)
+
+    result = run_training(db_session, test_fraction=0.25, random_state=0)
+
+    assert "round1_sig_strike_share_r3_diff" not in result.feature_names
+    assert "reach_cm_diff" in result.feature_names
+    # ``feature_names`` descreve o vetor efetivamente consumido pelo modelo -- é o contrato de
+    # realinhamento do serving (``analysis.predict``).
+    assert result.model.n_features_in_ == len(result.feature_names)
+
+
 def test_run_training_e_deterministico_mesmas_metricas(db_session: Session) -> None:
     """CA-04: rodar ``run_training`` 2x com o mesmo ``random_state`` reproduz as métricas."""
     _seed_many(db_session, 20)
@@ -175,6 +213,52 @@ def test_load_artifact_recarrega_modelo_e_features(db_session: Session, tmp_path
     assert loaded.feature_names == result.feature_names
     amostra = pd.DataFrame([dict.fromkeys(loaded.feature_names, 0.0)])
     assert len(loaded.model.predict(amostra)) == 1
+
+
+def test_load_artifact_devolve_trained_at_cru_do_artefato(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """``load_artifact`` devolve o ``trained_at`` **exatamente** como persistido (string ISO).
+
+    Esse valor vira o ``model_version`` de ``bout_predictions``, metade da chave única
+    ``(bout_id, model_version)``. Se fosse parseado e re-serializado, um ``+00:00`` viraria
+    ``Z`` ou os microssegundos se perderiam -- e a idempotência quebraria em silêncio,
+    gravando uma linha nova a cada predição da mesma luta com o mesmo modelo.
+    """
+    _seed_many(db_session, 20)
+    result = run_training(db_session, test_fraction=0.25, random_state=0)
+    save_artifact(result, directory=tmp_path)
+
+    loaded = load_artifact(directory=tmp_path)
+
+    assert loaded.trained_at == result.trained_at.isoformat()
+    assert joblib.load(tmp_path / ARTIFACT_NAME)["trained_at"] == loaded.trained_at
+
+
+def test_load_artifact_rejeita_trained_at_malformado(db_session: Session, tmp_path: Path) -> None:
+    """Artefato com ``trained_at`` inválido falha rápido, em vez de virar versão inútil."""
+    _seed_many(db_session, 20)
+    save_artifact(run_training(db_session, test_fraction=0.25, random_state=0), directory=tmp_path)
+    caminho = tmp_path / ARTIFACT_NAME
+    payload = joblib.load(caminho)
+    payload["trained_at"] = "nao-e-uma-data"
+    joblib.dump(payload, caminho)
+
+    with pytest.raises(ValueError, match="trained_at"):
+        load_artifact(directory=tmp_path)
+
+
+def test_load_artifact_rejeita_trained_at_sem_fuso(db_session: Session, tmp_path: Path) -> None:
+    """``trained_at`` naive é recusado: sem fuso, o instante não identifica o treino."""
+    _seed_many(db_session, 20)
+    save_artifact(run_training(db_session, test_fraction=0.25, random_state=0), directory=tmp_path)
+    caminho = tmp_path / ARTIFACT_NAME
+    payload = joblib.load(caminho)
+    payload["trained_at"] = "2026-08-31T10:00:00"
+    joblib.dump(payload, caminho)
+
+    with pytest.raises(ValueError, match="fuso"):
+        load_artifact(directory=tmp_path)
 
 
 def test_load_artifact_ausente_falha_claro(tmp_path: Path) -> None:

@@ -47,6 +47,10 @@ from ingestion.incremental import (
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _EVENT_ID = "ufc-319"
+# Identificador REAL da luta principal de UFC 319 na Cito (captura de 2026-09-01).
+_MAIN_BOUT_ID = "12cedec11b37ddc0"
+# Luta 2 do card: a fixture omite ``submission_attempts``/``control_time_seconds`` no canto azul.
+_SECOND_BOUT_ID = "9fa6a029f7f8241c"
 # Custo determinístico do evento fixture: 1 fetch_event + 4 get_fighter + 2 fetch_bout_stats.
 _EVENT_CITO_CALLS = 7
 
@@ -272,7 +276,7 @@ def test_run_incremental_resumo_reporta_deltas_e_chamadas(db_session: Session) -
     assert second.cito_calls_used == _EVENT_CITO_CALLS
 
     (event,) = db_session.scalars(select(Event)).all()
-    assert event.name == "UFC 319: Du Plessis vs. Chimaev"
+    assert event.name == "UFC 319"  # o título como a Cito o devolve
     assert event.source == "cito"
 
 
@@ -321,18 +325,23 @@ def test_main_estouro_de_teto_sai_com_erro_e_loga_sem_traceback(
 
 
 def test_cito_bout_stats_dto_parseia_dois_cantos_e_degrada_ausencia() -> None:
-    """CA-01: o payload de stats vira ``CitoBoutStats`` com dois cantos; ausência -> ``None``."""
-    payload = (_FIXTURES / "cito_bout_stats_sample.json").read_text(encoding="utf-8")
+    """CA-01: o payload de stats vira ``CitoBoutStats`` com dois cantos; ausência -> ``None``.
+
+    A fixture traz os números **reais** da luta Murphy x Pico (UFC 319), com dois campos
+    deliberadamente omitidos no canto azul para exercitar a degradação -- omissão é o caso sob
+    prova, não valor inventado.
+    """
+    payload = (_FIXTURES / f"bout_stats_{_SECOND_BOUT_ID}.json").read_text(encoding="utf-8")
     stats = CitoBoutStats.model_validate_json(payload)
 
-    assert stats.bout_id == "sample-bout"
+    assert stats.bout_id == _SECOND_BOUT_ID
     assert [f.corner for f in stats.fighters] == [Corner.RED, Corner.BLUE]
 
     red, blue = stats.fighters
-    assert red.fighter_slug == "fighter-red"
+    assert red.fighter_slug == "lerone-murphy"
     assert red.knockdowns == 1
-    assert red.sig_strikes_landed == 50
-    assert red.control_time_seconds == 120
+    assert red.sig_strikes_landed == 8
+    assert red.control_time_seconds == 0
     # O canto azul omite ``submission_attempts`` e ``control_time_seconds`` no payload.
     assert blue.submission_attempts is None
     assert blue.control_time_seconds is None
@@ -342,13 +351,14 @@ def test_fetch_bout_stats_em_modo_fixture() -> None:
     """CA-01: o cliente em modo fixture devolve ``CitoBoutStats`` sem tocar a rede."""
     client = _fixture_client()
 
-    stats = client.fetch_bout_stats("ufc-319-bout-1")
+    stats = client.fetch_bout_stats(_MAIN_BOUT_ID)
 
-    assert stats.bout_id == "ufc-319-bout-1"
+    assert stats.bout_id == _MAIN_BOUT_ID
     by_corner = {f.corner: f for f in stats.fighters}
-    assert by_corner[Corner.RED].fighter_slug == "dricus-du-plessis"
-    assert by_corner[Corner.BLUE].fighter_slug == "khamzat-chimaev"
-    assert by_corner[Corner.BLUE].control_time_seconds == 1300
+    # Cantos como a Cito os devolveu: Chimaev (o vencedor) é o vermelho.
+    assert by_corner[Corner.RED].fighter_slug == "khamzat-chimaev"
+    assert by_corner[Corner.BLUE].fighter_slug == "dricus-du-plessis"
+    assert by_corner[Corner.RED].control_time_seconds == 1300
 
 
 def test_map_bout_core_cito_mapeia_metodo_e_canto_vencedor() -> None:
@@ -507,8 +517,10 @@ def test_incremental_bouts_end_to_end_idempotente_com_teto(db_session: Session) 
     # Toda escrita da luta rastreia a origem.
     assert all(source == "cito" for source in db_session.scalars(select(Bout.source)).all())
     assert all(source == "cito" for source in db_session.scalars(select(BoutFighter.source)).all())
-    # O vencedor da luta principal (Chimaev, canto azul) foi gravado.
-    main_bout = db_session.scalars(select(Bout).where(Bout.weight_class == "Middleweight")).one()
+    # O desfecho da luta principal (Chimaev, canto vermelho, decisão em 5 rounds) foi gravado.
+    main_bout = db_session.scalars(
+        select(Bout).where(Bout.weight_class == "Middleweight Title")
+    ).one()
     assert main_bout.method is BoutMethod.DECISION
     assert main_bout.round == 5
 

@@ -170,16 +170,18 @@ def _event_two_bouts_sharing_a_corner() -> CitoEvent:
 def test_resolve_event_fighters_mapeia_slugs_e_economiza_quota(db_session: Session) -> None:
     """CA-02 + RNF quota: mapa slug->id cobre todos os cantos; um get_fighter por slug único."""
     calls: dict[str, int] = {}
+    # Forma **medida** do endpoint de perfil (envelope camelCase, sondagem de 2026-09-01):
+    # o objeto cru em snake_case que o M1 supunha nunca existiu na API real.
     profiles = {
-        "fighter-a": {"slug": "fighter-a", "name": "Fighter A", "date_of_birth": "1990-01-01"},
-        "fighter-b": {"slug": "fighter-b", "name": "Fighter B", "date_of_birth": "1991-01-01"},
-        "fighter-c": {"slug": "fighter-c", "name": "Fighter C", "date_of_birth": "1992-01-01"},
+        "fighter-a": {"slug": "fighter-a", "name": "Fighter A", "birthDate": "1990-01-01"},
+        "fighter-b": {"slug": "fighter-b", "name": "Fighter B", "birthDate": "1991-01-01"},
+        "fighter-c": {"slug": "fighter-c", "name": "Fighter C", "birthDate": "1992-01-01"},
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
         slug = request.url.path.rsplit("/", 1)[-1]
         calls[slug] = calls.get(slug, 0) + 1
-        return httpx.Response(200, json=profiles[slug])
+        return httpx.Response(200, json={"success": True, "data": profiles[slug], "meta": {}})
 
     client = CitoClient(
         token="token-fake",

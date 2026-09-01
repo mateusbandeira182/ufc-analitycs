@@ -15,7 +15,8 @@ from sqlalchemy import engine_from_config, pool
 import apps.bouts.models
 import apps.events.models
 import apps.features.models
-import apps.fighters.models  # noqa: F401
+import apps.fighters.models
+import apps.predictions.models  # noqa: F401
 from alembic import context
 from mma_analytics.db import Base
 from mma_analytics.settings import settings

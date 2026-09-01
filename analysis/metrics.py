@@ -91,6 +91,27 @@ def compute_metrics(
     )
 
 
+def accuracy_log_loss(
+    y_true: pd.Series | Sequence[int],
+    y_pred: pd.Series | Sequence[int],
+    y_prob: pd.Series | Sequence[float],
+) -> tuple[float, float]:
+    """Accuracy e log-loss do pool acumulado, **sem** ROC-AUC.
+
+    O ROC-AUC fica de fora de propósito: nos primeiros passos do walk-forward o pool
+    acumulado pode ter uma única classe e ``roc_auc_score`` levantaria -- a curva ficaria
+    sem os primeiros pontos por um detalhe de métrica, não por falta de dado.
+    ``labels=_BINARY_LABELS`` mantém o log-loss definido nesse mesmo caso.
+
+    Com as duas classes presentes, os dois valores coincidem com os de ``compute_metrics``:
+    é a mesma medição, com uma métrica a menos.
+    """
+    return (
+        float(accuracy_score(y_true, y_pred)),
+        float(log_loss(y_true, y_prob, labels=_BINARY_LABELS)),
+    )
+
+
 def baseline_metrics(
     y_train: pd.Series | Sequence[int],
     y_test: pd.Series | Sequence[int],

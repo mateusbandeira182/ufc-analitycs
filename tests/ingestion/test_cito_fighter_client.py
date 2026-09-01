@@ -59,3 +59,53 @@ def test_get_fighter_erro_servidor_vira_cito_error() -> None:
     with pytest.raises(CitoError) as excinfo:
         _mock_client(503).get_fighter(_SLUG)
     assert not isinstance(excinfo.value, CitoRateLimitError)
+
+
+# --------------------------------------------------------------------------- #
+# Contrato REAL do endpoint de perfil (sondagem autorizada de 2026-09-01, Slice 06).
+#
+# O payload do M1 era uma suposição escrita antes de a API real ser medida -- mesma classe
+# de erro que a ADR 0005 corrigiu para o endpoint de stats. O real embrulha em
+# ``{success, data, meta}``, usa camelCase e publica antropometria em POLEGADAS.
+# --------------------------------------------------------------------------- #
+
+_SLUG_REAL = "bruno-silva"
+
+
+def test_get_fighter_desembrulha_o_envelope_do_payload_real() -> None:
+    """O envelope ``{success, data, meta}`` é desembrulhado e mapeado no ``CitoFighter``.
+
+    Fixture do payload **real** capturado em 2026-09-01. Validar o envelope como se fosse o
+    perfil cru falhava com ``ValidationError`` -- foi o que interrompeu o lote do gap.
+    """
+    fighter = _fixture_client().get_fighter(_SLUG_REAL)
+
+    assert isinstance(fighter, CitoFighter)
+    assert fighter.slug == _SLUG_REAL
+    assert fighter.name == "Bruno Silva"
+    assert fighter.nickname == "Bulldog"
+    assert (fighter.wins, fighter.losses, fighter.draws) == (15, 9, 2)
+    assert fighter.stance is Stance.ORTHODOX
+
+
+def test_get_fighter_converte_antropometria_de_polegadas_para_centimetros() -> None:
+    """``heightInches``/``reachInches`` (string, polegadas) viram centímetros inteiros.
+
+    O schema guarda centímetros desde o M0; converter na borda evita que a unidade da fonte
+    vaze para o domínio. 64 pol -> 163 cm; 65 pol -> 165 cm.
+    """
+    fighter = _fixture_client().get_fighter(_SLUG_REAL)
+
+    assert fighter.height_cm == 163
+    assert fighter.reach_cm == 165
+
+
+def test_get_fighter_mantem_data_de_nascimento_ausente_como_none() -> None:
+    """``birthDate`` nulo permanece ``None`` -- nunca derivada de ``age``.
+
+    Achado da sondagem de 2026-09-01: o perfil real de 'bruno-silva' traz ``birthDate: null``
+    e ``age: 36``. Calcular a data a partir da idade produziria uma DOB **inventada** com
+    precisão de um ano -- e ela entraria justamente na chave de desempate da entity
+    resolution, que existe para separar homônimos. Ausência é reportada como ausência.
+    """
+    assert _fixture_client().get_fighter(_SLUG_REAL).date_of_birth is None

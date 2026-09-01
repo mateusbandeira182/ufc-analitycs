@@ -15,6 +15,11 @@ from collections.abc import Sequence
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from ingestion.features.freshness import (
+    FreshnessReport,
+    StaleFeatureCacheError,
+    check_cache_freshness,
+)
 from ingestion.features.long_frame import build_long_frame, read_granular
 from ingestion.features.matchup import build_matchup_matrix
 from ingestion.features.materialize import SOURCE, materialize_features
@@ -44,6 +49,11 @@ _STAGES: tuple[str, ...] = (_STAGE_LONG, _STAGE_ROLLING, _STAGE_TRAJECTORY, _STA
 # Estágio de escrita (Slice 05): roda a pipeline completa e persiste ``bout_features``.
 _STAGE_MATERIALIZE = "materialize"
 _CLI_STAGES: tuple[str, ...] = (*_STAGES, _STAGE_MATERIALIZE)
+
+# Subcomandos do CLI. ``check`` (SPEC 007) é read-only e não tem ``--stage``, por isso o
+# dispatch do ``main`` olha ``args.command`` antes de ``args.stage``.
+_COMMAND_BUILD = "build"
+_COMMAND_CHECK = "check"
 
 
 def _enriched_long_frame(session: Session) -> pd.DataFrame:
@@ -99,6 +109,39 @@ def run_materialize(session: Session, source: str = SOURCE) -> int:
     return count
 
 
+def run_check(session: Session) -> FreshnessReport:
+    """Recomputa a pipeline e falha alto se ``bout_features`` estiver defasado.
+
+    Read-only: não escreve nem commita nada. Reporta o diagnóstico via ``logging`` e, quando
+    há defasagem, levanta ``StaleFeatureCacheError`` com o comando de correção -- o cache
+    derivado nunca mais envelhece em silêncio (o sintoma que motivou a SPEC 007).
+    """
+    matrix = build_matchup_matrix(_enriched_long_frame(session))
+    report = check_cache_freshness(session, matrix)
+    logger.info(
+        "Freshness: %d linhas no cache, %d recomputadas; %d divergência(s) de bout, "
+        "%d coluna(s) só de um lado, %d coluna(s) com não-nulos divergentes.",
+        report.cached_bouts,
+        report.recomputed_bouts,
+        len(report.bout_id_diff),
+        len(report.column_diff),
+        len(report.column_drift),
+    )
+    for drift in report.column_drift:
+        logger.warning(
+            "Defasagem em %s: %d não-nulos no cache, %d no recomputo.",
+            drift.column,
+            drift.cached_non_null,
+            drift.recomputed_non_null,
+        )
+    if report.is_stale:
+        raise StaleFeatureCacheError(
+            "bout_features defasado em relação ao granular. "
+            "Rode: python -m ingestion.features build --stage materialize"
+        )
+    return report
+
+
 def run_build(session: Session, stage: str) -> pd.DataFrame:
     """Constrói a frame do estágio pedido sobre o granular lido na sessão.
 
@@ -138,12 +181,18 @@ def run_build(session: Session, stage: str) -> pd.DataFrame:
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    """Interpreta ``build --stage <estágio>`` do entrypoint de features."""
+    """Interpreta ``build --stage <estágio>`` e ``check`` do entrypoint de features."""
     parser = argparse.ArgumentParser(
         description="Feature engineering sobre o granular do UFC (leitura read-only via Pandas).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    build = subparsers.add_parser("build", help="Constrói uma frame de features (em memória).")
+    subparsers.add_parser(
+        _COMMAND_CHECK,
+        help="Falha se bout_features estiver defasado em relação ao granular (read-only).",
+    )
+    build = subparsers.add_parser(
+        _COMMAND_BUILD, help="Constrói uma frame de features (em memória)."
+    )
     build.add_argument(
         "--stage",
         choices=list(_CLI_STAGES),
@@ -158,17 +207,21 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Entrypoint de ``python -m ingestion.features build --stage <estágio>``.
+    """Entrypoint de ``python -m ingestion.features {build --stage <estágio> | check}``.
 
-    Abre a ``Session`` real. Estágios de leitura (long/rolling/trajectory/matchup) só
-    constroem a frame em memória e **não commitam**. O estágio ``materialize`` roda a
-    pipeline completa, persiste ``bout_features`` e **commita no sucesso** -- a idempotência
-    é observável reexecutando (mesma contagem). A frame/resumo é reportada via ``logging``.
+    Abre a ``Session`` real. O subcomando ``check`` só lê (levanta ``StaleFeatureCacheError``
+    quando o cache está defasado, saindo com código diferente de zero). Em ``build``, os
+    estágios de leitura (long/rolling/trajectory/matchup) constroem a frame em memória e
+    **não commitam**; o estágio ``materialize`` roda a pipeline completa, persiste
+    ``bout_features`` e **commita no sucesso** -- a idempotência é observável reexecutando
+    (mesma contagem). A frame/resumo é reportada via ``logging``.
     """
     logging.basicConfig(level=logging.INFO)
     args = _parse_args(argv)
     with SessionLocal() as session:
-        if args.stage == _STAGE_MATERIALIZE:
+        if args.command == _COMMAND_CHECK:
+            run_check(session)
+        elif args.stage == _STAGE_MATERIALIZE:
             run_materialize(session)
             session.commit()
         else:

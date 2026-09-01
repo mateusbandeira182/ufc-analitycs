@@ -1,10 +1,14 @@
 """Teste do dry-run do matching em modo fixture -- Slice 04 (CA-05).
 
 Contra o Postgres de teste (sessão transacional com rollback): semeia o evento persistido
-correspondente à fixture ``event_stats_ufc-319.json`` e roda ``run_match_dry_run`` com o
-``CitoClient`` em **modo fixture**. Assere cobertura 2/2 (100%), **0 quota real** (o custo é
-cobrado no ``CallBudget`` -- exatamente 1 chamada por evento, nunca por-luta), e **0 escrita**
-(nada em ``bout_fighter_rounds``; contagens de ``bouts``/``bout_fighters`` inalteradas).
+correspondente à fixture ``event_stats_ufc-319.json`` -- com o ``cito_slug`` que a sincronização
+de catálogo (Sprint 007-03) teria gravado -- e roda ``run_match_dry_run`` com o ``CitoClient`` em
+**modo fixture**. Assere cobertura 2/2 (100%), **0 quota real** (o custo é cobrado no
+``CallBudget`` -- exatamente 1 chamada por evento, nunca por-luta), e **0 escrita** (nada em
+``bout_fighter_rounds``; contagens de ``bouts``/``bout_fighters`` inalteradas).
+
+Cobre também o caminho catálogo-driven do CLI: ``_find_event_by_cito_slug`` localiza o evento
+pela coluna persistida, e um evento sem ``cito_slug`` erra claro em vez de tentar adivinhar.
 """
 
 from __future__ import annotations
@@ -22,7 +26,11 @@ from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 from apps.fighters.models import Fighter
 from ingestion.cito.client import DEFAULT_CALL_BUDGET, CallBudget, CitoClient
-from ingestion.cito.matching import run_match_dry_run
+from ingestion.cito.matching import (
+    BoutFighterMatchError,
+    _find_event_by_cito_slug,
+    run_match_dry_run,
+)
 from ingestion.normalize import normalize_name
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -47,13 +55,18 @@ def _seed_fighter(session: Session, name: str) -> int:
     return fighter.id
 
 
-def _seed_ufc319(session: Session) -> Event:
-    """Semeia o evento UFC 319 com uma luta e os dois cantos (dricus x khamzat)."""
+def _seed_ufc319(session: Session, *, cito_slug: str | None = "ufc-319") -> Event:
+    """Semeia o evento UFC 319 com uma luta e os dois cantos (dricus x khamzat).
+
+    O ``cito_slug`` default é o identificador que a sincronização de catálogo persistiria;
+    ``None`` reproduz um evento que o catálogo não casou.
+    """
     event = Event(
         name="UFC 319: Du Plessis vs. Chimaev",
         date=date(2025, 8, 16),
         location=None,
         source="kaggle",
+        cito_slug=cito_slug,
     )
     session.add(event)
     session.flush()
@@ -135,3 +148,36 @@ def test_dry_run_loga_cobertura(db_session: Session, caplog: pytest.LogCaptureFi
         run_match_dry_run(db_session, event, _fixture_client(budget))
 
     assert "2/2" in caplog.text
+
+
+def test_find_event_by_cito_slug_localiza_pelo_identificador_persistido(
+    db_session: Session,
+) -> None:
+    """CA-05: o CLI acha o evento pela coluna ``cito_slug``, sem derivar nada do nome."""
+    event = _seed_ufc319(db_session)
+
+    assert _find_event_by_cito_slug(db_session, "ufc-319").id == event.id
+
+
+def test_find_event_by_cito_slug_sem_catalogo_sincronizado_erra_claro(
+    db_session: Session,
+) -> None:
+    """CA-05: sem ``cito_slug`` persistido, a busca erra claro apontando a sincronização.
+
+    Nunca cai para uma derivação por nome: sem identificador do catálogo, não há evento a casar.
+    """
+    _seed_ufc319(db_session, cito_slug=None)
+
+    with pytest.raises(BoutFighterMatchError, match="catálogo"):
+        _find_event_by_cito_slug(db_session, "ufc-319")
+
+
+def test_dry_run_evento_sem_cito_slug_erra_claro(db_session: Session) -> None:
+    """CA-05: o dry-run de um evento sem identificador do catálogo falha alto, sem gastar quota."""
+    event = _seed_ufc319(db_session, cito_slug=None)
+    budget = CallBudget(limit=DEFAULT_CALL_BUDGET)
+
+    with pytest.raises(BoutFighterMatchError, match="cito_slug"):
+        run_match_dry_run(db_session, event, _fixture_client(budget))
+
+    assert budget.used == 0

@@ -1,17 +1,17 @@
-"""Testes do matching persisted-driven de evento Cito <-> bout persistido -- Slice 04.
+"""Testes do matching de evento Cito <-> bout persistido -- Slice 04 (revisado pela ADR 0005).
 
-Cobrem, sem gastar quota real: a derivação do slug Cito a partir do ``name`` do evento
-persistido (``event_cito_slug``); a normalização de um ``fighter_slug`` da Cito
-(``_slug_to_normalized_name``); o contrato do ``MatchReport`` (cobertura); e, contra o
-Postgres de teste (sessão transacional com rollback), a resolução de ``bout_fighter_id`` por
-**nome normalizado** escopada ao evento persistido (``resolve_bout_fighter_ids``), incluindo
-os caminhos de não-casamento (reportado, não levanta) e de ambiguidade (nome casando com >1
-``bout_fighter`` do evento -> ``AmbiguousBoutFighterMatchError``).
+Cobrem, sem gastar quota real: a normalização de um ``fighter_slug`` da Cito
+(``_slug_to_normalized_name``); o contrato do ``MatchReport`` (cobertura); a guarda de que a
+derivação de slug por regex não existe mais; e, contra o Postgres de teste (sessão transacional
+com rollback), a resolução de ``bout_fighter_id`` por **nome normalizado** escopada ao evento
+persistido (``resolve_bout_fighter_ids``), incluindo os caminhos de não-casamento (reportado,
+não levanta) e de ambiguidade (nome casando com >1 ``bout_fighter`` do evento ->
+``AmbiguousBoutFighterMatchError``).
 
-Decisão arquitetural (2026-07-13): matching **persisted-driven** -- o evento já persistido é a
-âncora (data + roster do seed) e o ``resolve_bout_fighter_ids`` casa cada linha de
-``event_stats.bout_stats`` ao ``bout_fighter`` persistido por nome normalizado, sem janela de
-data contra a Cito (o ``fetch_event_stats`` não entrega data).
+O evento já persistido segue sendo a âncora (data + roster do seed), mas o identificador Cito
+vem do **catálogo** (``Event.cito_slug``, Sprint 007-03), nunca de uma regra sobre o nome. A
+chave de saída é ``(cito_bout_id, fighter_slug)``: a API real não traz ``corner`` na linha de
+stat, e chavear pelo canto colidiria nos dois cantos da mesma luta. Ver ADR 0005.
 """
 
 from __future__ import annotations
@@ -25,22 +25,16 @@ from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
+from ingestion.cito import matching
 from ingestion.cito.dto import CitoEventStats
 from ingestion.cito.matching import (
     AmbiguousBoutFighterMatchError,
     BoutFighterMatchError,
     MatchReport,
-    UnsupportedEventSlugError,
     _slug_to_normalized_name,
-    event_cito_slug,
     resolve_bout_fighter_ids,
 )
 from ingestion.normalize import normalize_name
-
-
-def _event(name: str = "UFC 319: Du Plessis vs. Chimaev") -> Event:
-    """Constrói um ``Event`` não persistido (só o ``name`` importa para o slug)."""
-    return Event(name=name, date=date(2025, 8, 16), location=None, source="kaggle")
 
 
 def _seed_fighter(session: Session, name: str) -> int:
@@ -63,16 +57,21 @@ def _seed_fighter(session: Session, name: str) -> int:
     return fighter.id
 
 
+# Identificador REAL da luta principal de UFC 319 na Cito (recorte verbatim da captura).
+_BOUT_ID = "12cedec11b37ddc0"
+
+
 def _seed_ufc319(
     session: Session,
     *,
-    red_name: str = "Dricus du Plessis",
-    blue_name: str = "Khamzat Chimaev",
+    red_name: str = "Khamzat Chimaev",
+    blue_name: str = "Dricus Du Plessis",
 ) -> tuple[Event, dict[str, int]]:
     """Semeia o evento UFC 319 com uma luta e os dois cantos; devolve o evento e os bf ids.
 
-    Os nomes normalizam para as chaves que os ``fighter_slug`` da fixture (``dricus-du-plessis``
-    / ``khamzat-chimaev``) produzem, reproduzindo o matching persisted-driven por nome.
+    Os nomes normalizam para as chaves que os ``fighter_slug`` da fixture (``khamzat-chimaev``
+    / ``dricus-du-plessis``) produzem, reproduzindo o matching persisted-driven por nome. Os
+    cantos são os da captura real: Chimaev, o vencedor, é o vermelho.
     """
     event = Event(
         name="UFC 319: Du Plessis vs. Chimaev",
@@ -117,50 +116,17 @@ def _fixture_event_stats() -> CitoEventStats:
     return client.fetch_event_stats("ufc-319")
 
 
-def test_event_cito_slug_deriva_identificador_numerado() -> None:
-    """CA-01: o slug Cito vem do ``name`` persistido ('UFC 319: ...' -> 'ufc-319')."""
-    assert event_cito_slug(_event()) == "ufc-319"
-
-
-def test_event_cito_slug_nome_nao_numerado_levanta() -> None:
-    """CA-04: um nome fora do formato numerado não deriva slug em silêncio -- levanta claro."""
-    with pytest.raises(ValueError, match="UFC"):
-        event_cito_slug(_event(name="UFC Fight Night: Silva vs. Costa"))
-
-
-def test_unsupported_event_slug_error_e_value_error() -> None:
-    """Contrato: ``UnsupportedEventSlugError`` é um ``ValueError`` (preserva o contrato anterior).
-
-    ``event_cito_slug`` já levantava ``ValueError`` para nomes fora do formato numerado; o erro
-    tipado especializa esse contrato sem quebrar quem captura ``ValueError`` (ex.:
-    ``_find_event_by_cito_slug``).
-    """
-    assert issubclass(UnsupportedEventSlugError, ValueError)
-
-
 @pytest.mark.parametrize(
-    "name",
-    [
-        "UFC Fight Night: Silva vs. Costa",
-        "UFC on ESPN: Whittaker vs. Costa",
-        "UFC on ABC: Emmett vs. Topuria",
-    ],
+    "removed", ["event_cito_slug", "_EVENT_SLUG_PATTERN", "UnsupportedEventSlugError"]
 )
-def test_event_cito_slug_formato_nao_numerado_levanta_unsupported(name: str) -> None:
-    """CA-04/05: formato não-numerado não deriva slug em silêncio -> ``UnsupportedEventSlugError``.
+def test_simbolos_de_slug_por_regex_nao_existem_mais(removed: str) -> None:
+    """CA-05: nenhum slug Cito derivado por regex -- o catálogo é a fonte do identificador.
 
-    A única convenção de slug Cito confirmada por dado real (fixtures ``event_stats_ufc-<n>.json``)
-    é 'ufc-<n>', derivada do prefixo numerado; derivar um slug para esses formatos sem dado da Cito
-    seria chutar e arriscar casar o evento errado (invariante "sem heurística silenciosa"). O
-    backfill da Slice 05 captura este erro tipado e pula o evento com aviso.
+    A derivação do M5 acertava o slug de 2 dos 745 eventos persistidos (UFC 100 e UFC 319); a
+    Cito usa a forma longa ('ufc-309-jones-vs-miocic') na quase totalidade do catálogo. Manter
+    o símbolo disponível convidaria alguém a reintroduzir a heurística. Ver ADR 0005.
     """
-    with pytest.raises(UnsupportedEventSlugError):
-        event_cito_slug(_event(name=name))
-
-
-def test_event_cito_slug_numerado_continua_derivando() -> None:
-    """Regressão: o formato numerado 'UFC <n>' segue derivando 'ufc-<n>'."""
-    assert event_cito_slug(_event(name="UFC 300: Pereira vs. Hill")) == "ufc-300"
+    assert not hasattr(matching, removed)
 
 
 def test_slug_to_normalized_name_reusa_normalize_name() -> None:
@@ -193,16 +159,33 @@ def test_ambiguous_error_e_subtipo_de_bout_fighter_match_error() -> None:
 
 
 def test_resolve_bout_fighter_ids_casa_por_nome_normalizado(db_session: Session) -> None:
-    """CA-02: cada linha ``(bout_id, corner)`` casa ao ``bout_fighter`` do evento por nome."""
+    """CA-03: cada linha ``(bout_id, fighter_slug)`` casa ao ``bout_fighter`` do evento por nome."""
     event, bf_ids = _seed_ufc319(db_session)
     stats = _fixture_event_stats()
 
     resolved = resolve_bout_fighter_ids(db_session, event, stats)
 
     assert resolved == {
-        ("ufc-319-bout-1", Corner.RED): bf_ids["red"],
-        ("ufc-319-bout-1", Corner.BLUE): bf_ids["blue"],
+        (_BOUT_ID, "khamzat-chimaev"): bf_ids["red"],
+        (_BOUT_ID, "dricus-du-plessis"): bf_ids["blue"],
     }
+
+
+def test_resolve_bout_fighter_ids_cantos_da_mesma_luta_nao_colidem(db_session: Session) -> None:
+    """CA-03: os dois cantos da mesma luta resolvem para ``bout_fighter`` distintos.
+
+    A garantia que a chave antiga perderia. Como a API real não traz ``corner`` na linha de stat,
+    manter o canto na chave produziria ``(bout_id, None)`` para os **dois** cantos -- uma colisão
+    silenciosa que gravaria o round no ``bout_fighter`` errado. Por isso a chave é o slug.
+    """
+    event, bf_ids = _seed_ufc319(db_session)
+    stats = _fixture_event_stats()
+
+    resolved = resolve_bout_fighter_ids(db_session, event, stats)
+
+    assert len(resolved) == 2
+    assert len(set(resolved.values())) == 2
+    assert set(resolved.values()) == {bf_ids["red"], bf_ids["blue"]}
 
 
 def test_resolve_bout_fighter_ids_escopa_ao_evento(db_session: Session) -> None:
@@ -211,7 +194,7 @@ def test_resolve_bout_fighter_ids_escopa_ao_evento(db_session: Session) -> None:
     outro = Event(name="UFC 300: Outro", date=date(2024, 4, 13), location=None, source="kaggle")
     db_session.add(outro)
     db_session.flush()
-    intruso_id = _seed_fighter(db_session, "Dricus du Plessis")
+    intruso_id = _seed_fighter(db_session, "Khamzat Chimaev")
     outro_bout = Bout(
         event_id=outro.id,
         winner_id=None,
@@ -235,7 +218,7 @@ def test_resolve_bout_fighter_ids_escopa_ao_evento(db_session: Session) -> None:
 
     resolved = resolve_bout_fighter_ids(db_session, event, stats)
 
-    assert resolved[("ufc-319-bout-1", Corner.RED)] == bf_ids["red"]
+    assert resolved[(_BOUT_ID, "khamzat-chimaev")] == bf_ids["red"]
     assert intruso_id not in resolved.values()
 
 
@@ -243,13 +226,13 @@ def test_resolve_bout_fighter_ids_slug_sem_correspondencia_nao_levanta(
     db_session: Session,
 ) -> None:
     """CA-02: ``fighter_slug`` sem ``bout_fighter`` casado é reportado (não entra), sem levantar."""
-    # O canto azul persistido tem outro nome -> o slug 'khamzat-chimaev' fica sem correspondência.
+    # O canto azul persistido tem outro nome -> 'dricus-du-plessis' fica sem correspondência.
     event, bf_ids = _seed_ufc319(db_session, blue_name="Outro Lutador")
     stats = _fixture_event_stats()
 
     resolved = resolve_bout_fighter_ids(db_session, event, stats)
 
-    assert resolved == {("ufc-319-bout-1", Corner.RED): bf_ids["red"]}
+    assert resolved == {(_BOUT_ID, "khamzat-chimaev"): bf_ids["red"]}
 
 
 def test_resolve_bout_fighter_ids_nome_ambiguo_levanta(db_session: Session) -> None:
@@ -257,8 +240,8 @@ def test_resolve_bout_fighter_ids_nome_ambiguo_levanta(db_session: Session) -> N
 
     Nunca duplica, mescla ou escolhe arbitrariamente (invariante do CLAUDE.md, espelha o M1).
     """
-    # Ambos os cantos normalizam para 'dricus du plessis' -> o slug vermelho fica ambíguo.
-    event, _ = _seed_ufc319(db_session, blue_name="Dricus Du Plessis")
+    # Ambos os cantos normalizam para 'khamzat chimaev' -> o slug vermelho fica ambíguo.
+    event, _ = _seed_ufc319(db_session, blue_name="Khamzat Chimaev")
     stats = _fixture_event_stats()
 
     with pytest.raises(AmbiguousBoutFighterMatchError):

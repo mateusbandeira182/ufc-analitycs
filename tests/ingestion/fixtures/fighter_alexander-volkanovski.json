@@ -1,12 +1,26 @@
 {
+ "success": true,
+ "data": {
+  "id": "00000000-0000-4000-8000-000332816476",
   "slug": "alexander-volkanovski",
   "name": "Alexander Volkanovski",
-  "date_of_birth": "1988-09-29",
   "nickname": "The Great",
-  "height_cm": 168,
-  "reach_cm": 182,
-  "stance": "orthodox",
-  "wins": 27,
-  "losses": 4,
-  "draws": 0
+  "division": "Featherweight",
+  "status": "Active",
+  "isActive": true,
+  "championStatus": "none",
+  "recordWins": 27,
+  "recordLosses": 4,
+  "recordDraws": 0,
+  "recordNoContest": 0,
+  "recordText": "27-4-0 (W-L-D)",
+  "age": null,
+  "birthDate": "1988-09-29T00:00:00.000Z",
+  "heightInches": "66",
+  "weightLbs": null,
+  "reachInches": "72",
+  "stance": "Orthodox",
+  "dataFreshness": "cached"
+ },
+ "meta": {}
 }

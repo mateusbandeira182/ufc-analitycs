@@ -1,12 +1,26 @@
 {
+ "success": true,
+ "data": {
+  "id": "00000000-0000-4000-8000-548871432140",
   "slug": "khamzat-chimaev",
   "name": "Khamzat Chimaev",
-  "date_of_birth": "1994-05-01",
   "nickname": "Borz",
-  "height_cm": 188,
-  "reach_cm": 190,
-  "stance": "orthodox",
-  "wins": 14,
-  "losses": 0,
-  "draws": 0
+  "division": "Middleweight",
+  "status": "Active",
+  "isActive": true,
+  "championStatus": "none",
+  "recordWins": 14,
+  "recordLosses": 0,
+  "recordDraws": 0,
+  "recordNoContest": 0,
+  "recordText": "14-0-0 (W-L-D)",
+  "age": null,
+  "birthDate": "1994-05-01T00:00:00.000Z",
+  "heightInches": "74",
+  "weightLbs": null,
+  "reachInches": "75",
+  "stance": "Orthodox",
+  "dataFreshness": "cached"
+ },
+ "meta": {}
 }

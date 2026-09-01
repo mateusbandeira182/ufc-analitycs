@@ -1,0 +1,261 @@
+{
+ "success": true,
+ "data": {
+  "id": "6889bea3-3d32-4c22-8cb0-12f0f9f5d99b",
+  "slug": "bruno-silva",
+  "ufcStatsId": "294aa73dbf37d281",
+  "name": "Bruno Silva",
+  "firstName": "Bruno",
+  "lastName": "Silva",
+  "nickname": "Bulldog",
+  "division": "Flyweight",
+  "status": "Active",
+  "isActive": true,
+  "championStatus": "none",
+  "p4pRank": null,
+  "recordWins": 15,
+  "recordLosses": 9,
+  "recordDraws": 2,
+  "recordNoContest": 0,
+  "recordText": "15-9-2 (W-L-D)",
+  "country": null,
+  "placeOfBirth": "Piracicaba, Brazil",
+  "trainsAt": "Fight Ready",
+  "fightingStyle": "Grappler",
+  "age": 36,
+  "birthDate": null,
+  "heightInches": "64",
+  "weightLbs": "125.5",
+  "reachInches": "65",
+  "legReachInches": "35",
+  "stance": "Orthodox",
+  "octagonDebut": "2019-09-06T00:00:00.000Z",
+  "profileUrl": "https://www.ufc.com/athlete/bruno-silva",
+  "sourceUrl": "https://www.ufc.com/athlete/bruno-silva?language_content_entity=en",
+  "imageUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-06/SILVA_BRUNO_06-06.png?itok=u1m96ZaT",
+  "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-06/SILVA_BRUNO_06-06.png?itok=u1m96ZaT",
+  "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-06/SILVA_BRUNO_L_06-06.png?itok=l_D2GW69",
+  "proxiedImageUrl": "https://api.citoapi.com/api/v1/public/images/ufc/aHR0cHM6Ly91ZmMuY29tL2ltYWdlcy9zdHlsZXMvZXZlbnRfcmVzdWx0c19hdGhsZXRlX2hlYWRzaG90L3MzLzIwMjYtMDYvU0lMVkFfQlJVTk9fMDYtMDYucG5nP2l0b2s9dTFtOTZaYVQ",
+  "bio": null,
+  "facts": {},
+  "socialLinks": {
+   "twitter.com": "https://twitter.com/ufc",
+   "ufcapex.com": "https://www.ufcapex.com/",
+   "facebook.com": "https://facebook.com/ufc",
+   "instagram.com": "https://www.instagram.com/ufc/"
+  },
+  "dataAvailability": {
+   "status": "available",
+   "missing": [],
+   "warning": "Using cached data",
+   "strategy": "ios-impersonate",
+   "fetchedAt": "2026-08-30T07:09:52.061Z",
+   "dataAgeHours": 0.68,
+   "dataFreshness": "cached"
+  },
+  "raw": {
+   "tags": [
+    "Flyweight Division",
+    "Active"
+   ],
+   "jsonLd": {
+    "@graph": [
+     {
+      "url": "https://www.ufc.com/athlete/bruno-silva",
+      "name": "Bruno Silva",
+      "@type": "WebPage",
+      "breadcrumb": {
+       "@type": "BreadcrumbList",
+       "itemListElement": [
+        {
+         "item": {
+          "@id": "https://www.ufc.com/",
+          "name": "UFC.com"
+         },
+         "@type": "ListItem",
+         "position": 1
+        },
+        {
+         "item": {
+          "@id": "https://www.ufc.com/athletes",
+          "name": "UFC Fighters"
+         },
+         "@type": "ListItem",
+         "position": 2
+        },
+        {
+         "item": {
+          "@id": "https://www.ufc.com/athlete/bruno-silva",
+          "name": "Bruno Silva"
+         },
+         "@type": "ListItem",
+         "position": 3
+        }
+       ]
+      },
+      "mainEntity": {
+       "url": "https://www.ufc.com/athlete/bruno-silva",
+       "name": "Bruno Silva",
+       "@type": "Person",
+       "sameAs": [
+        "https://twitter.com/brunobulldogufc",
+        "https://instagram.com/brunobulldogufc"
+       ],
+       "birthDate": "1990-03-16",
+       "givenName": "Bruno",
+       "subjectOf": {
+        "url": "https://www.ufc.com/event/ufc-fight-night-june-06-2026#12760",
+        "name": "UFC Fight Night",
+        "@type": "SportsEvent",
+        "location": "Meta APEX, Las Vegas United States",
+        "startDate": "2026-06-07T00:00:00"
+       },
+       "familyName": "Silva",
+       "description": "Bruno \"Bulldog\" Silva is a Brazilian\u00a0professional mixed martial artist in the UFC flyweight division.\u00a0Get the latest UFC breaking news, fight night results, MMA records and stats, highlights, photos, videos and more.",
+       "alternateName": "Bulldog"
+      },
+      "dateModified": "2026-08-06T21:12:45-0400",
+      "datePublished": "2019-04-08T18:40:02-0400"
+     }
+    ],
+    "@context": "https://schema.org"
+   },
+   "bioFields": {
+    "age": "36",
+    "reach": "65.00",
+    "height": "64.00",
+    "status": "Active",
+    "weight": "125.50",
+    "leg reach": "35.00",
+    "trains at": "Fight Ready",
+    "octagon debut": "Sep. 7, 2019",
+    "fighting style": "Grappler",
+    "place of birth": "Piracicaba, Brazil"
+   },
+   "heroStats": {
+    "wins by knockout": "6",
+    "wins by submission": "5",
+    "first round finishes": "4"
+   },
+   "scrapeMeta": {
+    "warning": "Using cached data",
+    "cacheKey": "530faf4e1af4db1ecb404cf4df6368ded120cf6a",
+    "strategy": "ios-impersonate",
+    "fetchedAt": "2026-08-30T07:09:52.061Z",
+    "dataAgeHours": 0.68,
+    "failureSteps": [],
+    "dataFreshness": "cached"
+   },
+   "fightHistory": []
+  },
+  "createdAt": "2026-05-10T17:56:51.411Z",
+  "lastSyncedAt": "2026-09-01T07:00:54.305Z",
+  "stats": {
+   "fighterSlug": "bruno-silva",
+   "source": "ufc.com",
+   "sourceUrl": "https://www.ufc.com/athlete/bruno-silva?language_content_entity=en",
+   "strikingAccuracy": "0.51",
+   "significantStrikesLanded": 489,
+   "significantStrikesAttempted": 952,
+   "takedownAccuracy": "0.03",
+   "takedownsLanded": 2,
+   "takedownsAttempted": 66,
+   "sigStrikesLandedPerMin": "3.95",
+   "sigStrikesAbsorbedPerMin": "4.72",
+   "takedownAvgPer15Min": "1.94",
+   "submissionAvgPer15Min": "0.24",
+   "sigStrikeDefense": "0.51",
+   "takedownDefense": "0.72",
+   "knockdownAvg": "0.85",
+   "averageFightTimeSeconds": 619,
+   "sigStrikesByPosition": {
+    "clinch": {
+     "raw": "28 (6%)",
+     "count": 28,
+     "label": "Clinch",
+     "percent": 0.06
+    },
+    "ground": {
+     "raw": "42 (9%)",
+     "count": 42,
+     "label": "Ground",
+     "percent": 0.09
+    },
+    "standing": {
+     "raw": "419 (86%)",
+     "count": 419,
+     "label": "Standing",
+     "percent": 0.86
+    }
+   },
+   "sigStrikesByTarget": {
+    "leg": {
+     "raw": "18% 89",
+     "count": 89,
+     "label": "Leg",
+     "percent": 0.18
+    },
+    "body": {
+     "raw": "23% 111",
+     "count": 111,
+     "label": "Body",
+     "percent": 0.23
+    },
+    "head": {
+     "raw": "59% 289",
+     "count": 289,
+     "label": "Head",
+     "percent": 0.59
+    }
+   },
+   "winsByMethod": {
+    "dec": {
+     "raw": "4 (27%)",
+     "count": 4,
+     "label": "DEC",
+     "percent": 0.27
+    },
+    "sub": {
+     "raw": "5 (33%)",
+     "count": 5,
+     "label": "SUB",
+     "percent": 0.33
+    },
+    "ko-tko": {
+     "raw": "6 (40%)",
+     "count": 6,
+     "label": "KO/TKO",
+     "percent": 0.4
+    }
+   },
+   "ufcStatsAggregate": null,
+   "dataAvailability": {
+    "status": "available",
+    "missing": [],
+    "warning": "Using cached data",
+    "strategy": "ios-impersonate",
+    "fetchedAt": "2026-08-30T07:09:52.061Z",
+    "dataAgeHours": 0.68,
+    "dataFreshness": "cached"
+   },
+   "raw": {
+    "profileStatText": "Sig. Strikes Landed 489 Sig. Strikes Attempted 952 Takedowns Landed 2 Takedowns Attempted 66 3.95 Sig. Str. Landed Per Min 4.72 Sig. Str. Absorbed Per Min 1.94 Takedown avg Per 15 Min 0.24 Submission avg Per 15 Min 51 % Sig. Str. Defense 72 % Takedown Defense 0.85 Knockdown Avg 10:19 Average fight time Sig. Str. By Position Standing 419 (86%) Clinch 28 (6%) Ground 42 (9%) Sig. Str. by target 59% 289 Head 23% 111 Body 18% 89 Leg Win by Method KO/TKO 6 (40%) DEC 4 (27%) SUB 5 (33%)"
+   },
+   "lastSyncedAt": "2026-08-30T07:50:56.668Z"
+  },
+  "rankings": [],
+  "record": {
+   "wins": 15,
+   "losses": 9,
+   "draws": 2,
+   "noContest": 0,
+   "text": "15-9-2 (W-L-D)"
+  },
+  "dataFreshness": "2026-08-30T07:09:52.061Z",
+  "freshnessStatus": "cached",
+  "dataAgeHours": 0.68,
+  "dataSource": null,
+  "warning": "Using cached data"
+ },
+ "meta": {}
+}

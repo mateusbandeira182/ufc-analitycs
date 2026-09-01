@@ -13,9 +13,9 @@ os rótulos ``corner`` das stats devem concordar.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from apps.bouts.enums import Corner
@@ -109,6 +109,11 @@ class CitoFighter(BaseModel):
     slug: str
     name: str
     date_of_birth: date | None = None
+    # Idade publicada pelo perfil real. Existe porque a Cito devolve ``birthDate`` nulo e
+    # ``age`` preenchido (medido em 2026-09-01): é o insumo do desempate por idade da entity
+    # resolution (``match_fighter_id_by_age``). Nunca é usada para DERIVAR ``date_of_birth`` --
+    # uma data inventada com precisão de um ano entraria na chave que separa homônimos.
+    age: int | None = None
     nickname: str | None = None
     height_cm: int | None = None
     reach_cm: int | None = None
@@ -135,37 +140,165 @@ class CitoFighter(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# DTOs do endpoint real ``GET /events/{id}/stats`` (envelope camelCase).
+# DTOs do endpoint real ``GET /api/v1/ufc/events/{slug}/stats`` (envelope camelCase).
 #
 # Aditivos: os DTOs acima (``CitoEvent``/``CitoBout``/``CitoBoutStats``/...) são consumidos
 # pelo M1 (``ingestion.incremental``) e permanecem intactos. Aqui, a Cito real embrulha as
 # stats granulares num envelope ``{success, data, meta}``, usa camelCase e expressa golpes como
 # ``"L of A"`` e tempo como ``"m:ss"`` -- convertidos na borda pelos parsers, sem propagar ``Any``.
+#
+# ``data`` traz **quatro** blocos: ``event`` (metadados + data local), ``bouts`` (o card, com o
+# ``corner`` de cada lutador e o resultado), ``boutStats`` (totais por lutador-por-luta) e
+# ``roundStats`` (round-a-round). A forma foi confirmada contra a API real em 2026-08-31 e está
+# versionada em ``tests/ingestion/fixtures/event_stats_ufc-fight-night-august-22-2026.json``;
+# ver ADR 0005 para as três divergências de contrato que o M5 carregava.
 # ---------------------------------------------------------------------------
 
 _CAMEL_CONFIG = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
 # Campos de golpe expressos como ``"landed of attempted"`` no payload real da Cito.
-_SPLIT_FIELDS = ("sig_strikes", "head", "body", "leg", "distance", "clinch", "ground", "takedowns")
+_SPLIT_FIELDS = (
+    "sig_strikes",
+    "total_strikes",
+    "head",
+    "body",
+    "leg",
+    "distance",
+    "clinch",
+    "ground",
+    "takedowns",
+)
+
+
+class CitoEventBlock(BaseModel):
+    """Metadados do evento no bloco ``data.event`` do endpoint real de stats.
+
+    A ``event_date`` é a data **local** do evento -- a mesma grandeza que o seed persistiu em
+    ``events.date`` e a mesma que o slug usa. Difere da data UTC de ``starts_at`` sempre que o
+    card noturno nos EUA atravessa a meia-noite UTC (o caso da maioria dos Fight Nights), o que
+    torna insegura qualquer derivação de slug por regra sobre o nome (ver ADR 0005).
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    id: str
+    slug: str
+    title: str
+    status: str  # "scheduled" | "completed"
+    event_date: date
+    starts_at: AwareDatetime | None = None
+
+
+class CitoFighterRecord(BaseModel):
+    """Cartel do lutador dentro do ``profile`` embutido no canto do card.
+
+    Cada componente é opcional: ausência degrada para ``0`` no mapeamento (as colunas de
+    ``fighters`` são NOT NULL), nunca para sentinela. ``noContest`` é ignorado -- não há coluna.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    wins: int | None = None
+    losses: int | None = None
+    draws: int | None = None
+
+
+class CitoFighterProfile(BaseModel):
+    """Perfil do lutador **embutido** no canto do card (``bouts[].fighters[].profile``).
+
+    É o que permite criar um lutador novo do gap com **zero** chamadas de perfil (RF-13): nome,
+    slug, apelido e cartel já vêm no payload de stats que a ingestão do evento pagou. Não traz
+    data de nascimento, stance nem antropometria -- esses só existem em
+    ``GET /fighters/{slug}``, cuja chamada é reservada ao desempate de ambiguidade.
+
+    ``division`` é deliberadamente **não** modelada: não há coluna em ``fighters`` e
+    ``bouts.weight_class`` já cobre a categoria da luta (que é o dado por luta, não por atleta).
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    slug: str
+    name: str
+    nickname: str | None = None
+    record: CitoFighterRecord = Field(default_factory=CitoFighterRecord)
+
+
+class CitoBoutFighterRef(BaseModel):
+    """Um canto do card (``bouts[].fighters[]``).
+
+    O ``corner`` daqui é o **desfecho** disfarçado de canto, não o canto de caminhada (ver o
+    comentário 'POR QUE O CANTO NÃO VEM DO CAMPO `corner`' em ``ingestion.cito.gap_sync``); quem
+    carrega o canto de verdade é a URL da arte oficial (``image_url``). As linhas de
+    ``boutStats``/``roundStats`` da API real não trazem canto nenhum. Ver ADR 0005.
+
+    ``image_url`` é a arte **desta luta** (o nome do arquivo traz o lado). Não confundir com
+    ``profile.imageUrl``, que é a arte do evento mais recente **do atleta** e por isso dá o canto
+    de outro card -- medido em 2026-09-01 e deliberadamente não modelado.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    fighter_slug: str
+    fighter_name: str | None = None
+    corner: Corner
+    outcome: str | None = None  # "win" | "loss" | "draw" | ...
+    image_url: str | None = None
+    profile: CitoFighterProfile | None = None
+
+
+class CitoBoutBlock(BaseModel):
+    """Uma luta do card (``bouts[]``): contexto + resultado, como a Cito devolve.
+
+    Só os campos com consumidor concreto entram: ``venue``/``odds``/``dataAvailability`` e demais
+    blocos do payload seguem tolerados por ``extra="ignore"`` e serão adicionados quando (e se)
+    alguém os consumir.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    id: str
+    card_section: str | None = None  # "Main Card" | "Prelims"
+    card_section_order: int | None = None
+    bout_order: int | None = None
+    weight_class: str | None = None
+    title_bout: bool | None = None
+    status: str | None = None
+    is_cancelled: bool = False
+    winner_fighter_slug: str | None = None
+    result_round: int | None = None
+    result_time_seconds: int | None = Field(default=None, validation_alias="resultTime")
+    method: str | None = None  # "Decision - Unanimous" | "KO/TKO" | "Submission"
+    method_details: str | None = None
+    fighters: list[CitoBoutFighterRef]
+
+    @field_validator("result_time_seconds", mode="before")
+    @classmethod
+    def _clock(cls, value: object) -> int | None:
+        """Converte ``"5:00"`` -> segundos na borda; ausência -> ``None``."""
+        return parse_clock(value if value is None or isinstance(value, str) else str(value))
 
 
 class CitoBoutStatLine(BaseModel):
     """Totais de um canto numa luta do endpoint real (``boutStats``).
 
-    Uma linha por lutador-por-luta (long): ``corner`` liga ao canto e os splits de golpe chegam
-    como tuplas ``(landed, attempted)`` após o parse na borda. Split ausente degrada para
+    Uma linha por lutador-por-luta (long): o lutador é identificado por ``fighter_slug`` (a API
+    real não traz ``corner`` aqui -- o canto vem de ``bouts[].fighters[]``) e os splits de golpe
+    chegam como tuplas ``(landed, attempted)`` após o parse na borda. Split ausente degrada para
     ``(None, None)`` (não se inventa zero); string mal-formada levanta ``CitoParseError``.
     """
 
     model_config = _CAMEL_CONFIG
 
     bout_id: str
-    corner: Corner
     fighter_slug: str
+    fighter_name: str | None = None
     knockdowns: int | None = None
     submission_attempts: int | None = None
     reversals: int | None = None
-    sig_strikes: tuple[int | None, int | None] = (None, None)
+    sig_strikes: tuple[int | None, int | None] = Field(
+        default=(None, None), validation_alias="significantStrikes"
+    )
+    total_strikes: tuple[int | None, int | None] = (None, None)
     head: tuple[int | None, int | None] = (None, None)
     body: tuple[int | None, int | None] = (None, None)
     leg: tuple[int | None, int | None] = (None, None)
@@ -195,14 +328,18 @@ class CitoRoundStatLine(CitoBoutStatLine):
 
 
 class CitoEventStats(BaseModel):
-    """Stats de um evento: os totais por canto (``boutStats``) e o round-a-round (``roundStats``).
+    """Os quatro blocos que o endpoint real devolve numa única chamada.
 
-    ``round_stats`` degrada para lista vazia quando o payload não traz round-a-round (evento sem
-    esse detalhe) -- ausência explícita, sem ``Any``.
+    ``event`` (metadados, com a data local) e ``bouts`` (o card com resultado e o ``corner`` de
+    cada lutador) são **obrigatórios**: são estruturais no envelope, então a ausência precisa
+    falhar alto, não degradar. ``round_stats``, ao contrário, degrada para lista vazia -- um
+    evento sem round-a-round é ausência legítima de dado, não payload quebrado.
     """
 
     model_config = _CAMEL_CONFIG
 
+    event: CitoEventBlock
+    bouts: list[CitoBoutBlock]
     bout_stats: list[CitoBoutStatLine]
     round_stats: list[CitoRoundStatLine] = []
 
@@ -214,3 +351,171 @@ class CitoStatsEnvelope(BaseModel):
 
     success: bool
     data: CitoEventStats
+
+
+# ---------------------------------------------------------------------------
+# DTO do endpoint real ``GET /api/v1/ufc/fighters/{slug}`` (envelope camelCase).
+#
+# Aditivo: ``CitoFighter`` acima permanece o DTO de **domínio** da ingestão (o que o M1
+# consome e o que a Slice 06 monta a partir do card). Aqui fica a forma **wire** medida na
+# sondagem de 2026-09-01 -- envelope ``{success, data, meta}``, camelCase, cartel em campos
+# planos e antropometria em POLEGADAS, como string. O payload que o M1 supunha (objeto cru,
+# snake_case, centímetros) nunca existiu na API real: mesma classe de erro que a ADR 0005
+# corrigiu para o endpoint de stats, encontrada aqui pela primeira execução real do perfil.
+# ---------------------------------------------------------------------------
+
+# 1 polegada = 2,54 cm. A conversão acontece na borda para que a unidade da fonte não vaze
+# para o domínio (o schema guarda centímetros desde o M0).
+_CM_PER_INCH = 2.54
+
+
+def _inches_to_cm(value: str | float | None) -> int | None:
+    """Converte polegadas (a Cito publica como string) em centímetros inteiros; vazio -> ``None``.
+
+    Valor não-numérico degrada para ``None`` com aviso -- nunca zero, nunca sentinela.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return round(float(value) * _CM_PER_INCH)
+    except (TypeError, ValueError):
+        return None
+
+
+class CitoFighterDetail(BaseModel):
+    """Bloco ``data`` do perfil real de um lutador; converte-se em ``CitoFighter`` no domínio.
+
+    Só os campos com consumidor concreto entram; o resto do payload (imagens, rankings, bio,
+    ``dataAvailability``) segue tolerado por ``extra="ignore"``.
+
+    ``birth_date`` é a base do desempate da entity resolution e **pode vir nula** -- foi o que
+    a sondagem de 2026-09-01 mediu em 'bruno-silva', que traz ``age`` mas não a data. A idade
+    **não** é usada para derivá-la: uma DOB inventada com precisão de um ano entraria na chave
+    que separa homônimos, que é exatamente o que ela existe para impedir.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    slug: str
+    name: str
+    nickname: str | None = None
+    birth_date: date | None = None
+    age: int | None = None
+    height_inches: str | float | None = None
+    reach_inches: str | float | None = None
+    stance: str | None = None
+    record_wins: int | None = None
+    record_losses: int | None = None
+    record_draws: int | None = None
+
+    @field_validator("birth_date", mode="before")
+    @classmethod
+    def _birth_date(cls, value: object) -> object:
+        """Aceita o instante ISO-8601 que a Cito às vezes usa para a data; vazio -> ``None``."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, str) and "T" in value:
+            return value.split("T", 1)[0]
+        return value
+
+    def to_fighter(self) -> CitoFighter:
+        """Traduz o perfil wire no ``CitoFighter`` do domínio (unidades e cartel normalizados).
+
+        Cartel ausente degrada para ``0`` (as colunas de ``fighters`` são NOT NULL); a stance
+        passa pelo mesmo ``field_validator`` tolerante de ``CitoFighter``.
+        """
+        return CitoFighter(
+            slug=self.slug,
+            name=self.name,
+            nickname=self.nickname,
+            date_of_birth=self.birth_date,
+            age=self.age,
+            height_cm=_inches_to_cm(self.height_inches),
+            reach_cm=_inches_to_cm(self.reach_inches),
+            stance=self.stance,  # type: ignore[arg-type]  # o validador do DTO coage o rótulo
+            wins=self.record_wins or 0,
+            losses=self.record_losses or 0,
+            draws=self.record_draws or 0,
+        )
+
+
+class CitoFighterEnvelope(BaseModel):
+    """Envelope ``{success, data, meta}`` do endpoint real de perfil de lutador."""
+
+    model_config = _CAMEL_CONFIG
+
+    success: bool
+    data: CitoFighterDetail
+
+
+# ---------------------------------------------------------------------------
+# DTOs do catálogo paginado ``GET /api/v1/ufc/events`` (M6, SPEC 007, Slice 03).
+#
+# Aditivos: os DTOs acima permanecem intactos. O catálogo é a **fonte do identificador** do
+# evento na Cito -- o slug nunca é derivado por regra a partir do nome persistido (RF-04).
+# ---------------------------------------------------------------------------
+
+
+class CitoCatalogItem(BaseModel):
+    """Item do catálogo ``GET /api/v1/ufc/events`` -- a fonte do identificador do evento.
+
+    ``starts_at`` é o instante UTC do início; ``event_date`` é a **data local** do evento --
+    a mesma que o slug usa ('ufc-fight-night-august-22-2026' para um ``starts_at`` de
+    2026-08-23 UTC) e a mesma grandeza que o seed persistiu em ``events.date``. As duas
+    divergem em um dia sempre que o card noturno nos EUA atravessa a meia-noite UTC, o que
+    é o caso da maioria dos Fight Nights. Por isso o casamento usa ``local_date`` e uma
+    janela de tolerância -- e o slug **nunca** é derivado (ver
+    ``ingestion.cito.matching.resolve_event_match``).
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    id: str  # uuid textual -> events.cito_event_id
+    slug: str  # -> events.cito_slug
+    title: str
+    short_title: str | None = None
+    status: str  # "scheduled" | "completed"
+    starts_at: AwareDatetime
+    event_date: date | None = None  # data local do evento, quando o catálogo a expõe
+    venue: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    location_text: str | None = None
+
+    @property
+    def local_date(self) -> date:
+        """Data de calendário **local** do evento -- a base da janela de casamento.
+
+        Usa ``event_date`` quando o catálogo a expõe (o caso de todos os itens da captura
+        real de 2026-08-31); na ausência, degrada para a data UTC de ``starts_at``, que a
+        janela de tolerância cobre. Nunca inventa data.
+        """
+        return (
+            self.event_date
+            if self.event_date is not None
+            else self.starts_at.astimezone(UTC).date()
+        )
+
+
+class CitoCatalogMeta(BaseModel):
+    """Bloco ``meta`` da página do catálogo; só o necessário para paginar."""
+
+    model_config = _CAMEL_CONFIG
+
+    page: int
+    limit: int
+    total: int
+    total_pages: int
+    has_next_page: bool
+    next_page: int | None = None
+
+
+class CitoCatalogEnvelope(BaseModel):
+    """Envelope ``{success, data, meta}`` de uma página do catálogo paginado."""
+
+    model_config = _CAMEL_CONFIG
+
+    success: bool
+    data: list[CitoCatalogItem]
+    meta: CitoCatalogMeta
