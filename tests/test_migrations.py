@@ -22,6 +22,13 @@ IDENTIFICADORES_CITO = {"cito_slug", "cito_event_id"}
 TABELA_PREDICOES = "bout_predictions"
 # Contexto de card acrescentado a ``bouts`` pelo M6 (SPEC 007, Slice 05).
 CONTEXTO_DE_CARD = {"card_section", "bout_order"}
+# Identificador externo da fonte oficial da UFC acrescentado a ``events`` pelo M7
+# (SPEC 008, Slice 02).
+IDENTIFICADOR_OFICIAL = "ufc_event_id"
+# Revisão da migration do M7, fixada por hash (nunca ``head``): é ela que o teste de
+# ``downgrade -1`` precisa alcançar, e uma migration futura empilhada acima faria ``head``
+# apontar para outro artefato.
+REVISAO_M7 = "b1c4f2a90d37"
 
 
 def _tabelas_existentes(engine: Engine) -> set[str]:
@@ -228,6 +235,39 @@ def test_downgrade_um_passo_remove_contexto_de_card_preserva_bouts(
     assert not (CONTEXTO_DE_CARD & colunas_bouts)
     assert {"event_id", "winner_id", "method", "weight_class"} <= colunas_bouts
     assert {"title_bout", "scheduled_rounds", "referee"} <= colunas_bouts
+    tabelas = _tabelas_existentes(migration_engine)
+    assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA, TABELA_PREDICOES}
+    assert "corner" in _tipos_enum_existentes(migration_engine)
+
+
+def test_upgrade_cria_ufc_event_id_em_events(alembic_cfg: Config, migration_engine: Engine) -> None:
+    """CA-01: a migration do M7 cria ``events.ufc_event_id``."""
+    command.upgrade(alembic_cfg, "head")
+    assert IDENTIFICADOR_OFICIAL in _colunas(migration_engine, "events")
+
+
+def test_downgrade_um_passo_remove_ufc_event_id_preserva_identificadores_cito(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: o downgrade do M7 é simétrico -- dropa só a coluna aditiva de ``events``.
+
+    Os identificadores da Cito (M6), o restante de ``events``, as demais tabelas e o enum
+    ``corner`` permanecem intactos: a migration é aditiva, então reverter não pode custar
+    nenhum dado pré-existente.
+
+    Fixa a revisão-alvo (``REVISAO_M7``) em vez de ``head``, seguindo o precedente das
+    migrations anteriores: assim uma migration futura empilhada acima não faz este ``-1``
+    reverter o artefato errado.
+    """
+    command.upgrade(alembic_cfg, REVISAO_M7)
+    assert IDENTIFICADOR_OFICIAL in _colunas(migration_engine, "events")
+
+    command.downgrade(alembic_cfg, "-1")
+
+    colunas_events = _colunas(migration_engine, "events")
+    assert IDENTIFICADOR_OFICIAL not in colunas_events
+    assert colunas_events >= IDENTIFICADORES_CITO
+    assert {"id", "name", "date", "location", "source"} <= colunas_events
     tabelas = _tabelas_existentes(migration_engine)
     assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA, TABELA_PREDICOES}
     assert "corner" in _tipos_enum_existentes(migration_engine)

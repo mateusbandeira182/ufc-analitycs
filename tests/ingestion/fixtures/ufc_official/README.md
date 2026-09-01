@@ -23,6 +23,7 @@ verbatimidade** que falha se a captura passar a ter apenas as chaves que o DTO d
 | `fight_live_10214.json` | `/api/v3/fight/live/10214.json` | 200 | 18104 | Captura principal do endpoint de luta |
 | `event_live_700.json` | `/api/v3/event/live/700.json` | 200 | 46943 | Prova que a data de calendário é a **local**, não a UTC |
 | `event_live_1335.json` | `/api/v3/event/live/1335.json` | 200 | 28523 | Prova que o canto existe **antes** do desfecho |
+| `event_live_1345.json` | `/api/v3/event/live/1345.json` | 200 | 22 | Prova que id inexistente é **200 com envelope vazio**, não 404 |
 
 ### `event_live_1124.json` -- UFC 282: Blachowicz vs. Ankalaev
 
@@ -95,6 +96,22 @@ O canto existe antes de a luta acontecer; o desfecho não. Um campo não pode se
 outro. Por isso `outcome_id` e `label` são opcionais no DTO enquanto o objeto `Outcome` em si é
 estrutural, e por isso `corner` é obrigatório.
 
+### `event_live_1345.json` -- id inexistente (captura da Sprint 008-02)
+
+Capturada em 2026-09-01T19:55:58Z, quando a varredura da Slice 02 precisou distinguir "id que
+não existe" de "a fonte mudou de contrato". O corpo inteiro é `{"LiveEventDetail":{}}` -- 22
+bytes, **HTTP 200**.
+
+A fonte **não responde 404** para id inexistente. Medido nos ids 0, 1344, 1345, 1350, 1400,
+2000, 5000 e 99999: todos 200 com o envelope vazio, enquanto o id 1343 (`UFC Fight Night:
+Bonfim vs. Brady`) ainda era um evento real. Sem tratar esse caso, a varredura abortaria no
+primeiro id acima da fronteira como se a fonte tivesse quebrado o contrato -- por isso
+`ingestion.ufc_official.dto.is_absent_event_payload` existe e é consultado **antes** da
+validação.
+
+A distinção é estrita: só o objeto rigorosamente vazio é ausência. Um `LiveEventDetail`
+parcialmente preenchido continua sendo quebra de contrato e falha alto (RF-10).
+
 ## Forma medida (24 eventos, 450 lutadores, sondagem de 2026-09-01)
 
 A sondagem cobriu os ids 1, 25, 60, 120, 200, 300, 400, 500, 600, 700, 750, 800, 850, 900, 950,
@@ -119,8 +136,10 @@ obrigatório e o que é opcional no DTO:
 observados: `Win`, `Loss`, `Draw`, `No Contest` -- e `null` em evento `Upcoming`.
 
 A varredura mostrou também que a fonte cobre outras promoções (WEC, DREAM, K-1, CWFC, DWCS,
-Road to UFC) além do UFC. O escopo do projeto segue **só UFC**; a filtragem é problema da
-Slice 02, não do DTO.
+Road to UFC) além do UFC. O escopo do projeto segue **só UFC**. A Slice 02 resolveu a filtragem
+pelo campo `Organization` do próprio payload (`OrganizationId` 1 = UFC, 2 = PRIDE, 3 = WEC,
+4 = Strikeforce, 8 = DREAM, 9 = K-1, 67 = DWCS, 68 = Road to UFC), medido presente em 85 de 85
+eventos sondados -- por isso `Organization` passou a ser campo estrutural do DTO.
 
 ## Como recapturar
 
@@ -131,6 +150,7 @@ curl -sS -o "$DEST/event_live_1124.json" "$BASE/api/v3/event/live/1124.json"
 curl -sS -o "$DEST/fight_live_10214.json" "$BASE/api/v3/fight/live/10214.json"
 curl -sS -o "$DEST/event_live_700.json"  "$BASE/api/v3/event/live/700.json"
 curl -sS -o "$DEST/event_live_1335.json" "$BASE/api/v3/event/live/1335.json"
+curl -sS -o "$DEST/event_live_1345.json" "$BASE/api/v3/event/live/1345.json"
 ```
 
 Nunca passe a captura por `jq`, por formatador ou por um `json.dump` do Python: os arquivos são

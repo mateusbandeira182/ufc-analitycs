@@ -31,6 +31,7 @@ from ingestion.ufc_official.dto import (
     UfcOfficialEvent,
     UfcOfficialFight,
     UfcOfficialFighter,
+    is_absent_event_payload,
     parse_event,
     parse_fight,
 )
@@ -47,6 +48,8 @@ _BLUE_WINNER_FIGHT_ID = 10214
 _LOCAL_DATE_EVENT_ID = 700
 # UFC 331 (2026-09-19), ainda por acontecer: canto preenchido, desfecho nulo.
 _UPCOMING_EVENT_ID = 1335
+# Id acima da fronteira real de eventos: a fonte responde 200 com o envelope VAZIO.
+_ABSENT_EVENT_ID = 1345
 
 
 def _raw(filename: str) -> dict[str, object]:
@@ -76,6 +79,54 @@ def test_dto_valida_captura_verbatim_do_endpoint_de_evento() -> None:
     assert event.name == "UFC 282: Blachowicz vs. Ankalaev"
     assert event.status == "Final"
     assert len(event.fight_card) == 12
+
+
+def test_fuso_ausente_e_real_e_nao_vira_data_utc() -> None:
+    """``TimeZone`` pode vir **nulo**, e sem ele não existe data de calendário confiável.
+
+    Medido na varredura de 2026-09-01: o id 380 (``Gladiator FC - Day 2``, ``OrganizationId``
+    33, de 2004) devolve ``"TimeZone": null`` com HTTP 200. A sondagem de 24 eventos da Sprint
+    008-01 não tinha alcançado nenhum caso -- por isso o campo estava declarado estrutural.
+
+    A ausência **não** degrada para UTC: ``StartTime`` é um instante, e assumir UTC deslocaria
+    o evento em um dia em todo card noturno das Américas. ``local_date`` levanta, e quem varre
+    conta e nomeia o evento em vez de gravar uma data inventada.
+    """
+    payload = _sem_chave(_raw_event(_EVENT_ID), "LiveEventDetail.TimeZone")
+
+    event = parse_event(payload, event_id=_EVENT_ID)
+
+    assert event.time_zone is None
+    with pytest.raises(UfcOfficialContractError):
+        _ = event.local_date
+
+
+def test_fuso_presente_mas_invalido_continua_falhando_alto() -> None:
+    """Fuso nulo é ausência conhecida; fuso em formato estranho continua sendo quebra.
+
+    A distinção importa: tolerar a ausência não pode virar tolerância a um ``TimeZone`` que
+    mudou de formato -- esse caso ainda erra a data em silêncio se for aceito.
+    """
+    payload = _com_tipo_trocado(_raw_event(_EVENT_ID), "LiveEventDetail.TimeZone", "PST")
+
+    with pytest.raises(UfcOfficialContractError):
+        parse_event(payload, event_id=_EVENT_ID)
+
+
+def test_promocao_do_evento_vem_do_payload_e_nao_do_nome() -> None:
+    """A promoção é um campo de primeira classe (``Organization``), não uma inferência do nome.
+
+    A fonte cobre PRIDE, WEC, Strikeforce, DREAM, K-1, DWCS e Road to UFC além do UFC, e o
+    escopo do projeto é só UFC. Ter o identificador da promoção no payload torna o filtro
+    **exato e barato** -- em vez de apostar que a concordância de nome descarta as outras
+    promoções por acidente. Medido em 85 eventos sondados em 2026-09-01: ``Organization``
+    presente em 85 de 85, com ``OrganizationId`` 1 = UFC, 2 = PRIDE, 3 = WEC, 4 = Strikeforce,
+    67 = DWCS, 68 = Road to UFC.
+    """
+    event = parse_event(_raw_event(_EVENT_ID), event_id=_EVENT_ID)
+
+    assert event.organization.organization_id == 1
+    assert event.organization.name == "Ultimate Fighting Championship"
 
 
 def test_data_de_calendario_do_evento_e_a_local_e_nao_a_utc() -> None:
@@ -143,6 +194,44 @@ def test_canto_existe_antes_do_desfecho_em_evento_futuro() -> None:
         for fighter in fight.fighters:
             assert fighter.outcome.label is None
             assert fighter.outcome.outcome_id is None
+
+
+def test_id_inexistente_e_200_com_envelope_vazio_e_nao_404() -> None:
+    """Ausência na fonte é ``{"LiveEventDetail": {}}`` com **HTTP 200**, nunca 404.
+
+    Medido em 2026-09-01 nos ids 0, 1344, 1345, 1350, 1400, 2000, 5000 e 99999: todos
+    respondem 200 com o envelope vazio, enquanto 1343 ainda é um evento real. É a forma como
+    esta fonte diz "este id não existe" -- e a razão de a varredura precisar de um teste de
+    ausência **antes** da validação: sem ele, o primeiro id acima da fronteira derrubaria a
+    execução inteira como se a fonte tivesse mudado de contrato.
+    """
+    assert is_absent_event_payload(_raw_event(_ABSENT_EVENT_ID))
+    assert not is_absent_event_payload(_raw_event(_EVENT_ID))
+
+
+def test_envelope_vazio_falha_alto_se_chegar_a_ser_validado() -> None:
+    """O envelope vazio **não** é um DTO meio preenchido: validá-lo levanta (RF-10).
+
+    Este teste é o par do anterior e prova por que a ordem importa: a ausência precisa ser
+    reconhecida como ausência antes da borda, porque para a borda ela é indistinguível de um
+    evento a que faltassem todos os campos estruturais.
+    """
+    with pytest.raises(UfcOfficialContractError):
+        parse_event(_raw_event(_ABSENT_EVENT_ID), event_id=_ABSENT_EVENT_ID)
+
+
+def test_evento_parcialmente_preenchido_nao_e_ausencia() -> None:
+    """Um ``LiveEventDetail`` **não vazio** nunca é lido como ausência -- falha alto.
+
+    A distinção é estreita de propósito: só o objeto rigorosamente vazio significa "não
+    existe". Um evento que perdesse ``FightCard`` mas mantivesse ``EventId`` é quebra de
+    contrato, e tratá-lo como ausência esconderia a quebra atrás de um número de cobertura.
+    """
+    payload = {"LiveEventDetail": {"EventId": 1345}}
+
+    assert not is_absent_event_payload(payload)
+    with pytest.raises(UfcOfficialContractError):
+        parse_event(payload, event_id=1345)
 
 
 def test_dto_valida_captura_verbatim_do_endpoint_de_luta() -> None:
@@ -251,6 +340,8 @@ _PRIMEIRO_LUTADOR = "LiveEventDetail.FightCard.0.Fighters.0"
         "LiveEventDetail.FightCard",
         "LiveEventDetail.EventId",
         "LiveEventDetail.StartTime",
+        "LiveEventDetail.Organization",
+        "LiveEventDetail.Organization.OrganizationId",
         "LiveEventDetail.FightCard.0.Fighters",
         f"{_PRIMEIRO_LUTADOR}.Corner",
         f"{_PRIMEIRO_LUTADOR}.Outcome",

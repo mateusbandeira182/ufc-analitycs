@@ -15,8 +15,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
-# Cache em disco resumível das respostas da Cito (ingestion/cito/cache.py).
-# Reconstrutível gastando quota; ~870 KB só do catálogo -- nunca versionar.
+# Caches em disco resumíveis das respostas das fontes externas:
+#  - Cito (ingestion/cito/cache.py): reconstrutível gastando quota; ~870 KB só do catálogo.
+#  - API oficial da UFC (ingestion/ufc_official/cache.py): 1.341 payloads crus, ~47 MB,
+#    reconstrutível de graça em ~25 minutos de varredura sequencial.
+# Nunca versionar.
 /.cache/
 # Frontend (SPA em web/) — artefatos não versionados.
 # Atenção: web/src/api/types.ts é gerado mas VERSIONADO (gate roda sem o backend).

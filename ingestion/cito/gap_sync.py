@@ -75,7 +75,7 @@ from ingestion.cito.dto import (
     CitoRoundStatLine,
 )
 from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
-from ingestion.cito.matching import is_ufc_catalog_item, normalize_event_name
+from ingestion.cito.matching import is_ufc_catalog_item
 from ingestion.entity_resolution import AmbiguousFighterMatchError, match_fighter_id_by_age
 from ingestion.incremental import (
     TableDelta,
@@ -87,7 +87,7 @@ from ingestion.incremental import (
     upsert_bout,
     upsert_event,
 )
-from ingestion.normalize import normalize_name
+from ingestion.normalize import normalize_event_name, normalize_name
 from mma_analytics.db import SessionLocal
 
 # Linhas de stat compartilham a forma (``CitoRoundStatLine`` estende ``CitoBoutStatLine``): o

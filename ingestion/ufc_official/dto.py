@@ -18,16 +18,19 @@ Sem autenticação, sem chave, sem rate limit observado. Não é a Cito e não c
 
 Campos estruturais (ausência **falha alto**)
 --------------------------------------------
-- Evento: ``EventId``, ``Name``, ``StartTime``, ``TimeZone``, ``Status``, ``FightCard``.
+- Evento: ``EventId``, ``Name``, ``StartTime``, ``Status``, ``Organization`` (com
+  ``OrganizationId``), ``FightCard``. **``TimeZone`` não é estrutural**: vem nulo em eventos
+  antigos de promoções fora do escopo (medido no id 380, ``Gladiator FC - Day 2``, de 2004), e
+  sem ele ``local_date`` levanta em vez de cair para a data UTC.
 - Luta: ``FightId``, ``Fighters``.
 - Lutador: ``FighterId``, ``Name`` (objeto ``FirstName``/``LastName``/``NickName``), ``Corner``
   e ``Outcome`` (o objeto; os campos **dentro** dele são opcionais).
 
 Campos opcionais (ausência permanece **nula**, nunca zero nem sentinela)
 ------------------------------------------------------------------------
-``MMAId``, ``DOB``, ``Stance``, ``Height``, ``Reach``, ``Weight``, ``NickName``, e os dois
-campos de dentro de ``Outcome``. Medido em 450 lutadores: ``Reach`` falta em 50, ``MMAId`` em
-69, ``DOB`` em 8, ``Stance`` em 2.
+``TimeZone``, ``MMAId``, ``DOB``, ``Stance``, ``Height``, ``Reach``, ``Weight``,
+``NickName``, e os dois campos de dentro de ``Outcome``. Medido em 450 lutadores: ``Reach``
+falta em 50, ``MMAId`` em 69, ``DOB`` em 8, ``Stance`` em 2.
 
 Unidades: **a unidade da borda está no nome do campo**
 ------------------------------------------------------
@@ -52,6 +55,13 @@ A data do evento é a LOCAL, não a UTC
 (``GMT±HH:MM``) e é exposta por ``UfcOfficialEvent.local_date``. UFC 184 começou em
 ``2015-03-01T00:00Z`` sob ``GMT-08:00`` e é o evento de **2015-02-28**. É sobre a data local que
 a janela da RF-03 (2010-03-21 em diante) é decidida.
+
+Ausência de id: HTTP 200 com envelope vazio, nunca 404
+------------------------------------------------------
+Um ``eventId`` que não existe devolve **200** com ``{"LiveEventDetail": {}}``. Não é quebra de
+contrato -- é a forma desta fonte dizer "não existe" --, e é reconhecido por
+``is_absent_event_payload`` **antes** da validação. Sem essa distinção a varredura da Slice 02
+abortaria no primeiro id acima da fronteira.
 
 O que falha alto (RF-10)
 ------------------------
@@ -193,6 +203,21 @@ class UfcOfficialFight(BaseModel):
     fighters: list[UfcOfficialFighter] = Field(alias="Fighters")
 
 
+class UfcOfficialOrganization(BaseModel):
+    """A promoção dona do evento -- campo de primeira classe do payload, nunca inferido.
+
+    A fonte cobre PRIDE (2), WEC (3), Strikeforce (4), DREAM (8), K-1 (9), DWCS (67) e Road to
+    UFC (68) além do UFC (1); o escopo do projeto é **só UFC** (e as fases de promoção,
+    travadas em 2026-08-31, mantêm DWCS e Road to UFC para depois). Estrutural: presente em 85
+    de 85 eventos sondados em 2026-09-01, com ``OrganizationId`` inteiro em todos.
+    """
+
+    model_config = _CONFIG
+
+    organization_id: int = Field(alias="OrganizationId")
+    name: str = Field(alias="Name")
+
+
 class UfcOfficialEvent(BaseModel):
     """Um evento e o seu card. ``FightCard`` é estrutural -- ausência falha alto."""
 
@@ -202,15 +227,23 @@ class UfcOfficialEvent(BaseModel):
     name: str = Field(alias="Name")
     # ``StartTime`` chega como string ISO com ``Z``: fora do modo estrito (ver ``_CONFIG``).
     start_time: datetime = Field(alias="StartTime", strict=False)
-    time_zone: str = Field(alias="TimeZone")
     status: str = Field(alias="Status")
+    # ``TimeZone`` pode vir NULO (medido: id 380, ``Gladiator FC - Day 2``, de 2004). Sem ele não
+    # há data de calendário confiável -- e a ausência NÃO degrada para UTC (ver ``local_date``).
+    time_zone: str | None = Field(default=None, alias="TimeZone")
+    organization: UfcOfficialOrganization = Field(alias="Organization")
     fight_card: list[UfcOfficialFight] = Field(alias="FightCard")
 
     @field_validator("time_zone")
     @classmethod
-    def _valida_formato_do_fuso(cls, value: str) -> str:
-        """Exige ``GMT±HH:MM``; formato desconhecido falha alto em vez de virar UTC."""
-        if _TIME_ZONE_PATTERN.match(value) is None:
+    def _valida_formato_do_fuso(cls, value: str | None) -> str | None:
+        """Exige ``GMT±HH:MM`` quando presente; formato desconhecido falha alto.
+
+        Ausência (``None``) é tolerada porque é real na fonte; **formato estranho não é**. Um
+        fuso que mudou de forma erraria a data em silêncio se fosse aceito, enquanto a ausência
+        é visível: ``local_date`` levanta e a varredura conta o evento.
+        """
+        if value is not None and _TIME_ZONE_PATTERN.match(value) is None:
             raise ValueError(
                 f"Fuso em formato inesperado na fonte oficial: {value!r}; esperado 'GMT±HH:MM'."
             )
@@ -224,7 +257,15 @@ class UfcOfficialEvent(BaseModel):
         em ``2015-03-01T00:00Z`` sob ``GMT-08:00`` e a nossa base o registra corretamente em
         2015-02-28. É a mesma divergência já medida na Cito (``startsAt`` UTC contra
         ``eventDate`` local, ADR 0005), e é sobre esta data que a janela da RF-03 é decidida.
+
+        Sem ``TimeZone`` **levanta**, nunca cai para a data UTC: a ausência do fuso é conhecida
+        na fonte (id 380) e um palpite de fuso erra o dia inteiro em card noturno das Américas.
         """
+        if self.time_zone is None:
+            raise UfcOfficialContractError(
+                f"O evento {self.event_id} da fonte oficial não tem 'TimeZone', então não tem "
+                "data de calendário confiável; assumir UTC deslocaria o evento em um dia."
+            )
         match = _TIME_ZONE_PATTERN.match(self.time_zone)
         if match is None:  # pragma: no cover - o validador de campo já rejeitou o formato
             raise ValueError(f"Fuso em formato inesperado: {self.time_zone!r}.")
@@ -263,6 +304,29 @@ class UfcOfficialFightEnvelope(BaseModel):
     model_config = _CONFIG
 
     fight: UfcOfficialFight = Field(alias="LiveFightDetail")
+
+
+# Chave de topo do endpoint de evento. Isolada porque a **ausência** é reconhecida por ela
+# antes de qualquer validação (ver ``is_absent_event_payload``).
+_EVENT_ENVELOPE_KEY = "LiveEventDetail"
+
+
+def is_absent_event_payload(payload: object) -> bool:
+    """``{"LiveEventDetail": {}}`` é como esta fonte diz "este ``eventId`` não existe".
+
+    A fonte **não** responde 404 para id inexistente: devolve **HTTP 200** com o envelope
+    vazio. Medido em 2026-09-01 nos ids 0, 1344, 1345, 1350, 1400, 2000, 5000 e 99999 (o id
+    1343 ainda era um evento real). Sem esta verificação, a varredura da Slice 02 trataria o
+    primeiro id acima da fronteira como quebra de contrato e abortaria a execução inteira.
+
+    A condição é **estrita**: só o objeto rigorosamente vazio conta como ausência. Um
+    ``LiveEventDetail`` parcialmente preenchido continua sendo quebra de contrato e falha alto
+    (RF-10) -- tratá-lo como ausência esconderia a quebra atrás de um número de cobertura.
+    """
+    if not isinstance(payload, dict):
+        return False
+    detail = payload.get(_EVENT_ENVELOPE_KEY)
+    return isinstance(detail, dict) and not detail
 
 
 def parse_event(payload: object, *, event_id: int) -> UfcOfficialEvent:
