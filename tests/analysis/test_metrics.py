@@ -16,6 +16,7 @@ import pytest
 from analysis.metrics import (
     PRE_M5_REFERENCE,
     Metrics,
+    accuracy_log_loss,
     baseline_metrics,
     compute_metrics,
     metrics_delta,
@@ -98,3 +99,34 @@ def test_pre_m5_reference_registra_o_bootstrap_pre_m5() -> None:
     assert PRE_M5_REFERENCE.log_loss == pytest.approx(0.6860892556792704)
     assert PRE_M5_REFERENCE.roc_auc == pytest.approx(0.6180559786979942)
     assert PRE_M5_REFERENCE.n_samples == 1634
+
+
+def test_accuracy_log_loss_funciona_com_pool_de_uma_unica_classe() -> None:
+    """Pool acumulado com uma só classe tem accuracy e log-loss definidos.
+
+    Nos primeiros passos do walk-forward o pool pode conter apenas vitórias do vermelho --
+    ``compute_metrics`` levantaria ali, porque o ROC-AUC não existe sem as duas classes.
+    ``accuracy_log_loss`` deixa o ROC-AUC de fora justamente por isso: a curva precisa de um
+    valor honesto desde o primeiro passo, não de uma exceção.
+    """
+    accuracy, loss = accuracy_log_loss([1, 1, 1], [1, 1, 0], [0.8, 0.7, 0.4])
+
+    assert accuracy == pytest.approx(2 / 3)
+    assert loss > 0.0
+
+
+def test_accuracy_log_loss_concorda_com_compute_metrics_quando_ha_as_duas_classes() -> None:
+    """Com as duas classes no pool, os valores são os mesmos de ``compute_metrics``.
+
+    A função não é uma métrica diferente -- é a mesma medição sem o ROC-AUC. Se divergisse,
+    a curva do walk-forward e o resumo final falariam de coisas distintas.
+    """
+    y_true = [1, 0, 1, 0, 1]
+    y_pred = [1, 0, 0, 0, 1]
+    y_prob = [0.9, 0.2, 0.45, 0.3, 0.75]
+
+    accuracy, loss = accuracy_log_loss(y_true, y_pred, y_prob)
+    completas = compute_metrics(y_true, y_pred, y_prob)
+
+    assert accuracy == pytest.approx(completas.accuracy)
+    assert loss == pytest.approx(completas.log_loss)

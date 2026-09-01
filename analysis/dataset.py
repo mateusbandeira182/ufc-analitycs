@@ -55,6 +55,23 @@ _CORNER_TO_LABEL: dict[str, int] = {"red": 1, "blue": 0}
 # conhecida da fonte. Ver ADR 0006.
 FIRST_RELIABLE_CORNER_DATE = date(2010, 1, 1)
 
+# As 8 médias de carreira do ``fighter_details.csv`` são um **snapshot de 2025**: cada uma
+# resume a carreira inteira do lutador, inclusive as lutas posteriores àquela que se quer
+# prever. Usá-las como preditor é vazamento de futuro puro -- foi por isso que o dataset
+# orientado a apostas foi preterido no ADR 0002, e a SPEC 007 (CA-11) transformou a
+# proscrição em guarda executável.
+#
+# A guarda mora aqui, no único chokepoint por onde ``run_training`` e o walk-forward passam,
+# e é um conjunto **explícito** de nomes (nu + as três variantes da convenção do M4), não um
+# stripping heurístico de sufixo: uma feature legítima que por acaso comece com o mesmo
+# prefixo não pode ser descartada por engano.
+PROSCRIBED_FEATURE_BASES: frozenset[str] = frozenset(
+    {"splm", "str_acc", "sapm", "str_def", "td_avg", "td_avg_acc", "td_def", "sub_avg"}
+)
+_PROSCRIBED_COLUMNS: frozenset[str] = frozenset(
+    f"{base}{suffix}" for base in PROSCRIBED_FEATURE_BASES for suffix in ("", "_a", "_b", "_diff")
+)
+
 
 @dataclass(frozen=True)
 class Dataset:
@@ -147,8 +164,13 @@ def _numeric_feature_columns(expanded: pd.DataFrame) -> list[str]:
     return numeric
 
 
-def _all_nan_columns(features: pd.DataFrame) -> list[str]:
-    """Nomes das colunas 100% ``NaN`` da frame dada, em ordem alfabética."""
+def all_nan_columns(features: pd.DataFrame) -> list[str]:
+    """Nomes das colunas 100% ``NaN`` da frame dada, em ordem alfabética.
+
+    Pública porque o loop walk-forward aplica a mesma regra **por passo**, sobre a fatia
+    anterior ao corte daquele evento -- o mesmo motivo que fez ``restrict_to_trainable_columns``
+    existir para o split, sem que haja um ``TemporalSplit`` no loop para reusá-la.
+    """
     return sorted(str(column) for column in features.columns if bool(features[column].isna().all()))
 
 
@@ -169,7 +191,7 @@ def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
     Esta guarda olha o dataset **inteiro** e por isso não cobre o caso em que a coluna tem
     dado apenas depois do corte temporal: para esse, ver ``restrict_to_trainable_columns``.
     """
-    all_nan = _all_nan_columns(features)
+    all_nan = all_nan_columns(features)
     if not all_nan:
         return features
     logger.warning(
@@ -178,6 +200,27 @@ def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
         ", ".join(all_nan),
     )
     return features.drop(columns=all_nan)
+
+
+def _drop_proscribed_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
+    """Descarta as colunas de média de carreira proscritas; loga quais saíram.
+
+    Guarda de vazamento, não degradação: se uma destas colunas chegou até aqui, alguém a
+    materializou em ``bout_features`` e o descarte precisa ser **visível** no log -- a
+    materialização é que está errada. Nenhum treino do projeto pode vê-las (SPEC 007 CA-11,
+    ADR 0002); o silêncio total é o cenário normal, porque hoje nada as produz.
+    """
+    presentes = sorted(str(column) for column in features.columns if column in _PROSCRIBED_COLUMNS)
+    if not presentes:
+        return features
+    logger.warning(
+        "Descartando %d coluna(s) de média de carreira proscrita(s) do conjunto de features: "
+        "%s. São snapshot de 2025 e embutem o futuro da carreira do lutador (ADR 0002, "
+        "SPEC 007 CA-11); nenhum treino pode vê-las.",
+        len(presentes),
+        ", ".join(presentes),
+    )
+    return features.drop(columns=presentes)
 
 
 def _drop_fabricated_corner_rows(raw: pd.DataFrame) -> pd.DataFrame:
@@ -218,6 +261,11 @@ def build_dataset(raw: pd.DataFrame) -> Dataset:
     Descarta linhas de alvo nulo (NC/empate), expande o JSONB ``features`` em colunas,
     seleciona apenas as numéricas (X) e mapeia o alvo para binário (y). O ``NaN`` das
     features é preservado (ausência explícita, sem imputação).
+
+    Duas guardas correm sobre X, nesta ordem: as médias de carreira proscritas (vazamento de
+    futuro, ADR 0002) e as colunas 100% ``NaN`` (backfill parcial). A ordem importa pouco no
+    resultado, mas a proscrição vem antes para que uma coluna proibida e vazia seja reportada
+    pelo motivo certo.
     """
     trustworthy = _drop_fabricated_corner_rows(raw)
     decided = trustworthy[trustworthy[COL_TARGET].notna()].reset_index(drop=True)
@@ -225,6 +273,7 @@ def build_dataset(raw: pd.DataFrame) -> Dataset:
     numeric_columns = _numeric_feature_columns(expanded)
     if numeric_columns:
         features = expanded[numeric_columns].apply(pd.to_numeric).astype("float64")
+        features = _drop_proscribed_feature_columns(features)
         features = _drop_all_nan_feature_columns(features)
     else:
         features = pd.DataFrame(index=decided.index)
@@ -308,7 +357,7 @@ def restrict_to_trainable_columns(split: TemporalSplit) -> TemporalSplit:
     ``NaN`` nativamente). O loop walk-forward aplica a mesma regra por passo, sobre a fatia
     anterior ao corte daquele evento.
     """
-    sem_sinal = _all_nan_columns(split.x_train)
+    sem_sinal = all_nan_columns(split.x_train)
     if not sem_sinal:
         return split
     logger.warning(

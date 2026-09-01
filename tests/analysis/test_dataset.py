@@ -499,3 +499,46 @@ def test_read_bout_features_alimenta_build_dataset(db_session: Session) -> None:
 
     assert dataset.feature_names == ["reach_cm_diff"]
     assert dataset.target.tolist() == [0]
+
+
+def test_build_dataset_nunca_admite_coluna_de_media_de_carreira_proscrita() -> None:
+    """CA-11 da SPEC 007: nenhuma das 8 médias de carreira do CSV entra como feature.
+
+    As colunas ``splm``/``str_acc``/``sapm``/``str_def``/``td_avg``/``td_avg_acc``/``td_def``/
+    ``sub_avg`` do ``fighter_details.csv`` são um **snapshot de 2025**: a média de carreira de
+    um lutador embute as lutas posteriores à que se quer prever (ADR 0002). Usá-las como
+    preditor é vazamento de futuro, em qualquer passo do treino ou do walk-forward.
+
+    A guarda vale para as três variantes da convenção do M4 (``_a``/``_b``/``_diff``) e para o
+    nome nu; a coluna legítima ao lado permanece, provando que o filtro é do conjunto explícito
+    e não um descarte heurístico por prefixo.
+    """
+    proscritas = {
+        "splm_a": 4.1,
+        "str_acc_b": 0.51,
+        "td_avg_diff": -1.2,
+        "sub_avg": 0.7,
+    }
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=1,
+                event_date=date(2020, 1, 1),
+                target="red",
+                features={"reach_cm_diff": 5.0, **proscritas},
+            ),
+            _raw_row(
+                bout_id=2,
+                event_date=date(2020, 2, 1),
+                target="blue",
+                features={"reach_cm_diff": -3.0, **proscritas},
+            ),
+        ]
+    )
+
+    dataset = build_dataset(raw)
+
+    for coluna in proscritas:
+        assert coluna not in dataset.feature_names
+        assert coluna not in dataset.features.columns
+    assert dataset.feature_names == ["reach_cm_diff"]
