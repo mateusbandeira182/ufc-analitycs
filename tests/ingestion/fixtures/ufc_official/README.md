@@ -27,6 +27,7 @@ verbatimidade** que falha se a captura passar a ter apenas as chaves que o DTO d
 | `event_live_1345.json` | `/api/v3/event/live/1345.json` | 200 | 22 | Prova que id inexistente é **200 com envelope vazio**, não 404 |
 | `event_live_1002.json` | `/api/v3/event/live/1002.json` | 200 | 70329 | Um dos dois `Bruno Silva` (Sprint 008-03) e o `MMAId` **ausente** |
 | `event_live_1073.json` | `/api/v3/event/live/1073.json` | 200 | 71487 | O **outro** `Bruno Silva` (Sprint 008-03) |
+| `event_live_566.json` | `/api/v3/event/live/566.json` | 200 | 27852 | Rótulo de `Stance` fora do nosso enum (Sprint 008-05) |
 | `fight_live_12204.json` | `/api/v3/fight/live/12204.json` | 200 | 26619 | Granular completo, 5 rounds (Sprint 008-07) |
 | `fight_live_13017.json` | `/api/v3/fight/live/13017.json` | 200 | 2621 | Granular **presente e vazio** em luta futura (Sprint 008-07) |
 
@@ -136,6 +137,37 @@ A `1002` acumula um segundo papel: KB Bhullar (`FighterId` 3567) vem com **`MMAI
 1 de 26 cantos do card --, e é sobre ela que o teste de "campo ausente permanece nulo" roda.
 O conjunto **derivado** que cobre os outros sete homônimos vive em `../ufc_official_homonimos/`.
 
+### `event_live_566.json` -- UFC 140: Jones vs Machida, o `Stance` fora do enum (Sprint 008-05)
+
+Capturada em 2026-09-01, com `curl -o`, quando a Slice 05 mediu os rótulos de `Stance` que a
+fonte publica e descobriu que são **cinco**, não três:
+
+| Rótulo | Cantos | Lutadores distintos |
+|---|---|---|
+| `Orthodox` | 17.008 | -- |
+| `Southpaw` | 4.371 | -- |
+| `Switch` | 1.242 | -- |
+| `Open Stance` | 30 | 7 |
+| `Sideways` | 6 | 3 |
+| `null` | 987 | -- |
+
+(Medido sobre 23.644 cantos dos 1.354 payloads do cache local, em 2026-09-01.)
+
+`Open Stance` e `Sideways` **não** têm representação em `apps.fighters.enums.Stance`, e
+`ingestion.ufc_official.anthropometry.parse_stance` levanta `UnknownStanceError` diante deles
+(RF-10). Sem esta captura, o caminho de falha alta ficaria exercitado só por um rótulo inventado
+-- e um rótulo inventado não prova que o caminho é necessário.
+
+- `EventId` 566, `StartTime` `2011-12-10T22:30Z`, `TimeZone` `GMT-05:00`, `Status` `Final`,
+  `Organization` 1 (UFC). **Dentro da janela** da RF-03.
+- Krzysztof Soszynski (`FighterId` 309, canto vermelho) vem com `Stance` `"Open Stance"`,
+  `Height` 73.0, `Reach` 77.5, `Weight` 205.0, `DOB` `1977-08-02`. O adversário, Igor Pokrajac
+  (`FighterId` 966), é `Orthodox` -- é o par que prova que o rótulo de um canto não contamina o
+  outro.
+
+A captura sustenta também a decisão de **alcance do estrago**: o rótulo não mapeado zera só a
+base do lutador, e os outros quatro atributos dele continuam sendo preenchidos.
+
 ### `fight_live_12204.json` e `fight_live_13017.json` -- o granular (Sprint 008-07)
 
 Capturadas em 2026-09-01T21:39:12Z e 2026-09-01T21:40:17Z, com `curl -o`, para o portão da
@@ -206,6 +238,7 @@ curl -sS -o "$DEST/event_live_1335.json" "$BASE/api/v3/event/live/1335.json"
 curl -sS -o "$DEST/event_live_1345.json" "$BASE/api/v3/event/live/1345.json"
 curl -sS -o "$DEST/event_live_1002.json" "$BASE/api/v3/event/live/1002.json"
 curl -sS -o "$DEST/event_live_1073.json" "$BASE/api/v3/event/live/1073.json"
+curl -sS -o "$DEST/event_live_566.json"  "$BASE/api/v3/event/live/566.json"
 curl -sS -o "$DEST/fight_live_12204.json" "$BASE/api/v3/fight/live/12204.json"
 curl -sS -o "$DEST/fight_live_13017.json" "$BASE/api/v3/fight/live/13017.json"
 ```

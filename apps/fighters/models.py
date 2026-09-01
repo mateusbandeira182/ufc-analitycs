@@ -48,6 +48,19 @@ class Fighter(Base):
     # não resolve nada -- índice sem consulta é custo de escrita sem contrapartida.
     ufc_fighter_id: Mapped[str | None] = mapped_column(String(32), index=True)
     ufc_mma_id: Mapped[str | None] = mapped_column(String(32))
+    # URLs de imagem do lutador vindas da Cito (M7 -- SPEC 008, Slice 06). Guardamos só a URL:
+    # baixar e hospedar arquivo está explicitamente fora do escopo (decisão do humano).
+    # 512 porque a URL real leva query string de cache (``?itok=...``) além do caminho.
+    #
+    # ``headshot_url`` é o retrato (estilo ``event_results_athlete_headshot``) e
+    # ``body_image_url`` é o corpo inteiro (``athlete_bio_full_body``). Nenhuma das duas é a
+    # arte do card (``event_fight_card_upper_body_of_standing_athlete``), que é por luta e é de
+    # onde o M6 extrai o canto REAL -- confundi-las corromperia o alvo do modelo em silêncio.
+    #
+    # Sem índice: não há consulta por URL, e índice sem consulta é custo de escrita sem
+    # contrapartida.
+    headshot_url: Mapped[str | None] = mapped_column(String(512))
+    body_image_url: Mapped[str | None] = mapped_column(String(512))
     # Cartel snapshot do dataset (recálculo a partir de bouts é do M2).
     wins: Mapped[int]
     losses: Mapped[int]

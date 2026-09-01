@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 
 from apps.bouts.enums import Corner
-from ingestion.cito.dto import CitoEventStats, CitoStatsEnvelope
+from ingestion.cito.dto import CitoEventStats, CitoFighterProfile, CitoStatsEnvelope
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _REAL_SLUG = "ufc-fight-night-august-22-2026"
@@ -136,3 +136,51 @@ def test_nenhum_split_do_payload_real_degrada_para_none() -> None:
         assert line.total_strikes != (None, None)
         assert line.takedowns != (None, None)
         assert line.control_time_seconds is not None
+
+
+# --------------------------------------------------------------------------- #
+# M7 (SPEC 008, Slice 06) -- as duas URLs de imagem do lutador no payload real
+# --------------------------------------------------------------------------- #
+
+
+def test_profile_real_expoe_headshot_e_body_image() -> None:
+    """CA-02: o ``profile`` embutido no canto traz as duas variantes de imagem do atleta.
+
+    Cada uma com o seu estilo: ``event_results_athlete_headshot`` (retrato) e
+    ``athlete_bio_full_body`` (corpo inteiro). Sem os campos no DTO, o ``extra="ignore"`` os
+    descartaria em silêncio -- o modo de falha que a lição da fixture única registra.
+    """
+    canto = _real_stats().bouts[0].fighters[0]
+
+    assert canto.profile is not None
+    assert canto.profile.headshot_url is not None
+    assert "event_results_athlete_headshot" in canto.profile.headshot_url
+    assert canto.profile.body_image_url is not None
+    assert "athlete_bio_full_body" in canto.profile.body_image_url
+
+
+def test_todos_os_cantos_do_payload_real_trazem_as_duas_urls() -> None:
+    """CA-02: nos 26 cantos do payload real, nenhuma das duas URLs degrada para ``None``.
+
+    É a guarda contra a regressão silenciosa: um alias que deixa de casar não quebra a
+    validação, só apaga o dado. Asserir a ausência de nulos é o que torna a falha visível.
+    """
+    perfis = [canto.profile for bout in _real_stats().bouts for canto in bout.fighters]
+
+    assert len(perfis) == 26
+    for perfil in perfis:
+        assert perfil is not None
+        assert perfil.headshot_url is not None
+        assert perfil.body_image_url is not None
+
+
+def test_profile_sem_as_chaves_de_imagem_permanece_nulo() -> None:
+    """CA-02: ``profile`` sem as chaves de imagem mantém ``None`` -- nunca string vazia.
+
+    Ausência explícita: o perfil do card de um evento antigo pode não trazer imagem nenhuma,
+    e degradar para ``""`` faria o backfill gravar uma URL vazia com cara de dado.
+    """
+    perfil = CitoFighterProfile.model_validate({"slug": "sem-imagem", "name": "Sem Imagem"})
+
+    assert perfil.headshot_url is None
+    assert perfil.body_image_url is None

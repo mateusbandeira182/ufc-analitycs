@@ -42,9 +42,17 @@ def _evento(nome: str, quando: date) -> Event:
     return Event(name=nome, date=quando, location=None, source="kaggle")
 
 
-def _item(event_id: str, nome: str, quando: date) -> OfficialCatalogItem:
-    """Item de catálogo já projetado do payload oficial (a projeção é da descoberta)."""
-    return OfficialCatalogItem(event_id=event_id, name=nome, local_date=quando)
+def _item(
+    event_id: str, nome: str, quando: date, roster: frozenset[str] = frozenset()
+) -> OfficialCatalogItem:
+    """Item de catálogo já projetado do payload oficial (a projeção é da descoberta).
+
+    O default vazio de ``roster`` é uma conveniência **do teste**: na produção o campo é
+    obrigatório, porque um default silenciaria a ausência do roster num call site esquecido.
+    """
+    return OfficialCatalogItem(
+        event_id=event_id, name=nome, local_date=quando, fighter_names=roster
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -62,7 +70,9 @@ def test_candidato_unico_com_nome_concordante_casa() -> None:
     evento = _evento("UFC 282: Blachowicz vs. Ankalaev", date(2022, 12, 10))
     catalogo = [_item("1124", "UFC 282: Blachowicz vs Ankalaev", date(2022, 12, 10))]
 
-    casamento = resolve_official_event_match(evento, official_event_candidates(evento, catalogo))
+    casamento = resolve_official_event_match(
+        evento, official_event_candidates(evento, catalogo), roster=frozenset()
+    )
 
     assert casamento is not None
     assert casamento.item.event_id == "1124"
@@ -79,7 +89,9 @@ def test_janela_de_data_admite_um_dia_de_diferenca() -> None:
     evento = _evento("UFC 184: Rousey vs Zingano", date(2015, 2, 28))
     catalogo = [_item("700", "UFC 184: Rousey vs Zingano", date(2015, 3, 1))]
 
-    casamento = resolve_official_event_match(evento, official_event_candidates(evento, catalogo))
+    casamento = resolve_official_event_match(
+        evento, official_event_candidates(evento, catalogo), roster=frozenset()
+    )
 
     assert casamento is not None
     assert casamento.item.event_id == "700"
@@ -93,7 +105,7 @@ def test_candidato_fora_da_janela_de_data_nao_e_candidato() -> None:
     candidatos = official_event_candidates(evento, catalogo)
 
     assert candidatos == ()
-    assert resolve_official_event_match(evento, candidatos) is None
+    assert resolve_official_event_match(evento, candidatos, roster=frozenset()) is None
 
 
 def test_candidato_unico_sem_concordancia_de_nome_nao_casa() -> None:
@@ -110,7 +122,7 @@ def test_candidato_unico_sem_concordancia_de_nome_nao_casa() -> None:
     candidatos = official_event_candidates(evento, catalogo)
 
     assert len(candidatos) == 1  # há candidato: o evento vai para revisão, não para não-casado
-    assert resolve_official_event_match(evento, candidatos) is None
+    assert resolve_official_event_match(evento, candidatos, roster=frozenset()) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +143,9 @@ def test_dois_candidatos_concordando_por_nome_falha_alto() -> None:
     ]
 
     with pytest.raises(AmbiguousOfficialEventMatchError) as excinfo:
-        resolve_official_event_match(evento, official_event_candidates(evento, catalogo))
+        resolve_official_event_match(
+            evento, official_event_candidates(evento, catalogo), roster=frozenset()
+        )
 
     # A mensagem nomeia o evento e os ids candidatos -- ambiguidade sem nome é caça ao tesouro.
     assert "900" in str(excinfo.value)
@@ -150,7 +164,155 @@ def test_dois_candidatos_sem_concordancia_de_nome_nao_casam_nem_levantam() -> No
         _item("901", "UFC Fight Night: Terceiro vs Terceiro", date(2024, 5, 11)),
     ]
 
-    assert resolve_official_event_match(evento, official_event_candidates(evento, catalogo)) is None
+    candidatos = official_event_candidates(evento, catalogo)
+
+    assert resolve_official_event_match(evento, candidatos, roster=frozenset()) is None
+
+
+# --------------------------------------------------------------------------- #
+# Sprint 008-08 -- tier 2: corroboração por roster
+# --------------------------------------------------------------------------- #
+
+# Roster do card real de ``Noche UFC`` (2025-09-13), já normalizado dos dois lados.
+_NOCHE = frozenset(
+    {
+        "diego lopes",
+        "jean silva",
+        "kelvin gastelum",
+        "dustin stoltzfus",
+        "david martinez",
+        "rob font",
+    }
+)
+
+
+def test_tier_de_nome_tem_precedencia_sobre_o_roster() -> None:
+    """CA-01: evento que casa por nome continua casando por nome, com o **mesmo** valor.
+
+    O cenário é adversarial de propósito: na mesma janela de data existe um candidato cujo
+    roster coincide inteiro com o do evento. Ainda assim o resultado é o casamento por nome --
+    o tier 2 só é consultado quando o tier 1 **não** resolve.
+
+    É a trava que impede um evento já mapeado de mudar de ``ufc_event_id`` quando o tier novo
+    entra: um remapeamento silencioso corrigiria o canto com o card do evento errado.
+    """
+    evento = _evento("Noche UFC", date(2025, 9, 13))
+    catalogo = [
+        _item("1300", "Noche UFC", date(2025, 9, 13), frozenset()),
+        _item("1301", "Noche UFC: Lopes vs. Silva", date(2025, 9, 13), _NOCHE),
+    ]
+
+    casamento = resolve_official_event_match(
+        evento, official_event_candidates(evento, catalogo), roster=_NOCHE
+    )
+
+    assert casamento is not None
+    assert casamento.item.event_id == "1300"
+    assert casamento.matched_by == "name"
+
+
+def test_roster_corrobora_o_candidato_unico_quando_a_grafia_diverge() -> None:
+    """CA-04: com o nome divergindo, quatro nomes em comum bastam para casar por roster.
+
+    Caso real da janela: a nossa base tem ``Noche UFC`` (nome criado pelo ``gap_sync`` do M6,
+    quando o evento ainda estava agendado) e a fonte tem ``Noche UFC: Lopes vs. Silva``. A
+    corroboração é o **roster** -- quem lutou naquele card é fato dos dois lados --, nunca a
+    forma do rótulo.
+    """
+    evento = _evento("Noche UFC", date(2025, 9, 13))
+    catalogo = [_item("1301", "Noche UFC: Lopes vs. Silva", date(2025, 9, 13), _NOCHE)]
+
+    casamento = resolve_official_event_match(
+        evento, official_event_candidates(evento, catalogo), roster=_NOCHE
+    )
+
+    assert casamento is not None
+    assert casamento.item.event_id == "1301"
+    assert casamento.matched_by == "roster"
+
+
+def test_cobertura_parcial_de_roster_nao_casa() -> None:
+    """CA-03: três nomes em comum ficam abaixo do limiar -- o evento permanece em revisão.
+
+    O limiar é uma **barreira**, não uma sugestão: abaixo dele não há corroboração, e id errado
+    é pior que id ausente porque o consumidor a jusante escreve canto.
+    """
+    evento = _evento("Noche UFC", date(2025, 9, 13))
+    parcial = frozenset({"diego lopes", "jean silva", "kelvin gastelum"})
+    catalogo = [_item("1301", "Noche UFC: Lopes vs. Silva", date(2025, 9, 13), parcial)]
+
+    candidatos = official_event_candidates(evento, catalogo)
+
+    assert len(candidatos) == 1  # havia candidato: o diagnóstico é revisão, não ausência
+    assert resolve_official_event_match(evento, candidatos, roster=_NOCHE) is None
+
+
+def test_dois_candidatos_acima_do_limiar_falham_alto_sem_eleger_o_maior() -> None:
+    """CA-02: dois acima do limiar é ambiguidade, **não** competição por tamanho.
+
+    Um candidato tem 5 nomes em comum e o outro 9. A regra não é "vence o de maior interseção":
+    escolher o maior seria decidir no escuro com aparência de critério, e a diferença entre 9 e
+    5 pode ser só um card mais longo. Falha alto, quem chama conta, nada é escrito.
+    """
+    roster = frozenset(f"lutador {indice}" for indice in range(12))
+    evento = _evento("UFC Fight Night: Ninguem vs Ninguem", date(2024, 5, 10))
+    catalogo = [
+        _item("900", "Card A", date(2024, 5, 10), frozenset(f"lutador {i}" for i in range(5))),
+        _item("901", "Card B", date(2024, 5, 11), frozenset(f"lutador {i}" for i in range(9))),
+    ]
+
+    with pytest.raises(AmbiguousOfficialEventMatchError) as excinfo:
+        resolve_official_event_match(
+            evento, official_event_candidates(evento, catalogo), roster=roster
+        )
+
+    # A mensagem nomeia os dois ids -- e o de 9 nomes em comum não é eleito vencedor.
+    assert "900" in str(excinfo.value)
+    assert "901" in str(excinfo.value)
+
+
+def test_roster_vazio_nunca_casa_por_intersecao_vazia() -> None:
+    """CA-03: evento persistido sem luta não casa com candidato nenhum.
+
+    Interseção vazia não é corroboração; sem essa guarda, um evento sem card persistido casaria
+    com qualquer candidato cujo roster também estivesse vazio.
+    """
+    evento = _evento("Noche UFC", date(2025, 9, 13))
+    catalogo = [_item("1301", "Noche UFC: Lopes vs. Silva", date(2025, 9, 13), frozenset())]
+
+    candidatos = official_event_candidates(evento, catalogo)
+
+    assert resolve_official_event_match(evento, candidatos, roster=frozenset()) is None
+
+
+def test_prefixo_de_nome_com_roster_disjunto_nao_casa() -> None:
+    """CA-03: a corroboração é o roster, **nunca** a forma do nome.
+
+    O padrão medido dos eventos não mapeados é prefixo estrito (``Noche UFC`` contra
+    ``Noche UFC: Lopes vs. Silva``), e é justamente por isso que duas linhas de ``startswith``
+    parecem resolver. Não resolvem: ``UFC 32`` é prefixo de ``UFC 320``, ``UFC 31`` de
+    ``UFC 310``, e o custo do engano não é um evento sem id -- é canto gravado com o card do
+    evento errado pela Sprint 008-04.
+    """
+    evento = _evento("UFC 32", date(2025, 10, 4))
+    catalogo = [
+        _item(
+            "1310",
+            "UFC 320: Ankalaev vs. Pereira 2",
+            date(2025, 10, 4),
+            frozenset({"magomed ankalaev", "alex pereira", "merab dvalishvili", "cory sandhagen"}),
+        )
+    ]
+
+    candidatos = official_event_candidates(evento, catalogo)
+
+    assert len(candidatos) == 1
+    assert (
+        resolve_official_event_match(
+            evento, candidatos, roster=frozenset({"ricco rodriguez", "andrei arlovski"})
+        )
+        is None
+    )
 
 
 # --------------------------------------------------------------------------- #

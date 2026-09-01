@@ -1,6 +1,6 @@
 """Testes da varredura, do cache e do mapeamento de ``events.ufc_event_id`` (Slice 02).
 
-Três blocos:
+Quatro blocos:
 
 1. **Varredura com cache e fronteira** (CA-04) -- um cliente sobre ``httpx.MockTransport`` que
    conta requisições por id prova que a segunda execução não re-baixa o que já está em disco e
@@ -8,7 +8,10 @@ Três blocos:
 2. **Mapeamento e relatório** (CA-02, CA-03, CA-05) -- contra o Postgres de teste, com sessão
    transacional: as quatro categorias contadas, os ambíguos nomeados e sem escrita, e a
    reexecução que não muda nada.
-3. **Fronteira da janela ponta a ponta** (CA-06) -- evento anterior a ``OFFICIAL_WINDOW_START``
+3. **Tier de roster** (Sprint 008-08) -- a projeção do card oficial, o roster persistido em uma
+   consulta só, o evento de grafia divergente recuperado e nomeado no relatório, e a **trava do
+   CA-05**: nenhum evento previamente mapeado muda de ``ufc_event_id``.
+4. **Fronteira da janela ponta a ponta** (CA-06) -- evento anterior a ``OFFICIAL_WINDOW_START``
    com candidato de nome idêntico permanece nulo.
 
 Nenhum teste toca a rede: o transporte é mockado e o modo offline lê o diretório de fixtures
@@ -23,7 +26,7 @@ import logging
 import shutil
 from collections import Counter
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -31,7 +34,11 @@ import pytest
 from sqlalchemy import event as sa_event
 from sqlalchemy.orm import Session
 
+from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
+from apps.fighters.models import Fighter
+from ingestion.normalize import normalize_name
 from ingestion.ufc_official import OFFICIAL_WINDOW_START
 from ingestion.ufc_official.cache import OfficialEventCache
 from ingestion.ufc_official.client import UfcOfficialClient
@@ -41,6 +48,7 @@ from ingestion.ufc_official.discovery import (
     DiscoveryReport,
     discover_official_catalog,
     map_official_event_ids,
+    persisted_rosters,
     run_discovery,
 )
 from ingestion.ufc_official.dto import parse_event
@@ -201,6 +209,33 @@ def test_projecao_usa_a_data_local_e_nao_a_utc(tmp_path: Path) -> None:
     assert item.local_date == date(2015, 2, 28)
 
 
+def test_projecao_do_card_popula_o_roster_normalizado(tmp_path: Path) -> None:
+    """CA-04 (Sprint 008-08): o item de catálogo carrega os nomes **normalizados** do card.
+
+    A chave tem de ser exatamente a de ``fighters.name_normalized`` -- ``normalize_name`` sobre
+    ``"nome sobrenome"``, sem apelido. Uma normalização divergente entre os dois lados faria a
+    interseção do tier 2 dar sempre zero e o casamento por roster nunca acontecer **em
+    silêncio**: o sintoma seria "o tier não recuperou nada", indistinguível de "não havia o que
+    recuperar". Por isso a asserção é sobre a forma normalizada, nunca só sobre o tamanho.
+
+    O roster custa zero requisição: sai do ``FightCard`` do payload cru que o cache já guarda.
+    """
+    shutil.copy(_FIXTURES / "event_live_1124.json", tmp_path / "event_live_1124.json")
+
+    scan = discover_official_catalog(None, OfficialEventCache(tmp_path))
+
+    item = next(item for item in scan.items if item.event_id == "1124")
+    # O recorte da fixture guarda as duas primeiras lutas do card -- quatro cantos.
+    assert item.fighter_names == {
+        normalize_name("Jan Blachowicz"),
+        normalize_name("Magomed Ankalaev"),
+        normalize_name("Paddy Pimblett"),
+        normalize_name("Jared Gordon"),
+    }
+    assert "jan blachowicz" in item.fighter_names
+    assert "Jan Blachowicz" not in item.fighter_names
+
+
 def test_promocoes_fora_do_escopo_nao_entram_no_catalogo(tmp_path: Path) -> None:
     """Só ``OrganizationId == 1`` (UFC) vira item de catálogo; o resto é contado e descartado.
 
@@ -293,8 +328,54 @@ def _semeia(session: Session, nome: str, quando: date) -> Event:
     return evento
 
 
-def _item(event_id: str, nome: str, quando: date) -> OfficialCatalogItem:
-    return OfficialCatalogItem(event_id=event_id, name=nome, local_date=quando)
+def _item(
+    event_id: str, nome: str, quando: date, roster: frozenset[str] = frozenset()
+) -> OfficialCatalogItem:
+    """Item de catálogo já projetado. O default vazio é **do teste**, nunca da produção."""
+    return OfficialCatalogItem(
+        event_id=event_id, name=nome, local_date=quando, fighter_names=roster
+    )
+
+
+def _semeia_luta(session: Session, evento: Event, vermelho: str, azul: str) -> Bout:
+    """Uma luta persistida do evento, com os dois cantos e os lutadores criados na hora."""
+    lutadores = []
+    for nome in (vermelho, azul):
+        lutador = Fighter(
+            name=nome,
+            name_normalized=normalize_name(nome),
+            nickname=None,
+            date_of_birth=None,
+            height_cm=None,
+            reach_cm=None,
+            stance=None,
+            weight_kg=None,
+            wins=0,
+            losses=0,
+            draws=0,
+            source="kaggle",
+        )
+        session.add(lutador)
+        lutadores.append(lutador)
+    session.flush()
+
+    luta = Bout(
+        event_id=evento.id,
+        winner_id=None,
+        method=BoutMethod.DECISION,
+        round=None,
+        ending_time_seconds=None,
+        weight_class=None,
+        source="kaggle",
+    )
+    session.add(luta)
+    session.flush()
+    for canto, lutador in zip((Corner.RED, Corner.BLUE), lutadores, strict=True):
+        session.add(
+            BoutFighter(bout_id=luta.id, fighter_id=lutador.id, corner=canto, source="kaggle")
+        )
+    session.flush()
+    return luta
 
 
 def _scan(*itens: OfficialCatalogItem) -> CatalogScan:
@@ -321,9 +402,9 @@ def _cenario(db_session: Session) -> dict[str, Event]:
     }
 
 
-def _catalogo() -> CatalogScan:
-    """Catálogo que exercita casamento, revisão, ambiguidade e a fronteira da janela."""
-    return _scan(
+def _itens_do_cenario() -> tuple[OfficialCatalogItem, ...]:
+    """Itens que exercitam casamento por nome, revisão, ambiguidade e a fronteira da janela."""
+    return (
         _item("1124", "UFC 282: Blachowicz vs Ankalaev", date(2022, 12, 10)),
         _item("281", "UFC Live: Vera vs Jones", date(2010, 8, 1)),
         _item("900", "UFC Fight Night: Ninguem vs Ninguem", date(2024, 5, 10)),
@@ -331,6 +412,152 @@ def _catalogo() -> CatalogScan:
         # Candidato perfeito para o evento de 2010-03-20, que está FORA da janela.
         _item("599", "UFC 111: St-Pierre vs Hardy", date(2010, 3, 20)),
     )
+
+
+def _catalogo() -> CatalogScan:
+    """Catálogo do tier de nome, sem roster nenhum (o estado anterior à Sprint 008-08)."""
+    return _scan(*_itens_do_cenario())
+
+
+# Rosters normalizados dos dois eventos de grafia divergente (Sprint 008-08). Quatro nomes cada,
+# que é exatamente o limiar: dois cantos por luta, duas lutas por evento.
+_ROSTER_NOCHE = frozenset({"diego lopes", "jean silva", "kelvin gastelum", "rob font"})
+_ROSTER_322 = frozenset(
+    {"islam makhachev", "jack della maddalena", "sean brady", "michael morales"}
+)
+
+
+def _itens_de_roster() -> tuple[OfficialCatalogItem, ...]:
+    """Itens cujo **nome** diverge da base e que só o roster pode corroborar.
+
+    ``1310`` e ``1311`` compartilham o mesmo roster de propósito: é o par que torna ``UFC 322``
+    ambíguo pelo tier 2, para o cenário cobrir também esse caminho.
+    """
+    return (
+        _item("1301", "Noche UFC: Lopes vs. Silva", date(2025, 9, 13), _ROSTER_NOCHE),
+        _item("1310", "UFC 322: Makhachev vs. Della Maddalena", date(2025, 11, 15), _ROSTER_322),
+        _item("1311", "UFC 322 Prelims", date(2025, 11, 16), _ROSTER_322),
+    )
+
+
+def _cenario_com_roster(db_session: Session) -> dict[str, Event]:
+    """O cenário base mais os dois eventos de grafia divergente, com card **persistido**.
+
+    Reproduz o caso real da janela: o ``gap_sync`` do M6 criou ``Noche UFC`` e ``UFC 322`` pelo
+    catálogo da Cito quando ainda estavam **agendados**, antes de o nome final existir -- e é
+    por isso que a grafia diverge da fonte oficial hoje.
+    """
+    eventos = _cenario(db_session)
+
+    noche = _semeia(db_session, "Noche UFC", date(2025, 9, 13))
+    _semeia_luta(db_session, noche, "Diego Lopes", "Jean Silva")
+    _semeia_luta(db_session, noche, "Kelvin Gastelum", "Rob Font")
+
+    ufc_322 = _semeia(db_session, "UFC 322", date(2025, 11, 15))
+    _semeia_luta(db_session, ufc_322, "Islam Makhachev", "Jack Della Maddalena")
+    _semeia_luta(db_session, ufc_322, "Sean Brady", "Michael Morales")
+
+    eventos["recuperavel_por_roster"] = noche
+    eventos["ambiguo_por_roster"] = ufc_322
+    return eventos
+
+
+def _catalogo_com_roster() -> CatalogScan:
+    """O catálogo completo: os itens do tier de nome mais os que só o roster corrobora."""
+    return _scan(*_itens_do_cenario(), *_itens_de_roster())
+
+
+def _sem_roster(scan: CatalogScan) -> CatalogScan:
+    """O **mesmo** catálogo com todos os rosters esvaziados -- o tier 1 sozinho.
+
+    É o comparador do CA-05: o tier 2 não tem como agir sobre itens sem roster, então o
+    mapeamento que sai daqui é exatamente o que a Sprint 008-02 produzia.
+    """
+    return _scan(
+        *(_item(item.event_id, item.name, item.local_date, frozenset()) for item in scan.items)
+    )
+
+
+@pytest.fixture
+def selects_de_roster(db_session: Session) -> Iterator[list[str]]:
+    """Espia o SQL emitido na sessão e coleta os ``SELECT`` que tocam ``bout_fighters``."""
+    coletados: list[str] = []
+
+    def _antes_do_cursor(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        normalizado = statement.lstrip().upper()
+        if normalizado.startswith("SELECT") and "BOUT_FIGHTERS" in normalizado:
+            coletados.append(statement)
+
+    bind = db_session.get_bind()
+    sa_event.listen(bind, "before_cursor_execute", _antes_do_cursor)
+    try:
+        yield coletados
+    finally:
+        sa_event.remove(bind, "before_cursor_execute", _antes_do_cursor)
+
+
+def test_roster_persistido_devolve_os_nomes_normalizados_por_evento(db_session: Session) -> None:
+    """CA-04 (Sprint 008-08): ``event_id -> {nome normalizado}`` do card **já persistido**.
+
+    É o outro lado da interseção do tier 2. A chave é ``fighters.name_normalized``, a mesma que
+    a projeção do card oficial usa -- é isso que torna os dois conjuntos comparáveis.
+    """
+    noche = _semeia(db_session, "Noche UFC", date(2025, 9, 13))
+    ufc_322 = _semeia(db_session, "UFC 322", date(2025, 11, 15))
+    _semeia_luta(db_session, noche, "Diego Lopes", "Jean Silva")
+    _semeia_luta(db_session, ufc_322, "Islam Makhachev", "Jack Della Maddalena")
+
+    rosters = persisted_rosters(db_session, [noche, ufc_322])
+
+    assert rosters == {
+        noche.id: frozenset({"diego lopes", "jean silva"}),
+        ufc_322.id: frozenset({"islam makhachev", "jack della maddalena"}),
+    }
+
+
+def test_roster_de_evento_sem_luta_persistida_fica_fora_do_mapa(db_session: Session) -> None:
+    """CA-04: evento sem canto persistido **não aparece** no mapa -- quem chama usa ``get``.
+
+    A semântica é fixada aqui de propósito: chave ausente, nunca conjunto vazio gravado. Assim
+    o mapa reflete só o que o banco de fato tem, e o default do consumidor fica num lugar só.
+    """
+    com_luta = _semeia(db_session, "Noche UFC", date(2025, 9, 13))
+    sem_luta = _semeia(db_session, "UFC 322", date(2025, 11, 15))
+    _semeia_luta(db_session, com_luta, "Diego Lopes", "Jean Silva")
+
+    rosters = persisted_rosters(db_session, [com_luta, sem_luta])
+
+    assert sem_luta.id not in rosters
+    assert rosters[com_luta.id] == frozenset({"diego lopes", "jean silva"})
+
+
+def test_roster_persistido_custa_uma_consulta_para_qualquer_numero_de_eventos(
+    db_session: Session, selects_de_roster: list[str]
+) -> None:
+    """CA-04: **uma** consulta a ``bout_fighters``, independentemente do número de eventos.
+
+    Uma consulta por evento seria N+1 sobre os ~641 eventos da janela a cada execução -- o
+    motivo de os rosters serem carregados de uma vez, fora do laço do mapeamento.
+    """
+    eventos = [
+        _semeia(db_session, f"UFC {numero}", date(2024, 1, 1) + timedelta(days=numero))
+        for numero in (1, 2, 3)
+    ]
+    for evento in eventos:
+        _semeia_luta(db_session, evento, f"Alfa {evento.name}", f"Beta {evento.name}")
+    selects_de_roster.clear()
+
+    rosters = persisted_rosters(db_session, eventos)
+
+    assert len(rosters) == 3
+    assert len(selects_de_roster) == 1
 
 
 def test_evento_da_janela_com_nome_concordante_ganha_o_identificador(
@@ -398,6 +625,132 @@ def test_base_sem_evento_nao_divide_por_zero(db_session: Session) -> None:
 
     assert relatorio.total == 0
     assert relatorio.coverage == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Sprint 008-08 -- tier de roster no mapeamento, no relatório e a trava do CA-05
+# --------------------------------------------------------------------------- #
+
+
+def test_evento_de_grafia_divergente_e_recuperado_pelo_roster_e_nomeado(
+    db_session: Session,
+) -> None:
+    """CA-04 (008-08): o evento sai de ``needs_review`` e o relatório o **nomeia** com o tier.
+
+    ``matched_by_roster`` é lista nomeada enquanto ``matched_by_name`` é contador, e a
+    assimetria é deliberada: o tier de nome é o de alta confiança e são centenas de eventos --
+    nomeá-los todos viraria ruído. O tier de roster é corroboração indireta e chega a um punhado
+    de eventos; cada um precisa ser inspecionável pelo nome.
+    """
+    eventos = _cenario_com_roster(db_session)
+
+    relatorio = map_official_event_ids(db_session, _catalogo_com_roster())
+
+    assert eventos["recuperavel_por_roster"].ufc_event_id == "1301"
+    assert relatorio.matched_by_roster == ((eventos["recuperavel_por_roster"].id, "Noche UFC"),)
+    # O tier de nome não muda de valor no mesmo cenário -- ele não é afetado pelo tier novo.
+    assert relatorio.matched_by_name == 1
+    assert relatorio.matched == 2
+    ids_em_revisao = {event_id for event_id, _ in relatorio.needs_review}
+    assert eventos["recuperavel_por_roster"].id not in ids_em_revisao
+
+
+def test_evento_ambiguo_por_roster_nao_recebe_escrita_e_o_laco_segue(
+    db_session: Session,
+) -> None:
+    """CA-02 (008-08): dois candidatos acima do limiar -> contado em ``ambiguous``, sem escrita.
+
+    E o laço **segue**: o evento recuperável logo adiante continua sendo mapeado. Ambiguidade
+    aborta a decisão daquele evento, nunca a execução.
+    """
+    eventos = _cenario_com_roster(db_session)
+
+    relatorio = map_official_event_ids(db_session, _catalogo_com_roster())
+
+    assert eventos["ambiguo_por_roster"].ufc_event_id is None
+    assert (eventos["ambiguo_por_roster"].id, "UFC 322") in relatorio.ambiguous
+    assert eventos["recuperavel_por_roster"].ufc_event_id == "1301"
+
+
+def test_relatorio_loga_o_tier_de_cada_evento_recuperado_por_roster(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CA-04 (008-08): o log nomeia o evento recuperado e diz por qual tier ele casou."""
+    _cenario_com_roster(db_session)
+
+    with caplog.at_level(logging.INFO, logger="ingestion.ufc_official.discovery"):
+        map_official_event_ids(db_session, _catalogo_com_roster())
+
+    assert "Noche UFC" in caplog.text
+    assert "roster" in caplog.text.lower()
+
+
+def test_nenhum_evento_previamente_mapeado_muda_de_identificador(db_session: Session) -> None:
+    """CA-05: a trava da sprint -- só ``None -> id`` é mudança permitida, no conjunto INTEIRO.
+
+    Captura o mapeamento de **todos** os eventos rodando com o catálogo sem roster (que é
+    exatamente o tier 1 sozinho, o comportamento da Sprint 008-02), roda de novo com o roster e
+    compara chave a chave. Nenhuma chave que já tinha valor pode mudar.
+
+    A asserção é sobre o dicionário inteiro, não sobre o evento de interesse: um remapeamento
+    silencioso faria a Sprint 008-04 corrigir canto com o card do evento errado, gravando dado
+    falso na coluna que é o **alvo** do modelo.
+    """
+    eventos = _cenario_com_roster(db_session)
+
+    map_official_event_ids(db_session, _sem_roster(_catalogo_com_roster()))
+    antes = {evento.id: evento.ufc_event_id for evento in eventos.values()}
+
+    map_official_event_ids(db_session, _catalogo_com_roster())
+    depois = {evento.id: evento.ufc_event_id for evento in eventos.values()}
+
+    assert antes.keys() == depois.keys()
+    for event_id, identificador in antes.items():
+        if identificador is not None:
+            assert depois[event_id] == identificador
+    mudancas = {
+        event_id: (identificador, depois[event_id])
+        for event_id, identificador in antes.items()
+        if depois[event_id] != identificador
+    }
+    assert mudancas == {eventos["recuperavel_por_roster"].id: (None, "1301")}
+
+
+def test_rerun_com_o_tier_de_roster_nao_altera_contagem_nem_emite_update(
+    db_session: Session, updates_emitidos: list[str]
+) -> None:
+    """CA-06 (008-08): a idempotência vale para o tier novo tal como para o tier de nome."""
+    _cenario_com_roster(db_session)
+    primeiro = map_official_event_ids(db_session, _catalogo_com_roster())
+    db_session.flush()
+    updates_emitidos.clear()
+
+    segundo = map_official_event_ids(db_session, _catalogo_com_roster())
+    db_session.flush()
+
+    assert segundo == primeiro
+    assert updates_emitidos == []
+
+
+def test_evento_anterior_a_janela_com_roster_coincidente_permanece_nulo(
+    db_session: Session,
+) -> None:
+    """CA-07 (008-08): a janela é guarda, não efeito colateral da cobertura do tier novo.
+
+    O evento é de 2010-03-20, a véspera de ``OFFICIAL_WINDOW_START``, e o roster coincide
+    perfeitamente com o do candidato. Ainda assim nada é escrito: ``select_window_events`` nem
+    o entrega ao casamento.
+    """
+    anterior = _semeia(db_session, "UFC 111", date(2010, 3, 20))
+    _semeia_luta(db_session, anterior, "Georges St-Pierre", "Dan Hardy")
+    _semeia_luta(db_session, anterior, "Frank Mir", "Shane Carwin")
+    roster = frozenset({"georges st-pierre", "dan hardy", "frank mir", "shane carwin"})
+    scan = _scan(_item("599", "UFC 111: St-Pierre vs. Hardy", date(2010, 3, 20), roster))
+
+    relatorio = map_official_event_ids(db_session, scan)
+
+    assert anterior.ufc_event_id is None
+    assert relatorio.total == 0
 
 
 # --------------------------------------------------------------------------- #

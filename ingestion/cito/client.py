@@ -4,7 +4,8 @@ Busca um evento (``CitoEvent``), o perfil de um lutador (``CitoFighter``), as st
 granulares por canto de uma luta (``CitoBoutStats``), as stats do endpoint real de evento
 -- totais + round-a-round -- (``CitoEventStats`` via ``fetch_event_stats``) e o **catálogo
 paginado** de eventos (``list[CitoCatalogItem]`` via ``fetch_event_catalog``, a fonte do
-identificador de um evento na Cito). Dois caminhos:
+identificador de um evento na Cito -- e, com ``include_bouts``, do card de 25 eventos por
+chamada). Dois caminhos:
 
 - **Modo fixture** (``fixture_dir`` definido): lê um JSON local (``event_{id}.json`` /
   ``fighter_{slug}.json`` / ``bout_stats_{bout_id}.json`` / ``events_catalog_page_{n}.json``)
@@ -211,6 +212,7 @@ class CitoClient:
         date_from: date | None = None,
         date_to: date | None = None,
         cache: CatalogPageCache | None = None,
+        include_bouts: bool = False,
     ) -> list[CitoCatalogItem]:
         """Percorre TODAS as páginas do catálogo e devolve os itens na ordem em que vieram.
 
@@ -227,11 +229,19 @@ class CitoClient:
         A paginação encerra em ``meta.hasNextPage`` falso; um ``meta.nextPage`` que não avança
         também encerra -- guarda contra laço infinito (e queima de quota) diante de um ``meta``
         inconsistente da API.
+
+        Com ``include_bouts`` (M7, Slice 06), cada item vem com o **card embutido**
+        (``CitoCatalogItem.bouts``) -- é o que permite colher as imagens de 25 eventos por
+        chamada, contra uma chamada por lutador no endpoint de perfil. A Cito **clampa**
+        ``limit`` em 25 nesse recorte (medido em 2026-09-01), o que a paginação absorve por
+        seguir ``meta.hasNextPage``.
         """
         items: list[CitoCatalogItem] = []
         page = 1
         while True:
-            envelope = self._fetch_catalog_page(page, limit, date_from, date_to, cache)
+            envelope = self._fetch_catalog_page(
+                page, limit, date_from, date_to, cache, include_bouts
+            )
             items.extend(envelope.data)
             meta = envelope.meta
             if not meta.has_next_page or meta.next_page is None or meta.next_page <= page:
@@ -240,17 +250,27 @@ class CitoClient:
 
     @staticmethod
     def _catalog_cache_key(
-        page: int, limit: int, date_from: date | None, date_to: date | None
+        page: int,
+        limit: int,
+        date_from: date | None,
+        date_to: date | None,
+        include_bouts: bool = False,
     ) -> str:
         """Chave de cache de uma página, embutindo o recorte que a produziu.
 
         Páginas de recortes diferentes não são intercambiáveis (a página 2 de ``limit=50`` não
         tem os mesmos eventos que a de ``limit=200``), então ``limit``/``from``/``to`` entram na
         chave -- reusar o arquivo entre recortes serviria dado errado.
+
+        O sufixo ``_ib`` entra **só** quando ``include_bouts`` é verdadeiro, e as duas pontas
+        importam: sem ele, uma página cacheada sem card seria servida a um pedido com card e o
+        consumidor reportaria cobertura zero sem erro nenhum; incondicional, as páginas de
+        catálogo já pagas em ``.cache/cito/`` virariam misses e custariam chamadas novas.
         """
         inicio = date_from.isoformat() if date_from is not None else "all"
         fim = date_to.isoformat() if date_to is not None else "all"
-        return f"catalog_l{limit}_f{inicio}_t{fim}_p{page}"
+        sufixo = "_ib" if include_bouts else ""
+        return f"catalog_l{limit}_f{inicio}_t{fim}{sufixo}_p{page}"
 
     def _fetch_catalog_page(
         self,
@@ -259,6 +279,7 @@ class CitoClient:
         date_from: date | None,
         date_to: date | None,
         cache: CatalogPageCache | None = None,
+        include_bouts: bool = False,
     ) -> CitoCatalogEnvelope:
         """Uma página do catálogo; cobra o orçamento no miss e valida o envelope.
 
@@ -267,19 +288,25 @@ class CitoClient:
         (payload inválido, nunca silencioso), como em ``fetch_event_stats``.
         """
         if cache is not None:
-            key = self._catalog_cache_key(page, limit, date_from, date_to)
+            key = self._catalog_cache_key(page, limit, date_from, date_to, include_bouts)
             payload, _hit = cache.get_or_fetch(
-                key, lambda: self._fetch_catalog_payload(page, limit, date_from, date_to)
+                key,
+                lambda: self._fetch_catalog_payload(page, limit, date_from, date_to, include_bouts),
             )
         else:
-            payload = self._fetch_catalog_payload(page, limit, date_from, date_to)
+            payload = self._fetch_catalog_payload(page, limit, date_from, date_to, include_bouts)
         envelope = CitoCatalogEnvelope.model_validate(payload)
         if not envelope.success:
             raise CitoError(f"Cito retornou success=false para o catálogo (página {page}).")
         return envelope
 
     def _fetch_catalog_payload(
-        self, page: int, limit: int, date_from: date | None, date_to: date | None
+        self,
+        page: int,
+        limit: int,
+        date_from: date | None,
+        date_to: date | None,
+        include_bouts: bool = False,
     ) -> object:
         """Busca o payload **cru** de uma página; cobra uma unidade do orçamento antes do fetch."""
         self._charge()
@@ -290,6 +317,8 @@ class CitoClient:
             params["from"] = date_from.isoformat()
         if date_to is not None:
             params["to"] = date_to.isoformat()
+        if include_bouts:
+            params["includeBouts"] = "true"
         return self._get_json(_EVENTS_PATH, f"o catálogo de eventos (página {page})", params=params)
 
     def _read_fixture(self, filename: str) -> object:

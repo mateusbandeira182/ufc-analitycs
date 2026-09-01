@@ -88,6 +88,7 @@ from ingestion.incremental import (
     upsert_event,
 )
 from ingestion.normalize import normalize_event_name, normalize_name
+from ingestion.ufc_official import OFFICIAL_WINDOW_START
 from mma_analytics.db import SessionLocal
 
 # Linhas de stat compartilham a forma (``CitoRoundStatLine`` estende ``CitoBoutStatLine``): o
@@ -394,6 +395,39 @@ class CornerOrigin(StrEnum):
     ART = "art"
     ASSIGNED_NO_ART = "assigned_no_art"
     ASSIGNED_CONFLICTING_ART = "assigned_conflicting_art"
+
+
+# Os dois valores de ``CornerOrigin`` que significam "o canto foi atribuído por NÓS", e não
+# lido da arte oficial. Dentro da janela da fonte oficial isso é dado provisório: o fallback
+# determinístico acerta 39,29% (medido na SPEC 008), pior que cara-ou-coroa.
+_ORIGENS_ATRIBUIDAS = (CornerOrigin.ASSIGNED_NO_ART, CornerOrigin.ASSIGNED_CONFLICTING_ART)
+
+
+def warn_assigned_corners_in_official_window(
+    title: str, local_date: date, corner_origins: Mapping[CornerOrigin, int]
+) -> None:
+    """Avisa alto quando um evento da janela oficial fecha com canto atribuído por nós.
+
+    A Sprint 008-04 aposentou a **precedência** do fallback, não o código dele: ``assign_corners``,
+    ``art_side`` e ``assign_deterministic_corners`` continuam aqui, porque a arte é o plano B
+    documentado (99,58%) e a fonte oficial pode sair do ar sem aviso. Mas o canto atribuído
+    dentro da janela deixa de poder ser a **última palavra** em silêncio: quem ingere um evento
+    novo precisa saber, no fim da execução, que ficou dado provisório para corrigir.
+
+    Antes de ``OFFICIAL_WINDOW_START`` o aviso não é emitido -- ali a fonte oficial traz o mesmo
+    canto fabricado das outras duas (ADR 0006) e mandar rodá-la seria conselho errado.
+    """
+    atribuidos = sum(corner_origins.get(origem, 0) for origem in _ORIGENS_ATRIBUIDAS)
+    if atribuidos == 0 or local_date < OFFICIAL_WINDOW_START:
+        return
+    logger.warning(
+        "Evento %r (%s) ficou com %d canto(s) atribuído(s) por nós dentro da janela oficial. O "
+        "fallback determinístico acerta 39,29%% -- rode "
+        "'python -m ingestion.ufc_official.corner --aplicar' para adotar o canto autoritativo.",
+        title,
+        local_date,
+        atribuidos,
+    )
 
 
 def art_side(image_url: str | None) -> str | None:
@@ -1059,6 +1093,7 @@ def run_gap_sync(
         rounds_inserted += result.rounds_inserted
         unmatched += result.unmatched_stat_lines
         corner_origins.update(result.corner_origins)
+        warn_assigned_corners_in_official_window(item.title, item.local_date, result.corner_origins)
         profile_calls += result.profile_calls_used
         logger.info(
             "Evento %r (slug %r, %s) ingerido: %d lutas, %d cantos, %d rounds, %d lutadores "

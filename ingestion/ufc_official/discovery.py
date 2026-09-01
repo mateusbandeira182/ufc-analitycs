@@ -47,6 +47,16 @@ o RF-09 e desperdiça ~1.300 requisições por um punhado de eventos novos. (c) 
 catálogo inteiro no banco: criaria tabela para dado que só serve de índice intermediário, sem
 consumidor a jusante.
 
+Dois tiers de casamento (Sprint 008-08)
+=======================================
+O tier de **nome normalizado** resolve a grande maioria dos eventos. Para os que sobram por
+divergência de grafia -- herança do ``gap_sync`` do M6, que criou o evento pelo catálogo da
+Cito quando ele ainda estava agendado, antes de o nome final existir --, entra o tier de
+**roster**: a interseção entre os lutadores do card já persistido (``persisted_rosters``) e os
+do card oficial (``OfficialCatalogItem.fighter_names``). Ele só é consultado quando o tier de
+nome não resolve, e o relatório nomeia um a um os eventos que ele recuperou, por ser o tier de
+confiança menor. O roster **não custa requisição**: sai do payload que o cache já guarda.
+
 Ausência na fonte é 200 com envelope vazio
 ==========================================
 A fonte **não** responde 404 para id inexistente: devolve **HTTP 200** com
@@ -69,7 +79,10 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
+from apps.fighters.models import Fighter
+from ingestion.normalize import normalize_name
 from ingestion.ufc_official import OFFICIAL_WINDOW_START
 from ingestion.ufc_official.cache import OfficialEventCache
 from ingestion.ufc_official.client import UfcOfficialClient
@@ -150,6 +163,10 @@ class DiscoveryReport:
     fetched: int
     cache_hits: int
     matched_by_name: int
+    # Nomeado, não só contado (Sprint 008-08): o tier de nome é o de alta confiança e são
+    # centenas de eventos -- nomeá-los todos viraria ruído. O de roster é corroboração indireta
+    # e chega a um punhado de eventos; cada um precisa ser inspecionável pelo nome.
+    matched_by_roster: tuple[tuple[int, str], ...]
     needs_review: tuple[tuple[int, str], ...]
     unmatched: tuple[tuple[int, str], ...]
     ambiguous: tuple[tuple[int, str], ...]
@@ -157,8 +174,8 @@ class DiscoveryReport:
 
     @property
     def matched(self) -> int:
-        """Eventos que ganharam identificador."""
-        return self.matched_by_name
+        """Eventos que ganharam identificador, somando os dois tiers."""
+        return self.matched_by_name + len(self.matched_by_roster)
 
     @property
     def total(self) -> int:
@@ -182,6 +199,31 @@ def select_window_events(session: Session) -> list[Event]:
         select(Event).where(Event.date >= OFFICIAL_WINDOW_START).order_by(Event.date, Event.id)
     )
     return list(session.scalars(statement))
+
+
+def persisted_rosters(session: Session, events: Sequence[Event]) -> dict[int, frozenset[str]]:
+    """``event_id -> {nome normalizado dos lutadores do card persistido}``, em UMA consulta.
+
+    É o lado **nosso** da interseção do tier de roster; o lado da fonte é ``fighter_names`` do
+    item de catálogo, projetado com a mesma ``normalize_name``. Evento sem canto persistido não
+    aparece no mapa (chave ausente, nunca conjunto vazio gravado): o default fica num lugar só,
+    em quem consome.
+
+    Escopada pelos eventos que ``select_window_events`` já selecionou -- a janela da RF-03 tem
+    guarda **única**, e repeti-la aqui esconderia qual das duas de fato protege. Uma consulta
+    por evento seria N+1 sobre os ~641 eventos da janela a cada execução.
+    """
+    rows = session.execute(
+        select(Bout.event_id, Fighter.name_normalized)
+        .join(BoutFighter, BoutFighter.bout_id == Bout.id)
+        .join(Fighter, Fighter.id == BoutFighter.fighter_id)
+        .where(Bout.event_id.in_([event.id for event in events]))
+    ).all()
+
+    by_event: dict[int, set[str]] = {}
+    for event_id, name_normalized in rows:
+        by_event.setdefault(event_id, set()).add(name_normalized)
+    return {event_id: frozenset(names) for event_id, names in by_event.items()}
 
 
 def _fetch_payload(client: UfcOfficialClient | None, event_id: int) -> object | None:
@@ -262,6 +304,11 @@ def discover_official_catalog(
                 event_id=str(event.event_id),
                 name=event.name,
                 local_date=event.local_date,
+                fighter_names=frozenset(
+                    normalize_name(f"{fighter.name.first_name} {fighter.name.last_name}")
+                    for fight in event.fight_card
+                    for fighter in fight.fighters
+                ),
             )
         )
 
@@ -305,7 +352,8 @@ def _log_coverage(report: DiscoveryReport) -> None:
     logger.info(
         "Resumo do mapeamento da fonte oficial: itens de catálogo (UFC)=%d; descartados de "
         "outras promoções=%d; eventos da janela=%d; cobertura %d/%d (%.1f%%); casados por "
-        "nome=%d; em revisão=%d; não casados=%d; ambíguos=%d; ids baixados=%d; cache hits=%d",
+        "nome=%d; casados por roster=%d; em revisão=%d; não casados=%d; ambíguos=%d; "
+        "ids baixados=%d; cache hits=%d",
         report.catalog_items,
         report.discarded_other_promotions,
         report.total,
@@ -313,12 +361,21 @@ def _log_coverage(report: DiscoveryReport) -> None:
         report.total,
         report.coverage * 100,
         report.matched_by_name,
+        len(report.matched_by_roster),
         len(report.needs_review),
         len(report.unmatched),
         len(report.ambiguous),
         report.fetched,
         report.cache_hits,
     )
+    for event_id, name in report.matched_by_roster:
+        logger.info(
+            "Evento %r (id %d) casado pelo tier de ROSTER: o nome diverge da fonte, e a "
+            "corroboração veio da interseção dos lutadores do card -- evidência independente, "
+            "nunca a forma do rótulo. Vale inspeção, por ser o tier de confiança menor.",
+            name,
+            event_id,
+        )
     for event_id, name in report.ambiguous:
         logger.warning(
             "Evento %r (id %d) pulado por AMBIGUIDADE: mais de um evento da fonte concorda por "
@@ -360,16 +417,22 @@ def map_official_event_ids(session: Session, scan: CatalogScan) -> DiscoveryRepo
         de ``ingestion.cito.sync_catalog``). O commit é do chamador.
     """
     catalog = scan.items
+    events = select_window_events(session)
+    # Uma consulta, FORA do laço: por evento seriam ~641 por execução (N+1).
+    rosters = persisted_rosters(session, events)
 
     matched_by_name = 0
+    matched_by_roster: list[tuple[int, str]] = []
     needs_review: list[tuple[int, str]] = []
     unmatched: list[tuple[int, str]] = []
     ambiguous: list[tuple[int, str]] = []
 
-    for event in select_window_events(session):
+    for event in events:
         candidates = official_event_candidates(event, catalog)
         try:
-            match = resolve_official_event_match(event, candidates)
+            match = resolve_official_event_match(
+                event, candidates, roster=rosters.get(event.id, frozenset())
+            )
         except AmbiguousOfficialEventMatchError:
             ambiguous.append((event.id, event.name))
             continue
@@ -378,7 +441,10 @@ def map_official_event_ids(session: Session, scan: CatalogScan) -> DiscoveryRepo
             destino.append((event.id, event.name))
             continue
         _assign_if_changed(event, match.item)
-        matched_by_name += 1
+        if match.matched_by == "name":
+            matched_by_name += 1
+        else:
+            matched_by_roster.append((event.id, event.name))
 
     report = DiscoveryReport(
         catalog_items=len(catalog),
@@ -386,6 +452,7 @@ def map_official_event_ids(session: Session, scan: CatalogScan) -> DiscoveryRepo
         fetched=scan.fetched,
         cache_hits=scan.cache_hits,
         matched_by_name=matched_by_name,
+        matched_by_roster=tuple(matched_by_roster),
         needs_review=tuple(needs_review),
         unmatched=tuple(unmatched),
         ambiguous=tuple(ambiguous),

@@ -113,11 +113,18 @@ def _profile_to_storable(profile: CitoFighterProfile) -> dict[str, object]:
     Cada componente do cartel mantém a própria ausência (``None`` permanece ``None``): é o
     mapeamento para ``fighters`` que degrada para zero, e antecipar isso aqui gravaria um
     cartel 0/0/0 indistinguível de um cartel realmente zerado.
+
+    As duas URLs de imagem (M7, Slice 06) entram pelo mesmo motivo da ``image_url`` da arte: é
+    delas que o backfill de imagem preenche ``fighters.headshot_url``/``body_image_url``.
+    Esquecê-las faria uma execução retomada do cache gravar ``None`` achando que é ausência
+    real -- falha silenciosa, porque campo opcional nulo não se distingue de campo ausente.
     """
     return {
         "slug": profile.slug,
         "name": profile.name,
         "nickname": profile.nickname,
+        "headshot_url": profile.headshot_url,
+        "body_image_url": profile.body_image_url,
         "record": {
             "wins": profile.record.wins,
             "losses": profile.record.losses,
