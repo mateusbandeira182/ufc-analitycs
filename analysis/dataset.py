@@ -4,7 +4,8 @@ Núcleo de dados da fase 2 (modelo preditivo). Lê o cache reconstrutível ``bou
 (M4) juntando a data do evento (``bout_features`` -> ``bouts`` -> ``events``), expande o
 payload JSONB ``features`` em colunas **numéricas** (X) e mapeia o alvo
 ``target_winner_corner`` para binário (vermelho=1, azul=0), descartando as lutas de alvo
-nulo (NC/empate).
+nulo (NC/empate) e as anteriores a ``FIRST_RELIABLE_CORNER_DATE``, cujo canto o Kaggle
+fabricou (alvo falso; ver ADR 0006).
 
 Invariante load-bearing (mesma disciplina anti-leakage do M4): o split é **temporal**,
 nunca aleatório. Ordena por data de evento e reserva as lutas mais recentes como holdout
@@ -41,6 +42,18 @@ COL_FEATURES = "features"
 
 # Alvo binário: canto vermelho = 1 (o baseline ingênuo prevê sempre 1), azul = 0.
 _CORNER_TO_LABEL: dict[str, int] = {"red": 1, "blue": 0}
+
+# Data do primeiro evento cujo canto o Kaggle registra de verdade. Antes dela o canto do
+# dataset é **fabricado**: a taxa de vitória do vermelho é exatamente 100,0% em TODOS os anos
+# de 1994 a 2009 (1.249 lutas decididas), e passa a 61,2% em 2010, 59,7% em 2011 e a oscilar
+# entre 53,8% e 63,2% até 2025. O corte é seco, não gradiente -- naquelas linhas a coluna de
+# canto foi preenchida com a ordem do resultado, porque o ufcstats da época não registrava
+# canto. Confirmação independente: a convenção "o primeiro nome do título do evento é o canto
+# vermelho" acerta 99,4% (478/481) de 2010 em diante e só 64,3% (18/28) antes disso.
+#
+# É constante fixa, não parâmetro: não é ajuste de tuning que se calibra, é limitação
+# conhecida da fonte. Ver ADR 0006.
+FIRST_RELIABLE_CORNER_DATE = date(2010, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -167,6 +180,38 @@ def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
     return features.drop(columns=all_nan)
 
 
+def _drop_fabricated_corner_rows(raw: pd.DataFrame) -> pd.DataFrame:
+    """Descarta as lutas anteriores a ``FIRST_RELIABLE_CORNER_DATE``; loga quantas saíram.
+
+    O alvo do modelo é o **canto** (``target_winner_corner``), e nas lutas do Kaggle anteriores
+    a 2010 o canto é o vencedor renomeado (ver o comentário da constante). Treinar com rótulo
+    que sabemos ser falso é o mesmo defeito que barrou o ``cardSection`` default e o ``corner``
+    da Cito -- a fonte ser a nossa não abre exceção.
+
+    O filtro vive aqui, na camada de dataset, e não na materialização de features: as
+    **features** daquelas lutas estão corretas (idade, alcance, cartel prévio não dependem de
+    quem é o vermelho) e seguem alimentando as janelas móveis do histórico dos atletas. O que
+    não presta é o alvo, e o alvo só existe aqui.
+
+    O descarte nunca é silencioso: quem roda o treino vê no log quantas lutas saíram e por quê,
+    a mesma disciplina de ``_drop_all_nan_feature_columns``.
+    """
+    fabricated = raw[COL_EVENT_DATE] < FIRST_RELIABLE_CORNER_DATE
+    n_fabricated = int(fabricated.sum())
+    if n_fabricated == 0:
+        return raw
+    logger.warning(
+        "Descartando %d luta(s) anteriores a %s do dataset preditivo: nesses eventos o canto "
+        "do Kaggle é fabricado (o vermelho venceu 100%% das lutas em todos os anos de 1994 a "
+        "2009), logo o alvo é o vencedor renomeado, não o canto. Restam %d luta(s). "
+        "Ver ADR 0006.",
+        n_fabricated,
+        FIRST_RELIABLE_CORNER_DATE.isoformat(),
+        len(raw) - n_fabricated,
+    )
+    return raw[~fabricated]
+
+
 def build_dataset(raw: pd.DataFrame) -> Dataset:
     """Constrói o dataset preditivo a partir da frame crua de ``read_bout_features``.
 
@@ -174,7 +219,8 @@ def build_dataset(raw: pd.DataFrame) -> Dataset:
     seleciona apenas as numéricas (X) e mapeia o alvo para binário (y). O ``NaN`` das
     features é preservado (ausência explícita, sem imputação).
     """
-    decided = raw[raw[COL_TARGET].notna()].reset_index(drop=True)
+    trustworthy = _drop_fabricated_corner_rows(raw)
+    decided = trustworthy[trustworthy[COL_TARGET].notna()].reset_index(drop=True)
     expanded = pd.DataFrame(list(decided[COL_FEATURES]), index=decided.index)
     numeric_columns = _numeric_feature_columns(expanded)
     if numeric_columns:

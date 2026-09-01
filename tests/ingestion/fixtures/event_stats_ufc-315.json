@@ -1,0 +1,66 @@
+{
+  "success": true,
+  "data": {
+    "event": {
+      "id": "40629f5d-7d53-439d-93a4-c85b115a9fe4",
+      "slug": "ufc-315",
+      "title": "UFC 315",
+      "status": "completed",
+      "eventDate": "2026-05-10",
+      "startsAt": "2026-05-11T02:00:00+00:00"
+    },
+    "bouts": [
+      {
+        "id": "11963",
+        "cardSection": "Main Card",
+        "cardSectionOrder": 1,
+        "boutOrder": 1001,
+        "weightClass": "Welterweight Title",
+        "titleBout": true,
+        "status": "completed",
+        "isCancelled": false,
+        "winnerFighterSlug": "jack-della-maddalena",
+        "resultRound": 5,
+        "resultTime": "5:00",
+        "method": "Decision - Unanimous",
+        "methodDetails": null,
+        "fighters": [
+          {
+            "fighterSlug": "belal-muhammad",
+            "fighterName": "Belal Muhammad",
+            "corner": "blue",
+            "outcome": "loss",
+            "profile": {
+              "slug": "belal-muhammad",
+              "name": "Belal Muhammad",
+              "nickname": "Remember The Name",
+              "record": {
+                "wins": 24,
+                "losses": 6,
+                "draws": 0
+              }
+            }
+          },
+          {
+            "fighterSlug": "jack-della-maddalena",
+            "fighterName": "Jack Della Maddalena",
+            "corner": "red",
+            "outcome": "win",
+            "profile": {
+              "slug": "jack-della-maddalena",
+              "name": "Jack Della Maddalena",
+              "nickname": null,
+              "record": {
+                "wins": 18,
+                "losses": 4,
+                "draws": 0
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "boutStats": [],
+    "roundStats": []
+  }
+}

@@ -57,16 +57,21 @@ def _seed_fighter(session: Session, name: str) -> int:
     return fighter.id
 
 
+# Identificador REAL da luta principal de UFC 319 na Cito (recorte verbatim da captura).
+_BOUT_ID = "12cedec11b37ddc0"
+
+
 def _seed_ufc319(
     session: Session,
     *,
-    red_name: str = "Dricus du Plessis",
-    blue_name: str = "Khamzat Chimaev",
+    red_name: str = "Khamzat Chimaev",
+    blue_name: str = "Dricus Du Plessis",
 ) -> tuple[Event, dict[str, int]]:
     """Semeia o evento UFC 319 com uma luta e os dois cantos; devolve o evento e os bf ids.
 
-    Os nomes normalizam para as chaves que os ``fighter_slug`` da fixture (``dricus-du-plessis``
-    / ``khamzat-chimaev``) produzem, reproduzindo o matching persisted-driven por nome.
+    Os nomes normalizam para as chaves que os ``fighter_slug`` da fixture (``khamzat-chimaev``
+    / ``dricus-du-plessis``) produzem, reproduzindo o matching persisted-driven por nome. Os
+    cantos são os da captura real: Chimaev, o vencedor, é o vermelho.
     """
     event = Event(
         name="UFC 319: Du Plessis vs. Chimaev",
@@ -161,8 +166,8 @@ def test_resolve_bout_fighter_ids_casa_por_nome_normalizado(db_session: Session)
     resolved = resolve_bout_fighter_ids(db_session, event, stats)
 
     assert resolved == {
-        ("ufc-319-bout-1", "dricus-du-plessis"): bf_ids["red"],
-        ("ufc-319-bout-1", "khamzat-chimaev"): bf_ids["blue"],
+        (_BOUT_ID, "khamzat-chimaev"): bf_ids["red"],
+        (_BOUT_ID, "dricus-du-plessis"): bf_ids["blue"],
     }
 
 
@@ -189,7 +194,7 @@ def test_resolve_bout_fighter_ids_escopa_ao_evento(db_session: Session) -> None:
     outro = Event(name="UFC 300: Outro", date=date(2024, 4, 13), location=None, source="kaggle")
     db_session.add(outro)
     db_session.flush()
-    intruso_id = _seed_fighter(db_session, "Dricus du Plessis")
+    intruso_id = _seed_fighter(db_session, "Khamzat Chimaev")
     outro_bout = Bout(
         event_id=outro.id,
         winner_id=None,
@@ -213,7 +218,7 @@ def test_resolve_bout_fighter_ids_escopa_ao_evento(db_session: Session) -> None:
 
     resolved = resolve_bout_fighter_ids(db_session, event, stats)
 
-    assert resolved[("ufc-319-bout-1", "dricus-du-plessis")] == bf_ids["red"]
+    assert resolved[(_BOUT_ID, "khamzat-chimaev")] == bf_ids["red"]
     assert intruso_id not in resolved.values()
 
 
@@ -221,13 +226,13 @@ def test_resolve_bout_fighter_ids_slug_sem_correspondencia_nao_levanta(
     db_session: Session,
 ) -> None:
     """CA-02: ``fighter_slug`` sem ``bout_fighter`` casado é reportado (não entra), sem levantar."""
-    # O canto azul persistido tem outro nome -> o slug 'khamzat-chimaev' fica sem correspondência.
+    # O canto azul persistido tem outro nome -> 'dricus-du-plessis' fica sem correspondência.
     event, bf_ids = _seed_ufc319(db_session, blue_name="Outro Lutador")
     stats = _fixture_event_stats()
 
     resolved = resolve_bout_fighter_ids(db_session, event, stats)
 
-    assert resolved == {("ufc-319-bout-1", "dricus-du-plessis"): bf_ids["red"]}
+    assert resolved == {(_BOUT_ID, "khamzat-chimaev"): bf_ids["red"]}
 
 
 def test_resolve_bout_fighter_ids_nome_ambiguo_levanta(db_session: Session) -> None:
@@ -235,8 +240,8 @@ def test_resolve_bout_fighter_ids_nome_ambiguo_levanta(db_session: Session) -> N
 
     Nunca duplica, mescla ou escolhe arbitrariamente (invariante do CLAUDE.md, espelha o M1).
     """
-    # Ambos os cantos normalizam para 'dricus du plessis' -> o slug vermelho fica ambíguo.
-    event, _ = _seed_ufc319(db_session, blue_name="Dricus Du Plessis")
+    # Ambos os cantos normalizam para 'khamzat chimaev' -> o slug vermelho fica ambíguo.
+    event, _ = _seed_ufc319(db_session, blue_name="Khamzat Chimaev")
     stats = _fixture_event_stats()
 
     with pytest.raises(AmbiguousBoutFighterMatchError):

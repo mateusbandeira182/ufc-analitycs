@@ -28,6 +28,8 @@ from ingestion.cito.dto import CitoBoutStats, CitoEvent, CitoEventStats
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _EVENT_ID = "ufc-319"
+# Identificadores REAIS das duas lutas de UFC 319 na Cito (captura de 2026-09-01).
+_MAIN_BOUT_ID = "12cedec11b37ddc0"
 
 
 def _fixture_client() -> CitoClient:
@@ -40,7 +42,7 @@ def test_fetch_event_no_modo_fixture_devolve_dto_tipado() -> None:
 
     assert isinstance(event, CitoEvent)
     assert event.event_id == _EVENT_ID
-    assert event.name == "UFC 319: Du Plessis vs. Chimaev"
+    assert event.name == "UFC 319"
     assert event.date == date(2025, 8, 16)
 
 
@@ -50,7 +52,7 @@ def test_fetch_event_modela_lutas_com_os_dois_cantos() -> None:
 
     assert len(event.bouts) == 2
     main = event.bouts[0]
-    assert main.bout_id == "ufc-319-bout-1"
+    assert main.bout_id == _MAIN_BOUT_ID
     slugs = {corner.slug for corner in main.corners}
     assert slugs == {"dricus-du-plessis", "khamzat-chimaev"}
 
@@ -104,7 +106,7 @@ def test_fetch_event_via_http_parseia_payload_com_auth_e_params() -> None:
 
     assert isinstance(event, CitoEvent)
     assert event.event_id == _EVENT_ID
-    assert event.name == "UFC 319: Du Plessis vs. Chimaev"
+    assert event.name == "UFC 319"
     assert len(event.bouts) == 2
 
     request = captured["request"]
@@ -120,7 +122,7 @@ def test_fetch_bout_stats_via_http_parseia_payload_com_auth_e_path() -> None:
     das stats granulares por canto e confirma o header ``x-api-key`` e o path
     correto (``GET /api/v1/ufc/bouts/<bout_id>/stats``). Não toca a rede real nem consome quota.
     """
-    bout_id = "ufc-319-bout-1"
+    bout_id = _MAIN_BOUT_ID
     payload = json.loads((_FIXTURES / f"bout_stats_{bout_id}.json").read_text(encoding="utf-8"))
     captured: dict[str, httpx.Request] = {}
 
@@ -139,8 +141,9 @@ def test_fetch_bout_stats_via_http_parseia_payload_com_auth_e_path() -> None:
     assert isinstance(stats, CitoBoutStats)
     assert stats.bout_id == bout_id
     by_corner = {line.corner: line for line in stats.fighters}
-    assert by_corner[Corner.RED].fighter_slug == "dricus-du-plessis"
-    assert by_corner[Corner.BLUE].control_time_seconds == 1300
+    # Cantos como a Cito os devolveu para UFC 319: Chimaev, o vencedor, é o vermelho.
+    assert by_corner[Corner.RED].fighter_slug == "khamzat-chimaev"
+    assert by_corner[Corner.BLUE].control_time_seconds == 53
 
     request = captured["request"]
     assert request.url.path == f"/api/v1/ufc/bouts/{bout_id}/stats"
@@ -150,22 +153,22 @@ def test_fetch_bout_stats_via_http_parseia_payload_com_auth_e_path() -> None:
 def test_fetch_event_stats_no_modo_fixture_devolve_dto_tipado() -> None:
     """CA-04: em modo fixture, ``fetch_event_stats`` devolve ``CitoEventStats`` desembrulhado.
 
-    Os splits chegam parseados (``"41 of 120"`` -> ``(41, 120)``) e o ``controlTime`` em segundos,
+    Os splits chegam parseados (``"13 of 29"`` -> ``(13, 29)``) e o ``controlTime`` em segundos,
     tanto no total (``bout_stats``) quanto no round-a-round (``round_stats``).
     """
     stats = _fixture_client().fetch_event_stats(_EVENT_ID)
 
     assert isinstance(stats, CitoEventStats)
     assert len(stats.bout_stats) == 2
-    assert len(stats.round_stats) == 2
+    assert len(stats.round_stats) == 10  # 5 rounds x 2 cantos
 
     by_slug = {line.fighter_slug: line for line in stats.bout_stats}
-    assert by_slug["dricus-du-plessis"].sig_strikes == (41, 120)
+    assert by_slug["dricus-du-plessis"].sig_strikes == (13, 29)
     assert by_slug["khamzat-chimaev"].control_time_seconds == 1300
 
     first_round = stats.round_stats[0]
     assert first_round.round == 1
-    assert first_round.control_time_seconds == 10
+    assert first_round.control_time_seconds == 0
 
 
 def test_fetch_event_stats_cobra_orcamento_antes_de_servir() -> None:

@@ -77,9 +77,9 @@ def test_cache_hit_preserva_total_strikes(tmp_path: Path) -> None:
 
     stats, _hit = cache.get_or_fetch("ufc-319", _fixture_event_stats)
 
-    red = next(line for line in stats.bout_stats if line.fighter_slug == "dricus-du-plessis")
-    assert red.sig_strikes == (41, 120)
-    assert red.total_strikes == (55, 140)
+    red = next(line for line in stats.bout_stats if line.fighter_slug == "khamzat-chimaev")
+    assert red.sig_strikes == (37, 47)
+    assert red.total_strikes == (529, 567)
 
 
 def test_cache_hit_preserva_o_profile_embutido_no_canto(tmp_path: Path) -> None:

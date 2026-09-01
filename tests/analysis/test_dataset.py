@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from analysis.dataset import (
+    FIRST_RELIABLE_CORNER_DATE,
     build_dataset,
     read_bout_features,
     restrict_to_trainable_columns,
@@ -197,6 +198,103 @@ def test_build_dataset_preserva_coluna_parcialmente_nan() -> None:
     assert "share_head_r3_diff" in dataset.feature_names
     assert bool(dataset.features["share_head_r3_diff"].isna().iloc[0])
     assert dataset.features["share_head_r3_diff"].iloc[1] == 0.42
+
+
+def test_build_dataset_descarta_lutas_com_canto_fabricado_anteriores_ao_corte() -> None:
+    """Luta anterior a ``FIRST_RELIABLE_CORNER_DATE`` sai do dataset; 2010+ permanece.
+
+    Nos eventos do Kaggle anteriores a 2010 o canto foi preenchido com a ordem do resultado
+    (o vermelho venceu 100,0% das lutas em **todos** os anos de 1994 a 2009). Como o alvo do
+    modelo é justamente o canto, ali o rótulo é o vencedor renomeado -- treinar com ele é
+    treinar com rótulo que sabemos ser falso. O corte é seco, não gradiente: a luta do
+    próprio dia do corte já entra.
+    """
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=1,
+                event_date=date(2009, 12, 31),
+                target="red",
+                features={"reach_cm_diff": 1.0},
+            ),
+            _raw_row(
+                bout_id=2,
+                event_date=FIRST_RELIABLE_CORNER_DATE,
+                target="blue",
+                features={"reach_cm_diff": 2.0},
+            ),
+            _raw_row(
+                bout_id=3,
+                event_date=date(2015, 6, 1),
+                target="red",
+                features={"reach_cm_diff": 3.0},
+            ),
+        ]
+    )
+
+    dataset = build_dataset(raw)
+
+    assert dataset.bout_id.tolist() == [2, 3]
+    assert dataset.target.tolist() == [0, 1]
+    assert dataset.features["reach_cm_diff"].tolist() == [2.0, 3.0]
+
+
+def test_build_dataset_loga_quantas_lutas_de_canto_fabricado_descartou(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """O descarte é explícito no log: quantas lutas saíram, a partir de quando e por quê.
+
+    Mesma disciplina da guarda de features toda-NaN: um filtro silencioso recria o problema
+    que ela existe para resolver -- ninguém descobre que o dataset encolheu nem por qual
+    motivo.
+    """
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=1,
+                event_date=date(2005, 3, 1),
+                target="red",
+                features={"reach_cm_diff": 1.0},
+            ),
+            _raw_row(
+                bout_id=2,
+                event_date=date(2009, 8, 1),
+                target="red",
+                features={"reach_cm_diff": 2.0},
+            ),
+            _raw_row(
+                bout_id=3,
+                event_date=date(2018, 4, 1),
+                target="blue",
+                features={"reach_cm_diff": 3.0},
+            ),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="analysis.dataset"):
+        build_dataset(raw)
+
+    mensagem = caplog.text
+    assert "2 luta(s)" in mensagem
+    assert FIRST_RELIABLE_CORNER_DATE.isoformat() in mensagem
+    assert "canto" in mensagem
+
+
+def test_build_dataset_nao_loga_descarte_quando_todas_as_lutas_sao_do_periodo_confiavel(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dataset inteiro em 2010+: nada é descartado e o log fica limpo.
+
+    Impede que o aviso vire ruído de rotina -- ele só aparece quando há de fato luta com
+    alvo fabricado a descartar.
+    """
+    raw = _dataset_from_dates([date(2019, 1, 1), date(2020, 2, 1), date(2021, 3, 1)])
+
+    with caplog.at_level(logging.WARNING, logger="analysis.dataset"):
+        dataset = build_dataset(raw)
+
+    assert len(dataset.target) == 3
+    assert caplog.text == ""
 
 
 def _dataset_from_dates(dates: list[date]) -> pd.DataFrame:
