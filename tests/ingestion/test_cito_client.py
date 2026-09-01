@@ -159,9 +159,9 @@ def test_fetch_event_stats_no_modo_fixture_devolve_dto_tipado() -> None:
     assert len(stats.bout_stats) == 2
     assert len(stats.round_stats) == 2
 
-    by_corner = {line.corner: line for line in stats.bout_stats}
-    assert by_corner[Corner.RED].sig_strikes == (41, 120)
-    assert by_corner[Corner.BLUE].control_time_seconds == 1300
+    by_slug = {line.fighter_slug: line for line in stats.bout_stats}
+    assert by_slug["dricus-du-plessis"].sig_strikes == (41, 120)
+    assert by_slug["khamzat-chimaev"].control_time_seconds == 1300
 
     first_round = stats.round_stats[0]
     assert first_round.round == 1
@@ -181,7 +181,11 @@ def test_fetch_event_stats_cobra_orcamento_antes_de_servir() -> None:
 
 
 def test_fetch_event_stats_via_http_usa_path_e_auth_corretos() -> None:
-    """CA-04: no caminho HTTP, usa ``GET /events/{slug}/stats`` com header ``x-api-key``."""
+    """CA-04: no caminho HTTP, usa ``GET /api/v1/ufc/events/{slug}/stats`` + ``x-api-key``.
+
+    O caminho é o **versionado**, o mesmo de ``fetch_event``. O antigo (``/events/{slug}/stats``,
+    sem prefixo) nunca existiu na API real -- ver ADR 0005.
+    """
     payload = json.loads((_FIXTURES / f"event_stats_{_EVENT_ID}.json").read_text(encoding="utf-8"))
     captured: dict[str, httpx.Request] = {}
 
@@ -201,7 +205,7 @@ def test_fetch_event_stats_via_http_usa_path_e_auth_corretos() -> None:
     assert len(stats.bout_stats) == 2
 
     request = captured["request"]
-    assert request.url.path == f"/events/{_EVENT_ID}/stats"
+    assert request.url.path == f"/api/v1/ufc/events/{_EVENT_ID}/stats"
     assert request.headers["x-api-key"] == "token-fake"
 
 

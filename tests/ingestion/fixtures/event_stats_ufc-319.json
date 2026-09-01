@@ -1,13 +1,63 @@
 {
   "success": true,
   "data": {
+    "event": {
+      "id": "8c1f0d20-0000-4000-8000-000000000319",
+      "slug": "ufc-319",
+      "title": "UFC 319: Du Plessis vs. Chimaev",
+      "shortTitle": "Du Plessis vs. Chimaev",
+      "status": "completed",
+      "startsAt": "2025-08-17T02:00:00.000Z",
+      "eventDate": "2025-08-16",
+      "venue": "United Center",
+      "city": "Chicago",
+      "country": "United States"
+    },
+    "bouts": [
+      {
+        "id": "ufc-319-bout-1",
+        "eventSlug": "ufc-319",
+        "cardSection": "Main Card",
+        "cardSectionOrder": 1,
+        "boutOrder": 1001,
+        "weightClass": "Middleweight",
+        "titleBout": true,
+        "status": "completed",
+        "isCancelled": false,
+        "winnerFighterSlug": "khamzat-chimaev",
+        "resultRound": 3,
+        "resultTime": "4:12",
+        "method": "Submission",
+        "methodDetails": "Rear-Naked Choke",
+        "fighters": [
+          {
+            "id": "f0000000-0000-4000-8000-000000000001",
+            "boutId": "ufc-319-bout-1",
+            "fighterSlug": "dricus-du-plessis",
+            "fighterName": "Dricus du Plessis",
+            "corner": "red",
+            "outcome": "loss"
+          },
+          {
+            "id": "f0000000-0000-4000-8000-000000000002",
+            "boutId": "ufc-319-bout-1",
+            "fighterSlug": "khamzat-chimaev",
+            "fighterName": "Khamzat Chimaev",
+            "corner": "blue",
+            "outcome": "win"
+          }
+        ]
+      }
+    ],
     "boutStats": [
       {
+        "id": "b0000000-0000-4000-8000-000000000001",
         "boutId": "ufc-319-bout-1",
-        "corner": "red",
         "fighterSlug": "dricus-du-plessis",
+        "fighterName": "Dricus du Plessis",
         "knockdowns": 0,
-        "sigStrikes": "41 of 120",
+        "significantStrikes": "41 of 120",
+        "totalStrikes": "55 of 140",
         "head": "20 of 80",
         "body": "12 of 25",
         "leg": "9 of 15",
@@ -21,11 +71,13 @@
         "unknownField": "ignorado pelo extra=ignore"
       },
       {
+        "id": "b0000000-0000-4000-8000-000000000002",
         "boutId": "ufc-319-bout-1",
-        "corner": "blue",
         "fighterSlug": "khamzat-chimaev",
+        "fighterName": "Khamzat Chimaev",
         "knockdowns": 0,
-        "sigStrikes": "130 of 180",
+        "significantStrikes": "130 of 180",
+        "totalStrikes": "150 of 205",
         "head": "90 of 130",
         "body": "25 of 35",
         "leg": "15 of 15",
@@ -40,12 +92,14 @@
     ],
     "roundStats": [
       {
+        "id": "r0000000-0000-4000-8000-000000000001",
         "boutId": "ufc-319-bout-1",
-        "corner": "red",
         "fighterSlug": "dricus-du-plessis",
+        "fighterName": "Dricus du Plessis",
         "round": 1,
         "knockdowns": 0,
-        "sigStrikes": "12 of 30",
+        "significantStrikes": "12 of 30",
+        "totalStrikes": "18 of 38",
         "head": "6 of 18",
         "body": "3 of 7",
         "leg": "3 of 5",
@@ -58,12 +112,14 @@
         "controlTime": "0:10"
       },
       {
+        "id": "r0000000-0000-4000-8000-000000000002",
         "boutId": "ufc-319-bout-1",
-        "corner": "blue",
         "fighterSlug": "khamzat-chimaev",
+        "fighterName": "Khamzat Chimaev",
         "round": 1,
         "knockdowns": 0,
-        "sigStrikes": "28 of 40",
+        "significantStrikes": "28 of 40",
+        "totalStrikes": "34 of 48",
         "head": "18 of 28",
         "body": "6 of 8",
         "leg": "4 of 4",

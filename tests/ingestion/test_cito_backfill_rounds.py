@@ -39,6 +39,9 @@ from ingestion.normalize import normalize_name
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
+# Canto vermelho de UFC 319 na fixture -- as linhas de stat identificam o lutador pelo slug.
+_RED_SLUG_319 = "dricus-du-plessis"
+
 
 # --------------------------------------------------------------------------- #
 # Builders de estado (Postgres de teste transacional) e utilidades de fixture.
@@ -72,13 +75,15 @@ def _seed_event_bout(
     event_date: date,
     red_name: str,
     blue_name: str,
+    cito_slug: str | None,
 ) -> tuple[Event, dict[str, int]]:
     """Semeia um evento com uma luta e os dois cantos; devolve o evento e os ``bout_fighter`` ids.
 
     Os nomes normalizam para as chaves que os ``fighter_slug`` das fixtures produzem, reproduzindo
-    o matching persisted-driven por nome (mesmo padrão da Slice 04).
+    o matching por nome. O ``cito_slug`` é o identificador que a sincronização de catálogo (Sprint
+    007-03) persistiu; ``None`` reproduz um evento que o catálogo não casou.
     """
-    event = Event(name=name, date=event_date, location=None, source="kaggle")
+    event = Event(name=name, date=event_date, location=None, source="kaggle", cito_slug=cito_slug)
     session.add(event)
     session.flush()
 
@@ -112,6 +117,7 @@ def _seed_ufc319(session: Session) -> tuple[Event, dict[str, int]]:
         event_date=date(2025, 8, 16),
         red_name="Dricus du Plessis",
         blue_name="Khamzat Chimaev",
+        cito_slug="ufc-319",
     )
 
 
@@ -123,6 +129,7 @@ def _seed_ufc320(session: Session) -> tuple[Event, dict[str, int]]:
         event_date=date(2025, 10, 4),
         red_name="Jon Jones",
         blue_name="Stipe Miocic",
+        cito_slug="ufc-320",
     )
 
 
@@ -152,9 +159,15 @@ def _fixture_event_stats(slug: str) -> CitoEventStats:
     return _fixture_client().fetch_event_stats(slug)
 
 
-def _round_lines(slug: str) -> list[CitoRoundStatLine]:
-    """As linhas round-a-round da fixture do evento ``slug``."""
-    return _fixture_event_stats(slug).round_stats
+def _round_lines(slug: str, fighter_slug: str | None = None) -> list[CitoRoundStatLine]:
+    """As linhas round-a-round da fixture do evento ``slug``, opcionalmente de um só lutador.
+
+    O recorte é por ``fighter_slug`` porque a API real não traz ``corner`` na linha de stat.
+    """
+    lines = _fixture_event_stats(slug).round_stats
+    if fighter_slug is None:
+        return lines
+    return [line for line in lines if line.fighter_slug == fighter_slug]
 
 
 # --------------------------------------------------------------------------- #
@@ -165,7 +178,7 @@ def _round_lines(slug: str) -> list[CitoRoundStatLine]:
 def test_upsert_bout_fighter_rounds_insere_uma_linha_por_round(db_session: Session) -> None:
     """CA-01: cada ``round`` vira uma linha com ``source="cito"`` e stats mapeadas 1:1 do DTO."""
     _event, bf_ids = _seed_ufc319(db_session)
-    red_lines = [line for line in _round_lines("ufc-319") if line.corner is Corner.RED]
+    red_lines = _round_lines("ufc-319", _RED_SLUG_319)
 
     inserted = upsert_bout_fighter_rounds(db_session, bf_ids["red"], red_lines)
     db_session.flush()
@@ -189,9 +202,8 @@ def test_upsert_bout_fighter_rounds_insere_uma_linha_por_round(db_session: Sessi
     assert (first.head_landed, first.head_attempted) == (6, 18)
     assert (first.takedowns_landed, first.takedowns_attempted) == (0, 1)
     assert first.control_time_seconds == 10
-    # A Cito não expõe total de golpes por round -> ausência vira None (nunca zero inventado).
-    assert first.total_strikes_landed is None
-    assert first.total_strikes_attempted is None
+    # A Cito expõe ``totalStrikes`` por round (payload real de 2026-08-31, ADR 0005).
+    assert (first.total_strikes_landed, first.total_strikes_attempted) == (18, 38)
 
 
 def test_upsert_bout_fighter_rounds_ausencia_vira_none(db_session: Session) -> None:
@@ -201,8 +213,7 @@ def test_upsert_bout_fighter_rounds_ausencia_vira_none(db_session: Session) -> N
     empty_line = CitoRoundStatLine.model_validate(
         {
             "boutId": "ufc-319-bout-1",
-            "corner": "red",
-            "fighterSlug": "dricus-du-plessis",
+            "fighterSlug": _RED_SLUG_319,
             "round": 5,
         }
     )
@@ -218,6 +229,8 @@ def test_upsert_bout_fighter_rounds_ausencia_vira_none(db_session: Session) -> N
     ).scalar_one()
     assert row.sig_strikes_landed is None
     assert row.sig_strikes_attempted is None
+    assert row.total_strikes_landed is None
+    assert row.total_strikes_attempted is None
     assert row.control_time_seconds is None
     assert row.knockdowns is None
 
@@ -225,7 +238,7 @@ def test_upsert_bout_fighter_rounds_ausencia_vira_none(db_session: Session) -> N
 def test_upsert_bout_fighter_rounds_idempotente(db_session: Session) -> None:
     """CA-01: rerun devolve 0 inseridos e não altera contagem nem conteúdo."""
     _event, bf_ids = _seed_ufc319(db_session)
-    red_lines = [line for line in _round_lines("ufc-319") if line.corner is Corner.RED]
+    red_lines = _round_lines("ufc-319", _RED_SLUG_319)
 
     first = upsert_bout_fighter_rounds(db_session, bf_ids["red"], red_lines)
     db_session.flush()
@@ -355,23 +368,26 @@ def test_run_backfill_rounds_fixture_popula_e_e_idempotente(db_session: Session)
     assert db_session.scalar(select(func.count()).select_from(BoutFighterRound)) == 2
 
 
-def test_run_backfill_rounds_pula_evento_com_slug_nao_derivavel(
+def test_run_backfill_rounds_pula_evento_sem_cito_slug(
     db_session: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """CA-05: evento não-numerado (slug não-derivável) é PULADO com aviso; o run não aborta.
+    """CA-05: evento sem ``cito_slug`` persistido é PULADO com aviso; o run não aborta.
 
-    Um 'UFC Fight Night' na janela não deriva slug Cito (a única convenção confirmada por dado real
-    é 'ufc-<n>'); sem heurística silenciosa, o backfill o pula, conta no summary e segue para o
-    evento numerado, que é processado normalmente. Nenhum fetch é disparado para o evento pulado
-    (o cliente registra só o slug numerado).
+    O identificador vem do catálogo (Sprint 007-03). Um evento que o catálogo não casou não tem
+    identificador, e nenhum é inventado: o backfill o pula, conta no summary e segue. Nenhum fetch
+    é disparado para o evento pulado (o cliente registra só o slug do evento com identificador).
+
+    O evento pulado é **numerado** de propósito: o critério do skip é a ausência do identificador
+    persistido, não o formato do nome -- que era o critério da decisão anterior.
     """
-    # Fight Night (não-numerado) mais antigo -> processado primeiro na ordem cronológica (date, id).
+    # Sem cito_slug e mais antigo -> processado primeiro na ordem cronológica (date, id).
     _seed_event_bout(
         db_session,
-        name="UFC Fight Night: Silva vs. Costa",
-        event_date=date(2020, 5, 9),
-        red_name="Anderson Silva",
-        blue_name="Uriah Hall",
+        name="UFC 250: Nunes vs. Spencer",
+        event_date=date(2020, 6, 6),
+        red_name="Amanda Nunes",
+        blue_name="Felicia Spencer",
+        cito_slug=None,
     )
     _seed_ufc319(db_session)
     budget = CallBudget(limit=10)
@@ -384,11 +400,39 @@ def test_run_backfill_rounds_pula_evento_com_slug_nao_derivavel(
 
     assert summary.events_skipped == 1
     assert summary.events_processed == 1
-    assert summary.rounds_inserted == 2  # só os rounds do evento numerado (UFC 319)
-    # O evento pulado nunca tocou o cliente; só o numerado foi buscado.
+    assert summary.rounds_inserted == 2  # só os rounds do evento com identificador (UFC 319)
     assert client.fetched == ["ufc-319"]
     assert db_session.scalar(select(func.count()).select_from(BoutFighterRound)) == 2
     assert "pulado" in caplog.text.lower()
+
+
+def test_run_backfill_rounds_processa_fight_night_com_cito_slug(db_session: Session) -> None:
+    """CA-05: um **Fight Night** com ``cito_slug`` do catálogo é processado normalmente.
+
+    É o caso que a decisão anterior excluía por construção: o nome não deriva 'ufc-<n>', então o
+    M5 pularia o evento. Com o identificador vindo do catálogo, o nome do evento deixa de importar
+    -- Fight Nights entram (347 dos 745 eventos persistidos).
+    """
+    _event, _bf = _seed_event_bout(
+        db_session,
+        name="UFC Fight Night: Du Plessis vs. Chimaev",
+        event_date=date(2025, 8, 16),
+        red_name="Dricus du Plessis",
+        blue_name="Khamzat Chimaev",
+        cito_slug="ufc-319",
+    )
+    budget = CallBudget(limit=10)
+    client = _RecordingClient(budget)
+    cache = EventStatsCache(_cache_dir(db_session))
+
+    summary = run_backfill_rounds(db_session, client, budget, cache)
+    db_session.flush()
+
+    assert summary.events_skipped == 0
+    assert summary.events_processed == 1
+    assert summary.rounds_inserted == 2
+    assert client.fetched == ["ufc-319"]
+    assert db_session.scalar(select(func.count()).select_from(BoutFighterRound)) == 2
 
 
 def test_run_backfill_rounds_savepoint_reverte_so_o_evento_com_falha(db_session: Session) -> None:
@@ -408,6 +452,7 @@ def test_run_backfill_rounds_savepoint_reverte_so_o_evento_com_falha(db_session:
         event_date=date(2025, 10, 4),
         red_name="Jon Jones",
         blue_name="Jon Jones",
+        cito_slug="ufc-320",
     )
     budget = CallBudget(limit=10)
     cache = EventStatsCache(_cache_dir(db_session))
@@ -437,6 +482,7 @@ def test_run_backfill_rounds_resumivel_nao_refaz_fetch_do_evento_ja_cacheado(
         event_date=date(2025, 10, 4),
         red_name="Jon Jones",
         blue_name="Jon Jones",
+        cito_slug="ufc-320",
     )
     cache_dir = _cache_dir(db_session)
 

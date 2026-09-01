@@ -2,23 +2,22 @@
 
 Popula a granularidade por round (``BoutFighterRound``) a partir da Cito, para os eventos
 **já persistidos** (seed do Kaggle) da janela fixa **2019-2025**. É persisted-driven (mesma âncora
-da Slice 04): para cada evento da janela, deriva o slug Cito (``event_cito_slug``), obtém as stats
-via cache resumível (``EventStatsCache.get_or_fetch`` sobre ``CitoClient.fetch_event_stats``),
-resolve os ``bout_fighter_id`` (``resolve_bout_fighter_ids``, Slice 04) e grava uma linha por
+da Slice 04): para cada evento da janela, lê o identificador Cito persistido (``Event.cito_slug``,
+resolvido contra o catálogo real pela Sprint 007-03), obtém as stats via cache resumível
+(``EventStatsCache.get_or_fetch`` sobre ``CitoClient.fetch_event_stats``), resolve os
+``bout_fighter_id`` (``resolve_bout_fighter_ids``, Slice 04) e grava uma linha por
 ``(bout_fighter_id, round)`` com ``source="cito"``.
 
 Invariantes (reuso dos padrões do M1, ``ingestion.incremental``)
 ----------------------------------------------------------------
 - **Idempotência por chave natural** ``(bout_fighter_id, round)``: os rounds já presentes são
   pulados; rerun devolve 0 inseridos e não altera contagem/conteúdo. Ausência de um split no
-  payload vira ``None`` -- nunca zero inventado. A Cito não expõe total de golpes por round, então
-  ``total_strikes_*`` fica ``None``.
+  payload vira ``None`` -- nunca zero inventado.
 - **SAVEPOINT por evento** (``session.begin_nested``): uma falha no meio de um evento (ambiguidade
   de matching, estouro de quota) reverte só aquele evento, sem parcial -- retry idempotente.
-- **Skip do slug não-derivável**: eventos cujo ``name`` não deriva slug Cito
-  (``UnsupportedEventSlugError`` -- formatos não-numerados como 'UFC Fight Night: ...') são pulados
-  com ``logger.warning`` e contados em ``events_skipped``, sem abortar o run nem casar em silêncio
-  (sem heurística silenciosa). Ambiguidade e estouro de quota, ao contrário, seguem falhando alto.
+- **Skip do evento sem identificador**: eventos sem ``cito_slug`` persistido (o catálogo não os
+  casou) são pulados com ``logger.warning`` e contados em ``events_skipped``, sem abortar o run e
+  sem inventar um slug. Ambiguidade e estouro de quota, ao contrário, seguem falhando alto.
 - **``CallBudget`` cobrado por fetch não-cacheado**: o cliente cobra a cada ``fetch_event_stats``;
   um cache hit não chama o cliente, logo não cobra. Estourar o teto levanta ``QuotaExceededError``
   antes de gastar.
@@ -54,11 +53,7 @@ from ingestion.cito.cache import EventStatsCache
 from ingestion.cito.client import CallBudget, CitoClient, QuotaExceededError
 from ingestion.cito.dto import CitoRoundStatLine
 from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
-from ingestion.cito.matching import (
-    UnsupportedEventSlugError,
-    event_cito_slug,
-    resolve_bout_fighter_ids,
-)
+from ingestion.cito.matching import resolve_bout_fighter_ids
 from ingestion.incremental import resolve_call_budget
 from mma_analytics.db import SessionLocal
 from mma_analytics.settings import settings
@@ -98,10 +93,12 @@ def _select_events_in_window(session: Session) -> list[Event]:
 def _build_round(bout_fighter_id: int, line: CitoRoundStatLine) -> BoutFighterRound:
     """Mapeia uma linha ``roundStats`` da Cito no ``BoutFighterRound`` (1:1, ausência -> None).
 
-    A Cito não expõe total de golpes por round -- ``total_strikes_*`` fica ``None`` (nunca zero
-    inventado). Os oito splits chegam como tuplas ``(landed, attempted)`` já parseadas na borda.
+    Os nove splits chegam como tuplas ``(landed, attempted)`` já parseadas na borda; um split
+    ausente no payload permanece ``None`` (nunca zero inventado). ``totalStrikes`` está entre eles:
+    o payload real de 2026-08-31 o traz por round, ao contrário do que o M5 supunha (ADR 0005).
     """
     sig_landed, sig_attempted = line.sig_strikes
+    total_landed, total_attempted = line.total_strikes
     head_landed, head_attempted = line.head
     body_landed, body_attempted = line.body
     leg_landed, leg_attempted = line.leg
@@ -119,8 +116,8 @@ def _build_round(bout_fighter_id: int, line: CitoRoundStatLine) -> BoutFighterRo
         takedowns_attempted=takedowns_attempted,
         submission_attempts=line.submission_attempts,
         control_time_seconds=line.control_time_seconds,
-        total_strikes_landed=None,
-        total_strikes_attempted=None,
+        total_strikes_landed=total_landed,
+        total_strikes_attempted=total_attempted,
         head_landed=head_landed,
         head_attempted=head_attempted,
         body_landed=body_landed,
@@ -213,11 +210,11 @@ def run_backfill_rounds(
     só aquele evento e propaga (retry idempotente, sem parcial). Entre eventos **não-cacheados**
     aplica o rate-limit (``sleeper``). Opera sobre a ``Session`` recebida; o commit é do chamador.
 
-    Eventos cujo ``name`` não deriva slug Cito (``UnsupportedEventSlugError`` -- formatos
-    não-numerados, ex.: 'UFC Fight Night: ...') são **pulados** com ``logger.warning`` e contados
-    em ``events_skipped``, **antes** do SAVEPOINT: o loop segue para o próximo evento, sem casar em
-    silêncio nem abortar o run. Uma ambiguidade de matching ou estouro de quota, ao contrário,
-    continua **falhando alto** (invariante de entity resolution / gate de quota).
+    Eventos sem ``cito_slug`` persistido (o catálogo não os casou) são **pulados** com
+    ``logger.warning`` e contados em ``events_skipped``, **antes** do SAVEPOINT: o loop segue para
+    o próximo evento, sem inventar identificador nem abortar o run. Uma ambiguidade de matching ou
+    estouro de quota, ao contrário, continua **falhando alto** (invariante de entity resolution /
+    gate de quota).
     """
     events = _select_events_in_window(session)
     last_index = len(events) - 1
@@ -225,12 +222,11 @@ def run_backfill_rounds(
     cache_hits = 0
     events_skipped = 0
     for index, event in enumerate(events):
-        try:
-            slug = event_cito_slug(event)
-        except UnsupportedEventSlugError:
+        slug = event.cito_slug
+        if slug is None:
             logger.warning(
-                "Evento %r (id %d) pulado: slug Cito não derivável do nome (formato não-numerado); "
-                "sem heurística silenciosa, o backfill segue para o próximo evento.",
+                "Evento %r (id %d) pulado: sem cito_slug persistido; rode a sincronização de "
+                "catálogo antes do backfill.",
                 event.name,
                 event.id,
             )
@@ -242,7 +238,7 @@ def run_backfill_rounds(
             bf_ids = resolve_bout_fighter_ids(session, event, stats)
             lines_by_bf: dict[int, list[CitoRoundStatLine]] = {}
             for line in stats.round_stats:
-                bout_fighter_id = bf_ids.get((line.bout_id, line.corner))
+                bout_fighter_id = bf_ids.get((line.bout_id, line.fighter_slug))
                 if bout_fighter_id is None:
                     # Canto sem correspondência persistida: reportado por quem casa, nunca grava.
                     continue

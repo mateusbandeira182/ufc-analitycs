@@ -1,9 +1,13 @@
-"""Testes dos DTOs do endpoint real ``/events/{id}/stats`` da Cito -- CA-03.
+"""Testes dos DTOs do endpoint real ``/api/v1/ufc/events/{slug}/stats`` da Cito -- CA-03.
 
 Cobrem o desembrulho do envelope ``{success, data, meta}``, a leitura de camelCase por alias,
 a tolerância a campo desconhecido (``extra="ignore"``) e a aplicação dos parsers na borda: as
 strings ``"L of A"`` chegam ao domínio como ``(landed, attempted)`` e ``controlTime`` como
 segundos -- nada de ``Any`` propagando para os tipos de ``boutStats``/``roundStats``.
+
+A fixture sintética deste arquivo segue a forma **wire real** da Cito (quatro blocos, sem
+``corner`` nas linhas de stat). Quem guarda a fidelidade ao payload de produção é
+``test_cito_contract_real_payload.py``; aqui o alvo é o parser.
 """
 
 from __future__ import annotations
@@ -12,7 +16,6 @@ import json
 from pathlib import Path
 from typing import cast
 
-from apps.bouts.enums import Corner
 from ingestion.cito.dto import (
     CitoBoutStatLine,
     CitoEventStats,
@@ -21,6 +24,10 @@ from ingestion.cito.dto import (
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures"
+
+# As linhas de stat da API real não trazem ``corner``; o lutador é identificado pelo slug.
+_RED_SLUG = "dricus-du-plessis"
+_BLUE_SLUG = "khamzat-chimaev"
 
 
 def _payload() -> dict[str, object]:
@@ -41,9 +48,9 @@ def test_envelope_desembrulha_data_tipada() -> None:
 def test_bout_stats_le_camelcase_por_alias() -> None:
     """CA-03: campos camelCase (``boutId``, ``fighterSlug``) são lidos pelos aliases."""
     data = CitoStatsEnvelope.model_validate(_payload()).data
-    by_corner = {line.corner: line for line in data.bout_stats}
+    by_slug = {line.fighter_slug: line for line in data.bout_stats}
 
-    red = by_corner[Corner.RED]
+    red = by_slug[_RED_SLUG]
     assert isinstance(red, CitoBoutStatLine)
     assert red.bout_id == "ufc-319-bout-1"
     assert red.fighter_slug == "dricus-du-plessis"
@@ -53,10 +60,11 @@ def test_bout_stats_le_camelcase_por_alias() -> None:
 def test_split_string_vira_tupla_landed_attempted() -> None:
     """CA-03: ``"41 of 120"`` chega ao domínio como ``(41, 120)`` via parser na borda."""
     data = CitoStatsEnvelope.model_validate(_payload()).data
-    by_corner = {line.corner: line for line in data.bout_stats}
+    by_slug = {line.fighter_slug: line for line in data.bout_stats}
 
-    red = by_corner[Corner.RED]
+    red = by_slug[_RED_SLUG]
     assert red.sig_strikes == (41, 120)
+    assert red.total_strikes == (55, 140)
     assert red.head == (20, 80)
     assert red.takedowns == (0, 2)
 
@@ -64,10 +72,10 @@ def test_split_string_vira_tupla_landed_attempted() -> None:
 def test_control_time_string_vira_segundos() -> None:
     """CA-03: ``controlTime`` ``"21:40"`` chega como ``1300`` segundos (21*60 + 40)."""
     data = CitoStatsEnvelope.model_validate(_payload()).data
-    by_corner = {line.corner: line for line in data.bout_stats}
+    by_slug = {line.fighter_slug: line for line in data.bout_stats}
 
-    assert by_corner[Corner.RED].control_time_seconds == 30
-    assert by_corner[Corner.BLUE].control_time_seconds == 1300
+    assert by_slug[_RED_SLUG].control_time_seconds == 30
+    assert by_slug[_BLUE_SLUG].control_time_seconds == 1300
 
 
 def test_round_stats_tipadas_com_numero_do_round() -> None:
@@ -77,7 +85,7 @@ def test_round_stats_tipadas_com_numero_do_round() -> None:
     first = data.round_stats[0]
     assert isinstance(first, CitoRoundStatLine)
     assert first.round == 1
-    assert first.corner == Corner.RED
+    assert first.fighter_slug == _RED_SLUG
     assert first.sig_strikes == (12, 30)
     assert first.control_time_seconds == 10
 
@@ -85,7 +93,7 @@ def test_round_stats_tipadas_com_numero_do_round() -> None:
 def test_campo_desconhecido_e_ignorado() -> None:
     """CA-03: ``extra="ignore"`` descarta ``unknownField`` sem estourar a validação."""
     data = CitoStatsEnvelope.model_validate(_payload()).data
-    red = next(line for line in data.bout_stats if line.corner == Corner.RED)
+    red = next(line for line in data.bout_stats if line.fighter_slug == _RED_SLUG)
 
     assert not hasattr(red, "unknownField")
     assert not hasattr(red, "unknown_field")
@@ -99,7 +107,7 @@ def test_split_ausente_degrada_para_tupla_de_none() -> None:
     del bout_stats[0]["head"]
 
     data = CitoStatsEnvelope.model_validate(payload).data
-    red = next(line for line in data.bout_stats if line.corner == Corner.RED)
+    red = next(line for line in data.bout_stats if line.fighter_slug == _RED_SLUG)
 
     assert red.head == (None, None)
     assert red.sig_strikes == (41, 120)

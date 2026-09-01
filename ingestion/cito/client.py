@@ -11,10 +11,12 @@ identificador de um evento na Cito). Dois caminhos:
   em vez de tocar a rede -- é o caminho de teste e da execução de demonstração, e **não**
   consome a quota do free tier (500 req/mês).
 - **Modo HTTP**: ``GET {base_url}/api/v1/ufc/events`` (evento por id e catálogo paginado),
+  ``GET {base_url}/api/v1/ufc/events/{slug}/stats``,
   ``GET {base_url}/api/v1/ufc/fighters/{slug}`` e
   ``GET {base_url}/api/v1/ufc/bouts/{boutId}/stats`` autenticados por token, com o erro e o
   rate-limit convertidos em exceções tipadas (``CitoRateLimitError`` para 429, ``CitoError``
-  para os demais), sem vazar a exceção crua do ``httpx``.
+  para os demais), sem vazar a exceção crua do ``httpx``. Todos os caminhos são **versionados**;
+  o ``/events/{slug}/stats`` sem prefixo, usado até o M5, nunca existiu na API real (ADR 0005).
 """
 
 from __future__ import annotations
@@ -40,7 +42,6 @@ from ingestion.cito.dto import (
 _EVENTS_PATH = "/api/v1/ufc/events"
 _FIGHTERS_PATH = "/api/v1/ufc/fighters"
 _BOUTS_PATH = "/api/v1/ufc/bouts"
-_EVENT_STATS_PATH = "/events"
 _HTTP_TOO_MANY_REQUESTS = 429
 
 # Teto default de chamadas à Cito por execução, alinhado ao free tier (500 req/mês).
@@ -168,11 +169,14 @@ class CitoClient:
         return CitoBoutStats.model_validate(payload)
 
     def fetch_event_stats(self, slug: str) -> CitoEventStats:
-        """Busca ``boutStats``/``roundStats`` do evento ``slug`` e devolve o DTO desembrulhado.
+        """Busca os quatro blocos de stats do evento ``slug`` e devolve o DTO desembrulhado.
 
-        Endpoint real da Cito (``GET {base_url}/events/{slug}/stats``): o payload é o envelope
-        ``{success, data, meta}`` em camelCase, com os golpes como ``"L of A"`` e o tempo como
-        ``"m:ss"`` -- convertidos na borda pelos DTOs. Em modo fixture lê
+        Endpoint real da Cito (``GET {base_url}/api/v1/ufc/events/{slug}/stats`` -- o caminho
+        **versionado**, o mesmo de ``fetch_event``): o payload é o envelope ``{success, data,
+        meta}`` em camelCase, e ``data`` traz ``event`` (metadados + data local), ``bouts`` (o
+        card, com o ``corner`` de cada lutador e o resultado), ``boutStats`` (totais) e
+        ``roundStats`` (round-a-round), com os golpes como ``"L of A"`` e o tempo como ``"m:ss"``
+        -- convertidos na borda pelos DTOs. Em modo fixture lê
         ``{fixture_dir}/event_stats_{slug}.json``. Um envelope com ``success=false`` vira
         ``CitoError`` (payload inválido, não silencioso); erros HTTP viram
         ``CitoError``/``CitoRateLimitError``. Cobra uma unidade do orçamento antes do fetch.
@@ -181,7 +185,7 @@ class CitoClient:
         payload = (
             self._read_fixture(f"event_stats_{slug}.json")
             if self._fixture_dir is not None
-            else self._get_json(f"{_EVENT_STATS_PATH}/{slug}/stats", f"as stats do evento {slug!r}")
+            else self._get_json(f"{_EVENTS_PATH}/{slug}/stats", f"as stats do evento {slug!r}")
         )
         envelope = CitoStatsEnvelope.model_validate(payload)
         if not envelope.success:

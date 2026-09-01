@@ -135,37 +135,123 @@ class CitoFighter(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# DTOs do endpoint real ``GET /events/{id}/stats`` (envelope camelCase).
+# DTOs do endpoint real ``GET /api/v1/ufc/events/{slug}/stats`` (envelope camelCase).
 #
 # Aditivos: os DTOs acima (``CitoEvent``/``CitoBout``/``CitoBoutStats``/...) são consumidos
 # pelo M1 (``ingestion.incremental``) e permanecem intactos. Aqui, a Cito real embrulha as
 # stats granulares num envelope ``{success, data, meta}``, usa camelCase e expressa golpes como
 # ``"L of A"`` e tempo como ``"m:ss"`` -- convertidos na borda pelos parsers, sem propagar ``Any``.
+#
+# ``data`` traz **quatro** blocos: ``event`` (metadados + data local), ``bouts`` (o card, com o
+# ``corner`` de cada lutador e o resultado), ``boutStats`` (totais por lutador-por-luta) e
+# ``roundStats`` (round-a-round). A forma foi confirmada contra a API real em 2026-08-31 e está
+# versionada em ``tests/ingestion/fixtures/event_stats_ufc-fight-night-august-22-2026.json``;
+# ver ADR 0005 para as três divergências de contrato que o M5 carregava.
 # ---------------------------------------------------------------------------
 
 _CAMEL_CONFIG = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
 # Campos de golpe expressos como ``"landed of attempted"`` no payload real da Cito.
-_SPLIT_FIELDS = ("sig_strikes", "head", "body", "leg", "distance", "clinch", "ground", "takedowns")
+_SPLIT_FIELDS = (
+    "sig_strikes",
+    "total_strikes",
+    "head",
+    "body",
+    "leg",
+    "distance",
+    "clinch",
+    "ground",
+    "takedowns",
+)
+
+
+class CitoEventBlock(BaseModel):
+    """Metadados do evento no bloco ``data.event`` do endpoint real de stats.
+
+    A ``event_date`` é a data **local** do evento -- a mesma grandeza que o seed persistiu em
+    ``events.date`` e a mesma que o slug usa. Difere da data UTC de ``starts_at`` sempre que o
+    card noturno nos EUA atravessa a meia-noite UTC (o caso da maioria dos Fight Nights), o que
+    torna insegura qualquer derivação de slug por regra sobre o nome (ver ADR 0005).
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    id: str
+    slug: str
+    title: str
+    status: str  # "scheduled" | "completed"
+    event_date: date
+    starts_at: AwareDatetime | None = None
+
+
+class CitoBoutFighterRef(BaseModel):
+    """Um canto do card (``bouts[].fighters[]``) -- é daqui que o ``corner`` vem.
+
+    As linhas de ``boutStats``/``roundStats`` da API real **não** trazem ``corner``; o rótulo de
+    canto só existe aqui, no card. Ver ADR 0005.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    fighter_slug: str
+    fighter_name: str | None = None
+    corner: Corner
+    outcome: str | None = None  # "win" | "loss" | "draw" | ...
+
+
+class CitoBoutBlock(BaseModel):
+    """Uma luta do card (``bouts[]``): contexto + resultado, como a Cito devolve.
+
+    Só os campos com consumidor concreto entram: ``venue``/``odds``/``dataAvailability`` e demais
+    blocos do payload seguem tolerados por ``extra="ignore"`` e serão adicionados quando (e se)
+    alguém os consumir.
+    """
+
+    model_config = _CAMEL_CONFIG
+
+    id: str
+    card_section: str | None = None  # "Main Card" | "Prelims"
+    card_section_order: int | None = None
+    bout_order: int | None = None
+    weight_class: str | None = None
+    title_bout: bool | None = None
+    status: str | None = None
+    is_cancelled: bool = False
+    winner_fighter_slug: str | None = None
+    result_round: int | None = None
+    result_time_seconds: int | None = Field(default=None, validation_alias="resultTime")
+    method: str | None = None  # "Decision - Unanimous" | "KO/TKO" | "Submission"
+    method_details: str | None = None
+    fighters: list[CitoBoutFighterRef]
+
+    @field_validator("result_time_seconds", mode="before")
+    @classmethod
+    def _clock(cls, value: object) -> int | None:
+        """Converte ``"5:00"`` -> segundos na borda; ausência -> ``None``."""
+        return parse_clock(value if value is None or isinstance(value, str) else str(value))
 
 
 class CitoBoutStatLine(BaseModel):
     """Totais de um canto numa luta do endpoint real (``boutStats``).
 
-    Uma linha por lutador-por-luta (long): ``corner`` liga ao canto e os splits de golpe chegam
-    como tuplas ``(landed, attempted)`` após o parse na borda. Split ausente degrada para
+    Uma linha por lutador-por-luta (long): o lutador é identificado por ``fighter_slug`` (a API
+    real não traz ``corner`` aqui -- o canto vem de ``bouts[].fighters[]``) e os splits de golpe
+    chegam como tuplas ``(landed, attempted)`` após o parse na borda. Split ausente degrada para
     ``(None, None)`` (não se inventa zero); string mal-formada levanta ``CitoParseError``.
     """
 
     model_config = _CAMEL_CONFIG
 
     bout_id: str
-    corner: Corner
     fighter_slug: str
+    fighter_name: str | None = None
     knockdowns: int | None = None
     submission_attempts: int | None = None
     reversals: int | None = None
-    sig_strikes: tuple[int | None, int | None] = (None, None)
+    sig_strikes: tuple[int | None, int | None] = Field(
+        default=(None, None), validation_alias="significantStrikes"
+    )
+    total_strikes: tuple[int | None, int | None] = (None, None)
     head: tuple[int | None, int | None] = (None, None)
     body: tuple[int | None, int | None] = (None, None)
     leg: tuple[int | None, int | None] = (None, None)
@@ -195,14 +281,18 @@ class CitoRoundStatLine(CitoBoutStatLine):
 
 
 class CitoEventStats(BaseModel):
-    """Stats de um evento: os totais por canto (``boutStats``) e o round-a-round (``roundStats``).
+    """Os quatro blocos que o endpoint real devolve numa única chamada.
 
-    ``round_stats`` degrada para lista vazia quando o payload não traz round-a-round (evento sem
-    esse detalhe) -- ausência explícita, sem ``Any``.
+    ``event`` (metadados, com a data local) e ``bouts`` (o card com resultado e o ``corner`` de
+    cada lutador) são **obrigatórios**: são estruturais no envelope, então a ausência precisa
+    falhar alto, não degradar. ``round_stats``, ao contrário, degrada para lista vazia -- um
+    evento sem round-a-round é ausência legítima de dado, não payload quebrado.
     """
 
     model_config = _CAMEL_CONFIG
 
+    event: CitoEventBlock
+    bouts: list[CitoBoutBlock]
     bout_stats: list[CitoBoutStatLine]
     round_stats: list[CitoRoundStatLine] = []
 
