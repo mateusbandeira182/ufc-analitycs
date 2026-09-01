@@ -175,11 +175,25 @@ def load_existing_fighters(session: Session) -> list[ExistingFighter]:
     Público desde o M6 (Slice 06): o fechamento do gap materializa o mesmo índice uma vez por
     evento, e a alternativa era duplicar o ``select`` ou importar um símbolo privado. Movido
     como está, sem generalização -- mesma promoção que o gate humano recebeu na Slice 03.
+
+    O ``ufc_fighter_id`` entra no ``select`` desde o M7 (SPEC 008, RF-07): sem ele
+    materializado, o branch preferencial por id de ``match_fighter_id`` nunca enxergaria o
+    identificador e cairia sempre no fallback por nome, em silêncio.
     """
     return [
-        ExistingFighter(id=fighter_id, name_normalized=name_normalized, date_of_birth=dob)
-        for fighter_id, name_normalized, dob in session.execute(
-            select(Fighter.id, Fighter.name_normalized, Fighter.date_of_birth)
+        ExistingFighter(
+            id=fighter_id,
+            name_normalized=name_normalized,
+            date_of_birth=dob,
+            ufc_fighter_id=ufc_fighter_id,
+        )
+        for fighter_id, name_normalized, dob, ufc_fighter_id in session.execute(
+            select(
+                Fighter.id,
+                Fighter.name_normalized,
+                Fighter.date_of_birth,
+                Fighter.ufc_fighter_id,
+            )
         )
     ]
 

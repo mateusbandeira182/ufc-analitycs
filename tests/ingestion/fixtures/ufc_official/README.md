@@ -1,6 +1,6 @@
 # Capturas verbatim da API oficial da UFC (SPEC 008, Sprint 008-01)
 
-Os quatro JSON deste diretório são **respostas HTTP cruas**, baixadas com `curl -o`, sem `jq`,
+Os JSON deste diretório são **respostas HTTP cruas**, baixadas com `curl -o`, sem `jq`,
 sem pretty-print e sem nenhuma edição manual. São o **contrato de verdade** dos endpoints da
 fonte oficial: se um deles for podado, reformatado ou reconstruído a partir do DTO, o valor de
 teste evapora -- foi exatamente uma fixture "limpa" que escondeu a divergência `sigStrikes` do
@@ -10,7 +10,8 @@ O teste `tests/ingestion/test_ufc_official_contract_real_payload.py` inclui um *
 verbatimidade** que falha se a captura passar a ter apenas as chaves que o DTO declara.
 
 - **Base URL**: `https://d29dxerjsp82wz.cloudfront.net`
-- **Momento da captura**: 2026-09-01T19:19:47Z (todas as quatro, na mesma execução)
+- **Momento da captura**: 2026-09-01T19:19:47Z para as quatro primeiras (mesma execução); as
+  capturas acrescentadas depois trazem o próprio momento na seção que as descreve
 - **Autenticação**: nenhuma. Sem chave, sem header, sem quota. **Não é a Cito** -- nenhuma
   captura deste diretório consumiu o free tier de 500 req/mês.
 - **Nenhum segredo**: as respostas são públicas e não têm credencial no corpo.
@@ -24,6 +25,10 @@ verbatimidade** que falha se a captura passar a ter apenas as chaves que o DTO d
 | `event_live_700.json` | `/api/v3/event/live/700.json` | 200 | 46943 | Prova que a data de calendário é a **local**, não a UTC |
 | `event_live_1335.json` | `/api/v3/event/live/1335.json` | 200 | 28523 | Prova que o canto existe **antes** do desfecho |
 | `event_live_1345.json` | `/api/v3/event/live/1345.json` | 200 | 22 | Prova que id inexistente é **200 com envelope vazio**, não 404 |
+| `event_live_1002.json` | `/api/v3/event/live/1002.json` | 200 | 70329 | Um dos dois `Bruno Silva` (Sprint 008-03) e o `MMAId` **ausente** |
+| `event_live_1073.json` | `/api/v3/event/live/1073.json` | 200 | 71487 | O **outro** `Bruno Silva` (Sprint 008-03) |
+| `fight_live_12204.json` | `/api/v3/fight/live/12204.json` | 200 | 26619 | Granular completo, 5 rounds (Sprint 008-07) |
+| `fight_live_13017.json` | `/api/v3/fight/live/13017.json` | 200 | 2621 | Granular **presente e vazio** em luta futura (Sprint 008-07) |
 
 ### `event_live_1124.json` -- UFC 282: Blachowicz vs. Ankalaev
 
@@ -61,9 +66,11 @@ de chaves idêntico), mas o objeto de luta difere: ele **acrescenta** `Event`, `
 luta é **reduzido** -- não traz `Organization` nem `FightCard` --, então não é o mesmo objeto do
 endpoint de evento e não foi modelado por um DTO compartilhado.
 
-`FightStats`/`RoundStats` são o portão condicional da Slice 07 e **não** são declarados no DTO
-desta slice; ficam preservados na captura e são justamente parte do que o teste-guarda de
-verbatimidade usa como prova de que a fixture é crua.
+`FightStats`/`RoundStats` **não** são declarados por `UfcOfficialFight` (o DTO da Sprint 008-01):
+ficam preservados na captura e são parte do que o teste-guarda de verbatimidade usa como prova de
+que a fixture é crua. A Sprint 008-07 os declarou num DTO **separado**
+(`UfcOfficialFightGranular`), consumido só pela medição do portão -- ver
+`fight_live_12204.json` abaixo.
 
 ### `event_live_700.json` -- UFC 184: Rousey vs Zingano (captura de apoio)
 
@@ -112,6 +119,52 @@ validação.
 A distinção é estrita: só o objeto rigorosamente vazio é ausência. Um `LiveEventDetail`
 parcialmente preenchido continua sendo quebra de contrato e falha alto (RF-10).
 
+### `event_live_1002.json` e `event_live_1073.json` -- os dois `Bruno Silva` (Sprint 008-03)
+
+Capturadas em 2026-09-01T21:37:50Z, com `curl -o`, quando a Slice 03 precisou provar que o
+homônimo resolve pelo **contexto da luta** e não pelo nome:
+
+- `1002` -- UFC Fight Night: Moraes vs. Sandhagen (2020-10-10). Traz `Bruno Silva`
+  **"Bulldog"**, `FighterId` 3283, `MMAId` 146112, `DOB` 1990-03-16, contra Tagir Ulanbekov.
+- `1073` -- UFC Fight Night: Santos vs. Ankalaev (2022-03-12). Traz `Bruno Silva`
+  **"Blindado"**, `FighterId` 3314, `MMAId` 160594, `DOB` 1989-07-13, contra Alex Pereira.
+
+As duas datas de nascimento batem **exatamente** com as dos dois `Bruno Silva` persistidos
+(`fighters.id` 1638 e 2204), então o cenário do teste é o caso real, não uma construção.
+
+A `1002` acumula um segundo papel: KB Bhullar (`FighterId` 3567) vem com **`MMAId` nulo** --
+1 de 26 cantos do card --, e é sobre ela que o teste de "campo ausente permanece nulo" roda.
+O conjunto **derivado** que cobre os outros sete homônimos vive em `../ufc_official_homonimos/`.
+
+### `fight_live_12204.json` e `fight_live_13017.json` -- o granular (Sprint 008-07)
+
+Capturadas em 2026-09-01T21:39:12Z e 2026-09-01T21:40:17Z, com `curl -o`, para o portão da
+Slice 07 -- a medição que decide se a fonte oficial substitui a Cito no round-a-round.
+
+- `12204` -- **Imavov x Borralho**, a luta principal de `UFC Fight Night: Imavov vs. Borralho`
+  (`EventId` 1271, 2025-09-06), que é o **evento de referência** da medição. `Status` `Final`,
+  cinco rounds completos nos dois cantos. `FightStats` traz 2 linhas (uma por canto) e
+  `RoundStats` traz 2 entradas de `{FighterId, Rounds: [...]}` com 5 rounds cada. Imavov
+  (`FighterId` 3576, canto **vermelho**, `Win`) tem `SigStrikesLanded` 81, `ControlTime`
+  `"0:29"`; Borralho (`FighterId` 3658, canto **azul**, `Loss`) tem 66 e `"1:20"`.
+- `13017` -- luta ainda **não realizada** do UFC 331 (2026-09-19). `FightStats` e `RoundStats`
+  vêm **presentes e vazios** (`[]`). É a prova de que as duas chaves são **estruturais** -- um
+  rename estoura (RF-10) -- e de que a lista vazia é a forma legítima de dizer "esta luta ainda
+  não aconteceu". Sem esta captura, a distinção entre "vazio" e "ausente" ficaria afirmada e não
+  demonstrada.
+
+**Forma medida do granular** (78 linhas de estatística das 13 lutas do evento 1271, mais a luta
+futura, sondagem de 2026-09-01): os 22 campos que `bout_fighter_rounds` guarda vieram
+**presentes e não nulos em 78 de 78** linhas, todos `int`, exceto `ControlTime`, que é `str` no
+formato `"m:ss"`. É essa medição que sustenta a decisão de declará-los **obrigatórios** no DTO:
+se fossem opcionais, um rename degradaria para `None`, a linha sairia do denominador da medição
+pela regra "ausência não é divergência" e o relatório informaria 100% sobre um campo que deixou
+de existir.
+
+A fonte devolve ~65 campos por linha de estatística (tempo por posição, acurácias, controle em
+sete recortes de posição); o DTO declara 22 e o resto fica preservado na captura -- é parte do
+que o teste-guarda de verbatimidade usa como prova de que a fixture é crua.
+
 ## Forma medida (24 eventos, 450 lutadores, sondagem de 2026-09-01)
 
 A sondagem cobriu os ids 1, 25, 60, 120, 200, 300, 400, 500, 600, 700, 750, 800, 850, 900, 950,
@@ -151,6 +204,10 @@ curl -sS -o "$DEST/fight_live_10214.json" "$BASE/api/v3/fight/live/10214.json"
 curl -sS -o "$DEST/event_live_700.json"  "$BASE/api/v3/event/live/700.json"
 curl -sS -o "$DEST/event_live_1335.json" "$BASE/api/v3/event/live/1335.json"
 curl -sS -o "$DEST/event_live_1345.json" "$BASE/api/v3/event/live/1345.json"
+curl -sS -o "$DEST/event_live_1002.json" "$BASE/api/v3/event/live/1002.json"
+curl -sS -o "$DEST/event_live_1073.json" "$BASE/api/v3/event/live/1073.json"
+curl -sS -o "$DEST/fight_live_12204.json" "$BASE/api/v3/fight/live/12204.json"
+curl -sS -o "$DEST/fight_live_13017.json" "$BASE/api/v3/fight/live/13017.json"
 ```
 
 Nunca passe a captura por `jq`, por formatador ou por um `json.dump` do Python: os arquivos são

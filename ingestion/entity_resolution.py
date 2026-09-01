@@ -173,10 +173,16 @@ class AmbiguousFighterMatchError(Exception):
 
 @dataclass(frozen=True)
 class FighterCandidate:
-    """Lutador vindo da Cito a reconciliar: só o nome e a DOB entram no matching."""
+    """Lutador a reconciliar: nome, DOB e -- quando a fonte o tiver -- o id externo.
+
+    ``ufc_fighter_id`` é **opcional por realidade, não por conveniência**: a Cito não publica
+    esse identificador, e é dela que vêm os candidatos do caminho incremental. O default não é
+    preparação para o futuro; é o estado da fonte que já existe.
+    """
 
     name: str
     date_of_birth: date | None
+    ufc_fighter_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,7 @@ class ExistingFighter:
     id: int
     name_normalized: str
     date_of_birth: date | None
+    ufc_fighter_id: str | None = None
 
 
 def match_fighter_id(
@@ -205,7 +212,27 @@ def match_fighter_id(
       diferente -> ``None`` (homônimo real).
     - DOB ausente: exatamente um existente daquele nome -> id (match sem DOB, logado);
       mais de um -> ambíguo.
+
+    **M7 (SPEC 008, RF-07)**: o ``ufc_fighter_id`` da fonte oficial é a chave **preferencial**,
+    e nome + DOB vira o fallback. O id **não** substitui o nome: lutador ativo apenas antes de
+    2010-03-21 está fora da janela da fonte por decisão (RF-03) e nunca terá id, e a Cito não
+    publica esse identificador. Sem id no candidato, ou sem persistido que o carregue, a
+    política acima vale inalterada.
     """
+    if candidate.ufc_fighter_id is not None:
+        by_id = [f for f in existing if f.ufc_fighter_id == candidate.ufc_fighter_id]
+        if len(by_id) == 1:
+            return by_id[0].id
+        if len(by_id) > 1:
+            # Dois persistidos com o MESMO id externo é violação de invariante do backfill, não
+            # ambiguidade de nome: falha alto em vez de escolher (o fallback por nome "daria
+            # conta" e esconderia o defeito).
+            raise AmbiguousFighterMatchError(
+                f"O identificador externo {candidate.ufc_fighter_id!r} está em "
+                f"{len(by_id)} fighters persistidos (ids "
+                f"{', '.join(str(f.id) for f in by_id)}); resolução ambígua."
+            )
+
     normalized = normalize_name(candidate.name)
     same_name = [fighter for fighter in existing if fighter.name_normalized == normalized]
     if not same_name:

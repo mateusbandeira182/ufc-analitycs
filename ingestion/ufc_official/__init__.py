@@ -2,7 +2,8 @@
 
 Ver ``ingestion.ufc_official.dto`` para o contrato medido dos endpoints,
 ``ingestion.ufc_official.client`` para o cliente HTTP e
-``ingestion.ufc_official.discovery`` para a varredura do catálogo e o mapeamento de eventos.
+``ingestion.ufc_official.discovery`` para a varredura do catálogo e o mapeamento de eventos, e
+``ingestion.ufc_official.fighter_ids`` para o backfill do identificador de lutador.
 """
 
 from __future__ import annotations

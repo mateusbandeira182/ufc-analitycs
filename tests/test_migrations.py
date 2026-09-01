@@ -29,6 +29,11 @@ IDENTIFICADOR_OFICIAL = "ufc_event_id"
 # ``downgrade -1`` precisa alcançar, e uma migration futura empilhada acima faria ``head``
 # apontar para outro artefato.
 REVISAO_M7 = "b1c4f2a90d37"
+# Identificadores externos do lutador na fonte oficial acrescentados a ``fighters`` pelo M7
+# (SPEC 008, Slice 03).
+IDENTIFICADORES_OFICIAIS_FIGHTER = {"ufc_fighter_id", "ufc_mma_id"}
+# Revisão da migration da Slice 03, também fixada por hash pelo mesmo motivo.
+REVISAO_M7_FIGHTERS = "322648148188"
 
 
 def _tabelas_existentes(engine: Engine) -> set[str]:
@@ -268,6 +273,43 @@ def test_downgrade_um_passo_remove_ufc_event_id_preserva_identificadores_cito(
     assert IDENTIFICADOR_OFICIAL not in colunas_events
     assert colunas_events >= IDENTIFICADORES_CITO
     assert {"id", "name", "date", "location", "source"} <= colunas_events
+    tabelas = _tabelas_existentes(migration_engine)
+    assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA, TABELA_PREDICOES}
+    assert "corner" in _tipos_enum_existentes(migration_engine)
+
+
+def test_upgrade_cria_identificadores_da_fonte_oficial_em_fighters(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: a migration da Slice 03 cria ``fighters.ufc_fighter_id``/``ufc_mma_id``."""
+    command.upgrade(alembic_cfg, "head")
+    assert _colunas(migration_engine, "fighters") >= IDENTIFICADORES_OFICIAIS_FIGHTER
+
+
+def test_downgrade_um_passo_remove_identificadores_de_fighters_preserva_o_resto(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: o downgrade da Slice 03 dropa só as duas colunas aditivas de ``fighters``.
+
+    O identificador do evento (Slice 02), o restante de ``fighters``, as demais tabelas e o
+    enum ``corner`` permanecem intactos: a migration é aditiva, então reverter não pode custar
+    nenhum dado pré-existente -- nem o cartel semeado, nem a antropometria do Kaggle.
+
+    Fixa a revisão-alvo (``REVISAO_M7_FIGHTERS``) em vez de ``head``, seguindo o precedente das
+    migrations anteriores: assim uma migration futura empilhada acima não faz este ``-1``
+    reverter o artefato errado.
+    """
+    command.upgrade(alembic_cfg, REVISAO_M7_FIGHTERS)
+    assert _colunas(migration_engine, "fighters") >= IDENTIFICADORES_OFICIAIS_FIGHTER
+
+    command.downgrade(alembic_cfg, "-1")
+
+    colunas_fighters = _colunas(migration_engine, "fighters")
+    assert not (IDENTIFICADORES_OFICIAIS_FIGHTER & colunas_fighters)
+    assert {"id", "name", "name_normalized", "date_of_birth", "source"} <= colunas_fighters
+    assert {"height_cm", "reach_cm", "stance", "weight_kg"} <= colunas_fighters
+    assert {"wins", "losses", "draws"} <= colunas_fighters
+    assert IDENTIFICADOR_OFICIAL in _colunas(migration_engine, "events")
     tabelas = _tabelas_existentes(migration_engine)
     assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA, TABELA_PREDICOES}
     assert "corner" in _tipos_enum_existentes(migration_engine)

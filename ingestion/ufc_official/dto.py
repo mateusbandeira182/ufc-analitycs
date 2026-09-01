@@ -71,11 +71,14 @@ rótulo de canto fora de ``Red``/``Blue`` e ``TimeZone`` fora de ``GMT±HH:MM``.
 nunca DTO meio preenchido, nunca canto ou fuso default. A mensagem nomeia o endpoint com o
 identificador.
 
-Deliberadamente fora desta slice
---------------------------------
-``FightStats`` e ``RoundStats`` (presentes no endpoint de luta) **não** são declarados: são o
-portão condicional da Slice 07 e declará-los agora criaria campo sem consumidor. Ficam
-preservados na captura por ``extra="ignore"``.
+Granular (``FightStats``/``RoundStats``) -- acrescentado pela Slice 07
+----------------------------------------------------------------------
+O endpoint de luta traz também a estatística granular, lida por ``UfcOfficialFightGranular`` e
+``parse_fight_granular``. Ela fica num DTO **separado** de ``UfcOfficialFight`` porque só a
+medição do portão a consome: quem precisa apenas de canto e desfecho não paga a validação de 22
+campos por linha. As duas listas são estruturais (rename estoura), mas vazias em luta que ainda
+não aconteceu -- vazio é ausência de conteúdo, ausente seria mudança de forma. O tempo de
+controle chega como ``"m:ss"`` e é convertido a segundos **na borda**, como toda unidade aqui.
 """
 
 from __future__ import annotations
@@ -294,7 +297,8 @@ class UfcOfficialFightEnvelope(BaseModel):
     ``FightNightTracking``. Só a parte estrutural (``FightId`` + ``Fighters``, com forma de
     lutador idêntica nos dois caminhos, medida) é compartilhada com ``UfcOfficialFight``; o
     resto fica de fora por ``extra="ignore"``, sem consumidor nesta slice. ``FightStats`` e
-    ``RoundStats`` são o portão condicional da Slice 07 e não são declarados aqui.
+    ``RoundStats`` são declarados por ``UfcOfficialFightGranular``, que é quem os consome --
+    quem só precisa de canto e desfecho não paga a validação de 22 campos por linha.
 
     O bloco ``Event`` deste endpoint é **reduzido** (sem ``Organization`` nem ``FightCard``),
     então não é modelado por ``UfcOfficialEvent`` -- forçar um molde único sobre duas formas
@@ -304,6 +308,135 @@ class UfcOfficialFightEnvelope(BaseModel):
     model_config = _CONFIG
 
     fight: UfcOfficialFight = Field(alias="LiveFightDetail")
+
+
+# ``ControlTime`` e os demais relógios da fonte chegam como ``"m:ss"`` (medido em 78 linhas de
+# estatística de 2026-09-01). É a **mesma forma** que a Cito devolve, o que torna a conversão
+# simétrica -- mas ela acontece na borda, aqui, e não no meio da comparação.
+_CLOCK_PATTERN = re.compile(r"^(?P<minutes>\d+):(?P<seconds>[0-5]\d)$")
+
+
+class UfcOfficialStatLine(BaseModel):
+    """Estatística de um canto -- **a mesma forma** no total da luta e em cada round.
+
+    Os 22 campos abaixo são **obrigatórios**, e essa é a decisão de projeto que mais importa
+    neste módulo. Medido em 78 linhas do evento de referência: nenhum deles veio ausente ou
+    nulo. Se algum fosse declarado opcional, um rename na fonte degradaria para ``None``, a
+    linha sairia do denominador da medição pela regra "ausência não é divergência", e o
+    relatório informaria concordância alta sobre um campo que deixou de existir. Falhar alto
+    (RF-10) é o que impede esse resultado.
+
+    A fonte devolve ~65 campos por linha (tempo por posição, acurácias, controle por posição em
+    sete recortes); só os 22 que ``bout_fighter_rounds`` guarda são declarados. O resto fica
+    preservado na captura por ``extra="ignore"``.
+
+    Nomes de alvo e posição descrevem os golpes **significativos** (``SigHeadStrikes...``,
+    ``SigDistanceStrikes...``), que é o vocabulário do ``ufcstats`` do qual as três linhagens
+    (Kaggle, Cito e fonte oficial) descendem. ``TotalStrikes...`` é a contagem separada e
+    mapeia para ``total_strikes_*``.
+    """
+
+    model_config = _CONFIG
+
+    knockdowns: int = Field(alias="Knockdowns")
+    sig_strikes_landed: int = Field(alias="SigStrikesLanded")
+    sig_strikes_attempted: int = Field(alias="SigStrikesAttempted")
+    takedowns_landed: int = Field(alias="TakedownsLanded")
+    takedowns_attempted: int = Field(alias="TakedownsAttempted")
+    submission_attempts: int = Field(alias="SubmissionsAttempted")
+    reversals: int = Field(alias="Reversals")
+    # UNIDADE NA BORDA: ``"m:ss"`` na fonte, segundos aqui (ver ``_para_segundos``).
+    control_time_seconds: int = Field(alias="ControlTime")
+    total_strikes_landed: int = Field(alias="TotalStrikesLanded")
+    total_strikes_attempted: int = Field(alias="TotalStrikesAttempted")
+    head_landed: int = Field(alias="SigHeadStrikesLanded")
+    head_attempted: int = Field(alias="SigHeadStrikesAttempted")
+    body_landed: int = Field(alias="SigBodyStrikesLanded")
+    body_attempted: int = Field(alias="SigBodyStrikesAttempted")
+    leg_landed: int = Field(alias="SigLegStrikesLanded")
+    leg_attempted: int = Field(alias="SigLegStrikesAttempted")
+    distance_landed: int = Field(alias="SigDistanceStrikesLanded")
+    distance_attempted: int = Field(alias="SigDistanceStrikesAttempted")
+    clinch_landed: int = Field(alias="SigClinchStrikesLanded")
+    clinch_attempted: int = Field(alias="SigClinchStrikesAttempted")
+    ground_landed: int = Field(alias="SigGroundStrikesLanded")
+    ground_attempted: int = Field(alias="SigGroundStrikesAttempted")
+
+    @field_validator("control_time_seconds", mode="before")
+    @classmethod
+    def _para_segundos(cls, value: object) -> int:
+        """Converte ``"1:20"`` em ``80``; formato desconhecido levanta.
+
+        Nunca degrada para zero nem para nulo: um tempo de controle zerado por engano entra
+        como valor plausível na comparação numérica e inventa divergência (ou concordância)
+        onde não há dado. Valor que não é string também levanta -- a fonte publica relógio, e
+        um número cru aqui significaria que a forma mudou.
+        """
+        if not isinstance(value, str):
+            raise ValueError(f"Tempo da fonte oficial deveria ser string 'm:ss': {value!r}.")
+        match = _CLOCK_PATTERN.match(value.strip())
+        if match is None:
+            raise ValueError(
+                f"Tempo da fonte oficial em formato inesperado: {value!r} (esperado 'm:ss')."
+            )
+        return int(match.group("minutes")) * 60 + int(match.group("seconds"))
+
+
+class UfcOfficialFightStatLine(UfcOfficialStatLine):
+    """Uma linha de ``FightStats``: os totais de um canto na luta inteira.
+
+    O canto é identificado por ``FighterId`` -- ``FightStats`` **não** traz ``Corner``, que vive
+    só em ``Fighters[]``. O nome sai do card da própria luta.
+    """
+
+    model_config = _CONFIG
+
+    fighter_id: int = Field(alias="FighterId")
+
+
+class UfcOfficialRoundStatLine(UfcOfficialStatLine):
+    """Uma linha de ``RoundStats[].Rounds[]``: a forma do total, acrescida do número do round."""
+
+    model_config = _CONFIG
+
+    round_number: int = Field(alias="RoundNumber")
+
+
+class UfcOfficialFighterRoundStats(BaseModel):
+    """Um canto em ``RoundStats``: o ``FighterId`` e a lista de rounds dele.
+
+    A fonte aninha por lutador (``[{FighterId, Rounds: [...]}]``), ao contrário da Cito, que
+    devolve ``roundStats`` já achatado. O achatamento acontece na medição, não aqui.
+    """
+
+    model_config = _CONFIG
+
+    fighter_id: int = Field(alias="FighterId")
+    rounds: list[UfcOfficialRoundStatLine] = Field(alias="Rounds")
+
+
+class UfcOfficialFightGranular(UfcOfficialFight):
+    """A luta com o granular: o card (canto e desfecho) mais ``FightStats``/``RoundStats``.
+
+    As duas listas são **estruturais** -- ausência da chave falha alto (RF-10) --, mas a lista
+    **vazia** é ausência legítima de conteúdo: luta que ainda não aconteceu devolve
+    ``"FightStats": []`` e ``"RoundStats": []`` (medido no ``FightId`` 13017, do UFC 331, em
+    2026-09-01). Vazio e ausente não são a mesma coisa: o primeiro é a fonte dizendo "ainda não
+    há estatística", o segundo seria a fonte tendo mudado de forma.
+    """
+
+    model_config = _CONFIG
+
+    fight_stats: list[UfcOfficialFightStatLine] = Field(alias="FightStats")
+    round_stats: list[UfcOfficialFighterRoundStats] = Field(alias="RoundStats")
+
+
+class UfcOfficialFightGranularEnvelope(BaseModel):
+    """Envelope de topo do endpoint de luta, lido com o granular declarado."""
+
+    model_config = _CONFIG
+
+    fight: UfcOfficialFightGranular = Field(alias="LiveFightDetail")
 
 
 # Chave de topo do endpoint de evento. Isolada porque a **ausência** é reconhecida por ela
@@ -341,6 +474,18 @@ def parse_event(payload: object, *, event_id: int) -> UfcOfficialEvent:
 def parse_fight(payload: object, *, fight_id: int) -> UfcOfficialFight:
     """Valida o payload cru do endpoint de luta; forma inesperada vira erro tipado."""
     return _validado(UfcOfficialFightEnvelope, payload, FIGHT_PATH.format(fight_id=fight_id)).fight
+
+
+def parse_fight_granular(payload: object, *, fight_id: int) -> UfcOfficialFightGranular:
+    """Valida o payload cru do endpoint de luta **com** ``FightStats``/``RoundStats``.
+
+    Distinto de ``parse_fight`` de propósito: quem só precisa de canto e desfecho (as Slices 03
+    a 06) não paga a validação de 22 campos por linha nem quebra numa luta cujo granular a
+    fonte tenha deixado de publicar.
+    """
+    return _validado(
+        UfcOfficialFightGranularEnvelope, payload, FIGHT_PATH.format(fight_id=fight_id)
+    ).fight
 
 
 def _validado(modelo: type[_EnvelopeT], payload: object, endpoint: str) -> _EnvelopeT:

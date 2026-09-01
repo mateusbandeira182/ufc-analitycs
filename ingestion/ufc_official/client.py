@@ -7,7 +7,9 @@ transporte.
 Endpoints
 ---------
 - ``GET {base_url}/api/v3/event/live/{eventId}.json`` -> ``UfcOfficialEvent`` (evento + card).
-- ``GET {base_url}/api/v3/fight/live/{fightId}.json`` -> ``UfcOfficialFight`` (uma luta).
+- ``GET {base_url}/api/v3/fight/live/{fightId}.json`` -> ``UfcOfficialFight`` (uma luta), ou
+  ``UfcOfficialFightGranular`` por ``fetch_fight_granular`` quando o granular
+  (``FightStats``/``RoundStats``) também for necessário.
 
 ``base_url`` default é ``settings.ufc_official_base_url``.
 
@@ -53,8 +55,10 @@ from ingestion.ufc_official.dto import (
     UfcOfficialError,
     UfcOfficialEvent,
     UfcOfficialFight,
+    UfcOfficialFightGranular,
     parse_event,
     parse_fight,
+    parse_fight_granular,
 )
 from mma_analytics.settings import settings
 
@@ -92,6 +96,15 @@ class UfcOfficialClient:
         """Busca a luta ``fight_id`` e devolve o DTO tipado."""
         path = FIGHT_PATH.format(fight_id=fight_id)
         return parse_fight(self._get_json(path), fight_id=fight_id)
+
+    def fetch_fight_granular(self, fight_id: int) -> UfcOfficialFightGranular:
+        """Busca a luta ``fight_id`` lendo também ``FightStats``/``RoundStats``.
+
+        Mesmo endpoint de ``fetch_fight``, DTO diferente: quem só precisa de canto e desfecho
+        não paga a validação de 22 campos por linha de estatística nem depende dela.
+        """
+        path = FIGHT_PATH.format(fight_id=fight_id)
+        return parse_fight_granular(self._get_json(path), fight_id=fight_id)
 
     def _get_json(self, path: str) -> object:
         """Faz o ``GET`` e devolve o JSON cru; qualquer falha de transporte vira erro tipado.
