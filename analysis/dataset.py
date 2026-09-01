@@ -21,7 +21,7 @@ de X -- o classificador consome apenas numérico, com ``NaN`` explícito preserv
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 import pandas as pd
@@ -134,6 +134,11 @@ def _numeric_feature_columns(expanded: pd.DataFrame) -> list[str]:
     return numeric
 
 
+def _all_nan_columns(features: pd.DataFrame) -> list[str]:
+    """Nomes das colunas 100% ``NaN`` da frame dada, em ordem alfabética."""
+    return sorted(str(column) for column in features.columns if bool(features[column].isna().all()))
+
+
 def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
     """Descarta as colunas de feature 100% ``NaN`` antes do treino; loga quais saíram.
 
@@ -147,14 +152,17 @@ def _drop_all_nan_feature_columns(features: pd.DataFrame) -> pd.DataFrame:
     Colunas **parcialmente** ``NaN`` são preservadas intactas (o classificador trata a
     ausência nativamente). Descartar só a coluna toda-nula é degradação legítima de features
     ainda-não-backfillados -- não um silenciador genérico de ``NaN``.
+
+    Esta guarda olha o dataset **inteiro** e por isso não cobre o caso em que a coluna tem
+    dado apenas depois do corte temporal: para esse, ver ``restrict_to_trainable_columns``.
     """
-    all_nan = [str(column) for column in features.columns if bool(features[column].isna().all())]
+    all_nan = _all_nan_columns(features)
     if not all_nan:
         return features
     logger.warning(
         "Descartando %d coluna(s) de feature 100%% NaN antes do treino (backfill parcial): %s",
         len(all_nan),
-        ", ".join(sorted(all_nan)),
+        ", ".join(all_nan),
     )
     return features.drop(columns=all_nan)
 
@@ -222,4 +230,51 @@ def temporal_split(dataset: Dataset, test_fraction: float = 0.2) -> TemporalSpli
         event_train=event_train,
         event_test=dataset.event_date.iloc[test_pos],
         boundary_date=event_train.max(),
+    )
+
+
+def _descricao_da_coluna_descartada(column: str, x_test: pd.DataFrame) -> str:
+    """Rótulo da coluna descartada com quantos valores ela tinha do lado do holdout.
+
+    O número é o que torna o aviso acionável: separa "a feature não existe em lugar nenhum"
+    de "a feature existe, mas o corte temporal a deixou inteira do lado do teste".
+    """
+    preenchidas = int(x_test[column].notna().sum()) if column in x_test.columns else 0
+    return f"{column} ({preenchidas} valor(es), todos no holdout)"
+
+
+def restrict_to_trainable_columns(split: TemporalSplit) -> TemporalSplit:
+    """Descarta das **duas** fatias as colunas 100% ``NaN`` dentro do treino; loga quais saíram.
+
+    Complemento indispensável de ``_drop_all_nan_feature_columns``, que enxerga só o dataset
+    inteiro. Uma feature backfillada apenas para os anos recentes (o piloto de round-a-round
+    cobre 2023-2025) tem dado -- e portanto sobrevive à guarda global --, mas o split temporal
+    reserva justamente as lutas recentes para o holdout: dentro da fatia de treino ela é
+    inteiramente ``NaN`` e o ``HistGradientBoostingClassifier`` levanta ``ValueError`` no
+    binning do ``fit``.
+
+    O descarte sai das duas fatias de propósito: um modelo treinado sem a coluna não pode
+    recebê-la na predição. Coluna sem sinal no treino é coluna que o modelo não aprendeu --
+    mantê-la no holdout só desalinharia o vetor. Quem roda o treino vê no log quais features
+    saíram e quantos valores delas ficaram do lado do teste; o descarte nunca é silencioso.
+
+    Colunas **parcialmente** preenchidas no treino são preservadas (o classificador trata
+    ``NaN`` nativamente). O loop walk-forward aplica a mesma regra por passo, sobre a fatia
+    anterior ao corte daquele evento.
+    """
+    sem_sinal = _all_nan_columns(split.x_train)
+    if not sem_sinal:
+        return split
+    logger.warning(
+        "Descartando %d coluna(s) de feature sem nenhum valor na fatia de treino "
+        "(corte temporal em %s; o dado existe apenas depois dele, invisível ao modelo): %s. "
+        "As mesmas colunas saem do holdout para manter treino e predição alinhados.",
+        len(sem_sinal),
+        split.boundary_date.isoformat(),
+        ", ".join(_descricao_da_coluna_descartada(column, split.x_test) for column in sem_sinal),
+    )
+    return replace(
+        split,
+        x_train=split.x_train.drop(columns=sem_sinal),
+        x_test=split.x_test.drop(columns=sem_sinal),
     )

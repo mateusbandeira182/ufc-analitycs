@@ -128,6 +128,43 @@ def test_run_training_produz_modelo_e_metricas(db_session: Session) -> None:
     assert result.trained_at.tzinfo is not None
 
 
+def _seed_com_feature_tardia(session: Session, n: int, n_preenchidas: int) -> None:
+    """Semeia ``n`` lutas em que a feature de round só tem valor nas ``n_preenchidas`` finais."""
+    for i in range(n):
+        _seed_bout_features(
+            session,
+            event_date=date(2018, 1, 1) + pd.Timedelta(days=30 * i),
+            target=Corner.RED if i % 2 == 0 else Corner.BLUE,
+            features={
+                "reach_cm_diff": float(i % 7) - 3,
+                "win_rate_prior_diff": float(i % 5) - 2,
+                "round1_sig_strike_share_r3_diff": (0.5 if i >= n - n_preenchidas else None),
+            },
+        )
+
+
+def test_run_training_treina_com_feature_preenchida_so_depois_do_corte(
+    db_session: Session,
+) -> None:
+    """A pipeline não quebra quando uma feature só tem dado do lado do teste.
+
+    Defeito observado contra o banco de desenvolvimento após a Sprint 007-05: o piloto de
+    round-a-round cobre só as lutas recentes, que o split temporal reserva para o holdout. A
+    coluna sobrevive à guarda global (tem dado no dataset inteiro) e chega toda ``NaN`` ao
+    ``fit``, que levanta ``ValueError: window shape cannot be larger than input array shape``.
+    A guarda por fatia de treino descarta a coluna e o treino roda até o fim.
+    """
+    _seed_com_feature_tardia(db_session, 20, n_preenchidas=5)
+
+    result = run_training(db_session, test_fraction=0.25, random_state=0)
+
+    assert "round1_sig_strike_share_r3_diff" not in result.feature_names
+    assert "reach_cm_diff" in result.feature_names
+    # ``feature_names`` descreve o vetor efetivamente consumido pelo modelo -- é o contrato de
+    # realinhamento do serving (``analysis.predict``).
+    assert result.model.n_features_in_ == len(result.feature_names)
+
+
 def test_run_training_e_deterministico_mesmas_metricas(db_session: Session) -> None:
     """CA-04: rodar ``run_training`` 2x com o mesmo ``random_state`` reproduz as métricas."""
     _seed_many(db_session, 20)

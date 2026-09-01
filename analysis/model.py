@@ -27,6 +27,7 @@ from analysis.dataset import (
     TemporalSplit,
     build_dataset,
     read_bout_features,
+    restrict_to_trainable_columns,
     temporal_split,
 )
 from analysis.metrics import Metrics, baseline_metrics, compute_metrics
@@ -105,7 +106,8 @@ def run_training(
 ) -> TrainingResult:
     """Roda a pipeline completa sobre o estado atual de ``bout_features`` (não commita).
 
-    Lê o dataset, faz o split temporal, treina o modelo e avalia modelo e baseline no
+    Lê o dataset, faz o split temporal, descarta as features sem nenhum valor **dentro da
+    fatia de treino** (com aviso no log), treina o modelo e avalia modelo e baseline no
     holdout. É read-only (código de análise sobre o granular derivado); o ``main`` de
     ``analysis.train`` abre a sessão. Levanta ``ValueError`` se não há linhas com alvo.
     """
@@ -113,11 +115,14 @@ def run_training(
     n_samples = len(dataset.target)
     if n_samples == 0:
         raise ValueError("bout_features não tem linhas com alvo definido; nada a treinar.")
-    split = temporal_split(dataset, test_fraction)
+    split = restrict_to_trainable_columns(temporal_split(dataset, test_fraction))
     model = train_model(split.x_train, split.y_train, random_state)
     return TrainingResult(
         model=model,
-        feature_names=dataset.feature_names,
+        # As colunas da fatia de treino, não as do dataset: uma feature sem nenhum valor antes
+        # do corte temporal é descartada por ``restrict_to_trainable_columns`` e não pode
+        # constar do contrato de realinhamento que o serving (``analysis.predict``) consome.
+        feature_names=[str(column) for column in split.x_train.columns],
         model_metrics=_evaluate_model(model, split),
         baseline_metrics=baseline_metrics(split.y_train, split.y_test),
         trained_at=datetime.now(UTC),
