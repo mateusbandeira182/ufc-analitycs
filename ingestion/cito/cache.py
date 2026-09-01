@@ -132,12 +132,18 @@ def _fighter_ref_to_storable(fighter: CitoBoutFighterRef) -> dict[str, object]:
     O ``profile`` entra porque é dele que o fechamento do gap (Slice 06) cria os lutadores
     inéditos sem gastar chamada de perfil (RF-13). Esquecê-lo faria um gap retomado do cache
     criar lutador sem apelido e com cartel zerado -- dado falso com aparência de dado.
+
+    A ``image_url`` entra pelo mesmo motivo, e o estrago de esquecê-la é pior: é o sufixo do nome
+    do arquivo da arte que carrega o canto REAL da luta
+    (``ingestion.cito.gap_sync.art_side``). Sem ela, um gap retomado do cache cairia no canto
+    atribuído sem que contagem nenhuma acusasse a diferença.
     """
     return {
         "fighter_slug": fighter.fighter_slug,
         "fighter_name": fighter.fighter_name,
         "corner": fighter.corner.value,
         "outcome": fighter.outcome,
+        "image_url": fighter.image_url,
         "profile": (_profile_to_storable(fighter.profile) if fighter.profile is not None else None),
     }
 

@@ -34,13 +34,17 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import TypeVar
+from urllib.parse import unquote
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -95,12 +99,14 @@ logger = logging.getLogger(__name__)
 SOURCE = "cito"
 
 
-# POR QUE O CANTO NÃO VEM DA CITO -- não "conserte" isto de volta para o campo da fonte.
+# POR QUE O CANTO NÃO VEM DO CAMPO `corner` -- não "conserte" isto de volta para o campo.
 #
-# O `corner` de ``bouts[].fighters[]`` é o **desfecho**, não o canto de caminhada. Medido em
-# 2026-09-01 sobre 157 payloads de stats: entre 1.888 lutas decididas o vencedor está em `red`
-# em **1.882 (99,7%)**; os `outcome` confirmam (`red/win` 1.884 contra `red/loss` 4). A nossa
-# própria base do Kaggle mede **64,6%**, que é a taxa real do UFC -- 99,7% é impossível.
+# O `corner` de ``bouts[].fighters[]`` é o **desfecho**, não o canto de caminhada: é a posição no
+# array (índice 0 -> `blue`, índice 1 -> `red`, em 1.933 de 1.933 lutas do cache), e o array vem
+# com o perdedor primeiro. Medido em 2026-09-01 sobre 157 payloads de stats: entre 1.888 lutas
+# decididas o vencedor está em `red` em **1.882 (99,7%)**. A nossa própria base do Kaggle mede
+# **64,6%**, que é a taxa real do UFC -- 99,7% é impossível. Contra o canto verdadeiro do Kaggle,
+# o campo acerta 289 de 513 (**56,3%**): mal supera cara-ou-coroa.
 #
 # Persistir aquele rótulo era gravar dado falso numa coluna com significado no mundo real, e
 # pior: o alvo do modelo É o canto (``analysis.dataset`` treina ``target_winner_corner`` e
@@ -108,10 +114,11 @@ SOURCE = "cito"
 # Cito, o alvo ficava fixo em `red` para toda luta vinda dela, e qualquer feature que
 # distinguisse vencedor de perdedor virava perfeitamente preditiva -- vazamento de rótulo.
 #
-# Decisão do humano (2026-09-01): o canto de luta ingerida da Cito é **atribuído**, pela ordem
-# lexicográfica do **nome normalizado** do par (desempate por ``fighter_id``). O vencedor cai no
-# vermelho em ~50% dos casos: vira ruído, não viés. A procedência já é rastreável por
-# ``source="cito"`` -- não há coluna nova.
+# O CANTO REAL EXISTE, na URL da arte oficial do card (``art_side``, abaixo). Quando ela não o
+# entrega, o canto é **atribuído** pela ordem lexicográfica do nome normalizado do par
+# (``assign_deterministic_corners``, desempate por ``fighter_id``): o vencedor cai no vermelho em
+# ~50% dos casos, o que é ruído, não viés. ``assign_corners`` é o porteiro dessa decisão e
+# devolve a procedência (``CornerOrigin``) para que o resumo a reporte.
 #
 # A LIÇÃO, que custou uma iteração: **ser independente do resultado não basta; o critério tem de
 # ser independente da FONTE.** A primeira versão ordenava por ``fighter_id`` e era, sim,
@@ -343,6 +350,124 @@ def assign_deterministic_corners(
     if sort_keys[primeiro.slug] <= sort_keys[segundo.slug]:
         return bout
     return bout.model_copy(update={"corners": (segundo, primeiro)})
+
+
+# O lado da arte oficial: `_L_` é o canto VERMELHO e `_R_` o AZUL.
+#
+# MEDIDO em 2026-09-01 contra o canto verdadeiro do Kaggle, nos 25 eventos de 2025 que a base já
+# tinha semeados: 306 cantos com sufixo, **305 acertos (99,7%)** -- contra 289 de 513 (56,3%) do
+# campo `corner` da própria API. Cobertura por luta: 157 de 279 (**56,3%**) com o lado presente,
+# 121 sem sufixo nenhum e 1 conflito (a arte de um dos lados era a do evento anterior).
+#
+# ISTO É CONVENÇÃO DE NOME DE ARQUIVO, NÃO CONTRATO DE API. Nenhuma documentação da Cito nem da
+# UFC promete o padrão, e ele pode sumir sem aviso. Por isso a queda para
+# ``assign_deterministic_corners`` é comportamento **esperado**, não erro: canto ausente,
+# conflitante ou fora do padrão vira canto atribuído, contado no resumo por ``CornerOrigin``.
+# Se o número de `ART` despencar numa execução futura, o padrão mudou -- não há o que consertar
+# no código além de reconhecer a nova forma aqui.
+#
+# SÓ A ARTE DO CARD (``fighters[].imageUrl``) SERVE -- não reative ``profile.imageUrl`` "para
+# ganhar cobertura". Ele também traz o sufixo, mas é a arte do evento **mais recente daquele
+# atleta**, não desta luta: dá para ver na data embutida na URL. Medido em 2026-09-01, acerta 2
+# de 4 quando é a única fonte -- cara-ou-coroa. Mairon Santos ilustra o mecanismo: o perfil dele
+# é `SANTOS_MAIRON_R_12-06`, então acerta na luta de dezembro e erra na outra.
+#
+# E o pior não é a taxa, é a **direção**: ela piora com o tempo. A distância entre "última luta
+# do atleta" e "esta luta" só cresce à medida que a base envelhece, então uma validação feita
+# hoje não vale para amanhã. Fonte que degrada com o tempo é pior que fonte ruim constante,
+# porque a medição que a aprovaria expira em silêncio.
+_ART_SIDE_RX = re.compile(r"[_-]([LR])(?![A-Za-z])")
+
+_RED_SIDE = "L"
+_BLUE_SIDE = "R"
+
+
+class CornerOrigin(StrEnum):
+    """De onde saiu o canto persistido de uma luta da Cito -- a procedência que o resumo reporta.
+
+    Sem isto, ninguém consegue avaliar depois o impacto no modelo: ``bout_fighters.source`` é
+    ``"cito"`` nas três situações e não distingue canto real de canto atribuído. Conflito e
+    ausência são contados **separados** de propósito: os dois caem no mesmo fallback, mas um
+    conflito crescente é sinal de que a convenção da arte mudou.
+    """
+
+    ART = "art"
+    ASSIGNED_NO_ART = "assigned_no_art"
+    ASSIGNED_CONFLICTING_ART = "assigned_conflicting_art"
+
+
+def art_side(image_url: str | None) -> str | None:
+    """O lado (``"L"``/``"R"``) no nome do arquivo da arte oficial; ausente ou ambíguo -> ``None``.
+
+    O padrão dominante é ``NOME_SOBRENOME_L_08-22.png``, mas a captura real traz variações --
+    sufixo no fim sem underscore (``CORTES_ACOSTA_WALDO_L.png``), separado por hífen
+    (``STOLTZFUS_DUSTIN-L_05-17.png``), com rótulo extra (``GANE_CIRYL_R_BELT_01-22.png``) e
+    percent-encoded. Daí o casamento por separador + letra seguida de não-letra, que reconhece as
+    quatro e não confunde o 'L' final de 'CIRYL' com um lado.
+
+    Achado duplicado é tratado como ausência: um nome que traga os dois lados não diz qual é o
+    desta luta, e adivinhar é pior que cair no fallback.
+    """
+    if image_url is None:
+        return None
+    filename = unquote(image_url.split("?", 1)[0].rsplit("/", 1)[-1])
+    sides: set[str] = {match.group(1) for match in _ART_SIDE_RX.finditer(filename)}
+    if len(sides) != 1:
+        return None
+    return sides.pop()
+
+
+def _art_sides(block: CitoBoutBlock, slugs: tuple[str, str]) -> dict[str, str]:
+    """Lados que a arte do card entrega para os dois cantos desta luta (só os que têm)."""
+    sides: dict[str, str] = {}
+    for fighter in block.fighters:
+        if fighter.fighter_slug not in slugs:
+            continue
+        side = art_side(fighter.image_url)
+        if side is not None:
+            sides[fighter.fighter_slug] = side
+    return sides
+
+
+def assign_corners(
+    bout: CitoBout, block: CitoBoutBlock, sort_keys: Mapping[str, tuple[str, int]]
+) -> tuple[CitoBout, CornerOrigin]:
+    """Ordena o par pelo canto REAL da arte; sem ele, cai para a atribuição determinística.
+
+    A regra, nesta ordem (a procedência devolvida diz qual ramo decidiu):
+
+    1. os dois lados com sufixos **coerentes** (um ``L``, um ``R``) -> canto real;
+    2. **um** lado só com sufixo -> canto real, o outro recebe o oposto (a luta tem dois cantos);
+    3. **conflito** (os dois com o mesmo sufixo) -> fallback determinístico;
+    4. **nenhum** sufixo -> fallback determinístico.
+
+    Nunca casar no escuro nem "escolher o mais provável": nos ramos 3 e 4 o canto vira ruído
+    honesto em vez de dado falso. Como ``corners[0]`` é o vermelho por convenção do DTO do M1,
+    ordenar o par é tudo que a decisão precisa -- ``map_bout_core`` e
+    ``upsert_bout_fighter_totals`` a seguem sem saber de nada disto. O ``winner_slug`` não é
+    tocado: reatribuir o canto muda em qual lado o vencedor cai, nunca quem ele é.
+    """
+    primeiro, segundo = bout.corners
+    sides = _art_sides(block, (primeiro.slug, segundo.slug))
+    if not sides:
+        return assign_deterministic_corners(bout, sort_keys), CornerOrigin.ASSIGNED_NO_ART
+    if len(sides) == 2 and sides[primeiro.slug] == sides[segundo.slug]:
+        logger.info(
+            "Luta %r com arte conflitante (os dois cantos marcados como %r); canto atribuído.",
+            bout.bout_id,
+            sides[primeiro.slug],
+        )
+        return (
+            assign_deterministic_corners(bout, sort_keys),
+            CornerOrigin.ASSIGNED_CONFLICTING_ART,
+        )
+    if primeiro.slug in sides:
+        primeiro_e_vermelho = sides[primeiro.slug] == _RED_SIDE
+    else:
+        primeiro_e_vermelho = sides[segundo.slug] == _BLUE_SIDE
+    if primeiro_e_vermelho:
+        return bout, CornerOrigin.ART
+    return bout.model_copy(update={"corners": (segundo, primeiro)}), CornerOrigin.ART
 
 
 def map_stats_to_event(stats: CitoEventStats) -> CitoEvent:
@@ -608,6 +733,7 @@ class GapEventResult:
     profile_calls_used: int
     unmatched_stat_lines: int
     cache_hit: bool
+    corner_origins: Mapping[CornerOrigin, int]
 
 
 def _group_by_bout(
@@ -675,6 +801,7 @@ def ingest_gap_event(
     bout_fighters_inserted = 0
     bout_fighters_reused = 0
     unmatched = 0
+    corner_origins: Counter[CornerOrigin] = Counter()
     with session.begin_nested():
         stats, cache_hit = cache.get_or_fetch(item.slug, client.fetch_event_stats)
         cito_event = map_stats_to_event(stats)
@@ -707,8 +834,10 @@ def ingest_gap_event(
 
         sort_keys = corner_sort_keys(fighters_by_slug, fighter_ids)
         for bout in cito_event.bouts:
-            # O canto persistido é ATRIBUÍDO aqui, pelo nome normalizado -- nunca o do payload.
-            bout = assign_deterministic_corners(bout, sort_keys)
+            # O canto persistido é decidido aqui -- da arte do card quando ela o entrega, do
+            # nome normalizado quando não. Nunca do campo `corner` do payload.
+            bout, corner_origin = assign_corners(bout, blocks_by_id[bout.bout_id], sort_keys)
+            corner_origins[corner_origin] += 1
             red, blue = bout.corners
             bout_db_id = upsert_bout(
                 session,
@@ -758,6 +887,7 @@ def ingest_gap_event(
         profile_calls_used=profile_calls,
         unmatched_stat_lines=unmatched,
         cache_hit=cache_hit,
+        corner_origins=dict(corner_origins),
     )
 
 
@@ -777,6 +907,10 @@ class GapSyncSummary:
     ``events_ambiguous`` lista os slugs que a entity resolution não conseguiu resolver -- é a
     lacuna **explícita** que o humano precisa ver para decidir o desempate. Nada foi gravado
     para eles.
+
+    ``corner_origins`` conta, por ``CornerOrigin``, de onde saiu o canto de cada luta ingerida:
+    é o único lugar onde a procedência aparece, já que ``bout_fighters.source`` é ``"cito"`` nos
+    dois casos e não a distingue.
     """
 
     events_ingested: int
@@ -787,6 +921,7 @@ class GapSyncSummary:
     bout_fighters: TableDelta
     rounds_inserted: int
     unmatched_stat_lines: int
+    corner_origins: Mapping[CornerOrigin, int]
     profile_calls_used: int
     stats_calls_used: int
     cache_hits: int
@@ -813,7 +948,8 @@ def _log_gap_summary(summary: GapSyncSummary, limit: int) -> None:
         "Resumo do fechamento do gap (source=%s): eventos ingeridos=%d; eventos já presentes=%d; "
         "eventos ambíguos (pulados)=%d; lutadores criados=%d; bouts inseridos=%d; "
         "bout_fighters inseridos=%d; rounds inseridos=%d; cantos não-casados=%d; "
-        "chamadas de stats=%d; desempates de perfil=%d; "
+        "canto real (arte)=%d; canto atribuído (sem arte)=%d; canto atribuído (arte em "
+        "conflito)=%d; chamadas de stats=%d; desempates de perfil=%d; "
         "cache hits=%d; chamadas Cito=%d/%d; último persistido=%s; último do catálogo=%s; "
         "defasagem=%s dias",
         summary.source,
@@ -825,6 +961,9 @@ def _log_gap_summary(summary: GapSyncSummary, limit: int) -> None:
         summary.bout_fighters.inserted,
         summary.rounds_inserted,
         summary.unmatched_stat_lines,
+        summary.corner_origins.get(CornerOrigin.ART, 0),
+        summary.corner_origins.get(CornerOrigin.ASSIGNED_NO_ART, 0),
+        summary.corner_origins.get(CornerOrigin.ASSIGNED_CONFLICTING_ART, 0),
         summary.stats_calls_used,
         summary.profile_calls_used,
         summary.cache_hits,
@@ -890,6 +1029,7 @@ def run_gap_sync(
     profile_calls = 0
     stats_calls = 0
     cache_hits = 0
+    corner_origins: Counter[CornerOrigin] = Counter()
     ambiguous: list[str] = []
     for index, item in enumerate(selected):
         try:
@@ -918,6 +1058,7 @@ def run_gap_sync(
         bout_fighters_reused += result.bout_fighters.updated
         rounds_inserted += result.rounds_inserted
         unmatched += result.unmatched_stat_lines
+        corner_origins.update(result.corner_origins)
         profile_calls += result.profile_calls_used
         logger.info(
             "Evento %r (slug %r, %s) ingerido: %d lutas, %d cantos, %d rounds, %d lutadores "
@@ -950,6 +1091,7 @@ def run_gap_sync(
         bout_fighters=TableDelta(inserted=bout_fighters_inserted, updated=bout_fighters_reused),
         rounds_inserted=rounds_inserted,
         unmatched_stat_lines=unmatched,
+        corner_origins=dict(corner_origins),
         profile_calls_used=profile_calls,
         stats_calls_used=stats_calls,
         cache_hits=cache_hits,

@@ -25,6 +25,7 @@ from apps.fighters.models import Fighter
 from ingestion.cito.cache import EventStatsCache
 from ingestion.cito.client import CallBudget, CitoClient
 from ingestion.cito.dto import (
+    CitoBout,
     CitoBoutBlock,
     CitoBoutFighterRef,
     CitoCatalogItem,
@@ -33,11 +34,14 @@ from ingestion.cito.dto import (
     CitoFighter,
 )
 from ingestion.cito.gap_sync import (
+    CornerOrigin,
     GapAmbiguityError,
     GapEventResult,
     GapSyncError,
     GapSyncSummary,
     _parse_args,
+    art_side,
+    assign_corners,
     assign_deterministic_corners,
     corner_profile_to_fighter,
     corner_sort_keys,
@@ -1139,25 +1143,29 @@ def test_parse_args_exposes_the_window_start() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Canto determinístico -- trava do vazamento de rótulo (decisão do humano, 2026-09-01).
+# Canto atribuído (fallback) -- trava do vazamento de rótulo (decisão do humano, 2026-09-01).
 #
 # O `corner` da Cito é o DESFECHO, não o canto de caminhada: 1.882 de 1.888 lutas decididas
 # trazem o vencedor em `red`, contra 64,6% na base do Kaggle, que é a taxa real do UFC.
 # Persistir aquele rótulo fixava o alvo do modelo (`target_winner_corner`) em `red` para toda
 # luta vinda da Cito. Estes testes existem para que ninguém "conserte" o código de volta.
+#
+# Continuam valendo depois da rodada de correção de 2026-09-01: eles agora exercitam o
+# **fallback**, sobre um card real cuja arte não traz o lado -- que é exatamente o caminho em
+# que o vazamento poderia voltar a entrar.
 # --------------------------------------------------------------------------- #
 
 
 def test_ingest_gap_event_derives_the_corner_from_the_normalized_name_not_from_the_payload(
     db_session: Session, tmp_path: Path
 ) -> None:
-    """O canto persistido sai do menor nome normalizado do par, nunca do `corner` da Cito.
+    """Sem lado na arte, o canto sai do menor nome normalizado -- nunca do `corner` da Cito.
 
     Critério independente do resultado **e** da fonte: é isso que transforma o rótulo em ruído
     em vez de viés. Um teste que só verificasse "gravou um canto" passaria com o vazamento
     intacto.
     """
-    _ingest_payload_real(db_session, tmp_path)
+    _ingest_payload_sem_arte(db_session, tmp_path)
 
     cantos_por_luta: dict[int, dict[Corner, str]] = {}
     for canto in db_session.scalars(select(BoutFighter)):
@@ -1165,7 +1173,7 @@ def test_ingest_gap_event_derives_the_corner_from_the_normalized_name_not_from_t
         assert lutador is not None
         cantos_por_luta.setdefault(canto.bout_id, {})[canto.corner] = lutador.name_normalized
 
-    assert len(cantos_por_luta) == 13
+    assert len(cantos_por_luta) == 6
     for bout_id, por_canto in cantos_por_luta.items():
         assert set(por_canto) == {Corner.RED, Corner.BLUE}, bout_id
         assert por_canto[Corner.RED] < por_canto[Corner.BLUE], bout_id
@@ -1176,11 +1184,12 @@ def test_ingest_gap_event_does_not_leak_the_winner_into_the_red_corner(
 ) -> None:
     """A taxa de vitória do vermelho não pode ser degenerada, mesmo com o payload enviesado.
 
-    Nas 13 lutas do card real a Cito põe o vencedor em `red` em **todas**. Se o canto viesse
-    do payload, a taxa seria 100% e o alvo do modelo ficaria perfeitamente preditivo. Vindo do
-    ``fighter_id``, o vencedor cai no vermelho aproximadamente metade das vezes.
+    Nas seis lutas deste card real a Cito põe o vencedor em `red` em **todas**. Se o canto
+    viesse do payload, a taxa seria 100% e o alvo do modelo ficaria perfeitamente preditivo.
+    Atribuído pelo nome normalizado, o vencedor cai no vermelho aproximadamente metade das
+    vezes (quatro de seis aqui).
     """
-    _ingest_payload_real(db_session, tmp_path)
+    _ingest_payload_sem_arte(db_session, tmp_path)
 
     lutas = db_session.scalars(select(Bout).where(Bout.winner_id.is_not(None))).all()
     vermelho_venceu = [
@@ -1233,14 +1242,14 @@ def test_ingest_gap_event_does_not_park_every_newcomer_in_the_same_corner(
     é criada pela ingestão. A distribuição dos estreantes entre vermelho e azul não pode ser
     degenerada.
     """
-    stats = _real_stats()
+    stats = _stats_sem_arte()
     for indice, bloco in enumerate(stats.bouts):
         veterano = bloco.fighters[indice % 2]
         nome = (veterano.profile.name if veterano.profile else veterano.fighter_name) or ""
         _seed_fighter(db_session, nome)
     veteranos = {fighter_id for (fighter_id,) in db_session.execute(select(Fighter.id))}
 
-    _ingest_payload_real(db_session, tmp_path)
+    _ingest_payload_sem_arte(db_session, tmp_path)
 
     estreantes_no_vermelho = sum(
         1
@@ -1248,4 +1257,227 @@ def test_ingest_gap_event_does_not_park_every_newcomer_in_the_same_corner(
         if canto.fighter_id not in veteranos
     )
 
-    assert 0 < estreantes_no_vermelho < 13
+    assert 0 < estreantes_no_vermelho < 6
+
+
+# --------------------------------------------------------------------------- #
+# Canto REAL, recuperado da arte oficial do card (rodada de correção, 2026-09-01).
+#
+# O sufixo `_L_`/`_R_` do nome do arquivo da arte é o canto de caminhada. Medido contra o canto
+# verdadeiro do Kaggle nos 25 eventos semeados de 2025: 306 cantos com sufixo, 305 acertos
+# (99,7%) com L=vermelho e R=azul -- enquanto o campo `corner` da API acerta 289 de 513 (56,3%).
+# A atribuição determinística continua existindo, agora como **fallback**.
+# --------------------------------------------------------------------------- #
+
+# Prefixo real das URLs de arte de card da Cito (o caminho não importa; o sufixo está no nome).
+_ARTE = "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/"
+
+# Payload REAL de um evento cuja arte **não** traz o lado (o padrão é por evento: ou todas as
+# lutas do card têm sufixo, ou nenhuma tem). É o card que exercita o fallback determinístico.
+_PAYLOAD_SEM_ARTE = "ufc-fight-night-whittaker-vs-de-ridder"
+
+
+def _stats_sem_arte() -> CitoEventStats:
+    """As stats do card real **sem** lado na arte (6 lutas, sem box-score), lidas da fixture."""
+    return _fixture_client().fetch_event_stats(_PAYLOAD_SEM_ARTE)
+
+
+@pytest.mark.parametrize(
+    ("arquivo", "esperado"),
+    [
+        ("HERNANDEZ_ANTHONY_L_08-22.png?itok=fVO3QnPN", "L"),
+        ("TORRES_MANUEL_R_06-27.png?itok=OkqxReP6", "R"),
+        ("CORTES_ACOSTA_WALDO_L.png?itok=seL9kGfA", "L"),
+        ("STOLTZFUS_DUSTIN-L_05-17.png?itok=TRnfXkfq", "L"),
+        ("GANE_CIRYL_R_BELT_01-22.png?itok=_OPJ_6G0", "R"),
+        ("NAKAMURA_RINYA_L%298_26.png?itok=LZEKuEBM", "L"),
+        ("MINGYANG_ZHANG_05-30.png?itok=VzfxgMon", None),
+        ("SILVA_L_R_08-22.png", None),
+    ],
+)
+def test_art_side_reads_the_side_from_the_official_art_filename(
+    arquivo: str, esperado: str | None
+) -> None:
+    """O lado sai do nome do arquivo da arte -- nas variações reais que a Cito serve.
+
+    Os seis primeiros casos são nomes de arquivo **reais** da captura de 2026-09-01: o padrão
+    dominante (`_L_08-22`), o sufixo no fim sem underscore, o separado por hífen, a variante com
+    'BELT' e o percent-encoded. Arte sem lado devolve ``None`` (o card cai no fallback), e nome
+    com os dois lados é tratado como ausência: adivinhar seria pior que não saber.
+    """
+    assert art_side(_ARTE + arquivo) == esperado
+
+
+def test_art_side_treats_a_missing_image_as_absence() -> None:
+    """Canto sem arte no payload não tem lado -- ausência explícita, nunca um lado default."""
+    assert art_side(None) is None
+
+
+def _bloco_com_arte(alfa: str | None, zeta: str | None) -> CitoBoutBlock:
+    """Uma luta do card com as artes informadas; 'alfa' vence a ordem alfabética de 'zeta'.
+
+    O par é nomeado assim de propósito: no fallback determinístico o vermelho é sempre 'alfa',
+    então qualquer teste em que o vermelho seja 'zeta' só pode ter vindo da arte.
+    """
+    return CitoBoutBlock.model_validate(
+        {
+            "id": "luta-com-arte",
+            "method": "KO/TKO",
+            "winnerFighterSlug": "zeta-fighter",
+            "fighters": [
+                {
+                    "fighterSlug": "alfa-fighter",
+                    "fighterName": "Alfa Fighter",
+                    "corner": "blue",
+                    "imageUrl": alfa,
+                },
+                {
+                    "fighterSlug": "zeta-fighter",
+                    "fighterName": "Zeta Fighter",
+                    "corner": "red",
+                    "imageUrl": zeta,
+                },
+            ],
+        }
+    )
+
+
+_CHAVES_ALFA_ZETA = {"alfa-fighter": ("alfa fighter", 1), "zeta-fighter": ("zeta fighter", 2)}
+
+
+def _atribui(alfa: str | None, zeta: str | None) -> tuple[CitoBout, CornerOrigin]:
+    """Roda ``assign_corners`` sobre a luta sintética com as artes informadas."""
+    bloco = _bloco_com_arte(alfa, zeta)
+    (bout,) = map_stats_to_bouts(_stats_com_bouts([bloco]))
+    return assign_corners(bout, bloco, _CHAVES_ALFA_ZETA)
+
+
+def test_assign_corners_uses_the_real_corner_when_both_sides_agree() -> None:
+    """Os dois lados com sufixos coerentes -> canto real: `_L_` é o vermelho, `_R_` o azul.
+
+    O caso é o oposto do fallback (que poria 'alfa' no vermelho), então o vermelho ser 'zeta'
+    prova que o canto veio da arte e não da ordem alfabética.
+    """
+    bout, origem = _atribui(_ARTE + "ALFA_FIGHTER_R_08-22.png", _ARTE + "ZETA_FIGHTER_L_08-22.png")
+
+    assert [canto.slug for canto in bout.corners] == ["zeta-fighter", "alfa-fighter"]
+    assert origem is CornerOrigin.ART
+
+
+def test_assign_corners_infers_the_other_side_from_a_single_suffix() -> None:
+    """Um lado só com sufixo basta: o outro recebe o canto oposto (o card tem dois cantos)."""
+    bout, origem = _atribui(_ARTE + "ALFA_FIGHTER_R_08-22.png", None)
+
+    assert [canto.slug for canto in bout.corners] == ["zeta-fighter", "alfa-fighter"]
+    assert origem is CornerOrigin.ART
+
+
+def test_assign_corners_falls_back_when_both_sides_carry_the_same_suffix() -> None:
+    """Conflito (os dois com o mesmo sufixo) cai para o determinístico, nunca escolhe um lado.
+
+    O caso é real: em 'ufc-fight-night-july-12-2025' a arte de Derrick Lewis é a do evento
+    anterior (`LEWIS_DERRICK_R_06-14`) e a de Tallison Teixeira é a do card
+    (`TEIXEIRA_TALLISON_R_07-12`) -- as duas com `_R_`. Casar no escuro poria os dois no azul.
+    """
+    bout, origem = _atribui(
+        _ARTE + "LEWIS_DERRICK_R_06-14.png?itok=dyVF9m0E",
+        _ARTE + "TEIXEIRA_TALLISON_R_07-12.png?itok=OkqxReP6",
+    )
+
+    assert [canto.slug for canto in bout.corners] == ["alfa-fighter", "zeta-fighter"]
+    assert origem is CornerOrigin.ASSIGNED_CONFLICTING_ART
+
+
+def test_assign_corners_falls_back_when_no_side_carries_a_suffix() -> None:
+    """Sem sufixo nenhum, o canto volta a ser atribuído pelo nome normalizado (o fallback)."""
+    bout, origem = _atribui(_ARTE + "ALFA_FIGHTER_08-22.png", None)
+
+    assert [canto.slug for canto in bout.corners] == ["alfa-fighter", "zeta-fighter"]
+    assert origem is CornerOrigin.ASSIGNED_NO_ART
+
+
+def test_assign_corners_never_touches_the_winner() -> None:
+    """Recuperar o canto muda em que lado o vencedor cai, nunca quem ele é (vem do slug)."""
+    real, _ = _atribui(_ARTE + "ALFA_FIGHTER_R_08-22.png", _ARTE + "ZETA_FIGHTER_L_08-22.png")
+    atribuido, _ = _atribui(None, None)
+
+    assert real.winner_slug == atribuido.winner_slug == "zeta-fighter"
+
+
+def test_ingest_gap_event_persists_the_real_corner_from_the_art(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """As 13 lutas do card real têm canto recuperável: quem tem `_L_` na arte fica no vermelho."""
+    resultado, _ = _ingest_payload_real(db_session, tmp_path)
+
+    esperados = {
+        normalize_name((canto.profile.name if canto.profile else canto.fighter_name) or "")
+        for bloco in _real_stats().bouts
+        for canto in bloco.fighters
+        if art_side(canto.image_url) == "L"
+    }
+    vermelhos: set[str] = set()
+    for canto_db in db_session.scalars(select(BoutFighter).where(BoutFighter.corner == Corner.RED)):
+        lutador = db_session.get(Fighter, canto_db.fighter_id)
+        assert lutador is not None
+        vermelhos.add(lutador.name_normalized)
+
+    assert len(esperados) == 13
+    assert vermelhos == esperados
+    assert resultado.corner_origins == {CornerOrigin.ART: 13}
+
+
+def _item_sem_arte() -> CitoCatalogItem:
+    """Item de catálogo do card sem arte (os campos são os do próprio evento na fixture)."""
+    return CitoCatalogItem.model_validate(
+        {
+            "id": "0f357aa7-5664-498b-9e11-03b8767778d7",
+            "slug": _PAYLOAD_SEM_ARTE,
+            "title": "UFC Fight Night: Whittaker vs de Ridder",
+            "status": "completed",
+            "startsAt": "2025-07-26T19:00:00.000Z",
+            "eventDate": "2025-07-26",
+        }
+    )
+
+
+def _ingest_payload_sem_arte(session: Session, tmp_path: Path) -> GapEventResult:
+    """Ingere o card real **sem** sufixo de lado na arte -- o caminho do fallback."""
+    return ingest_gap_event(
+        session,
+        _item_sem_arte(),
+        _fixture_client(CallBudget(limit=10)),
+        EventStatsCache(tmp_path),
+        today=_HOJE,
+    )
+
+
+def test_ingest_gap_event_falls_back_to_the_assigned_corner_without_art(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Card sem sufixo nenhum: as seis lutas entram com canto atribuído, e o resumo diz isso."""
+    resultado = _ingest_payload_sem_arte(db_session, tmp_path)
+
+    assert resultado.corner_origins == {CornerOrigin.ASSIGNED_NO_ART: 6}
+    assert db_session.scalar(select(func.count()).select_from(Bout)) == 6
+
+
+def test_run_gap_sync_reports_the_corner_origin_of_every_bout(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """O resumo do lote agrega a procedência do canto luta a luta (CA-08).
+
+    Sem esse número não há como avaliar depois o impacto no modelo: ``bout_fighters.source`` é
+    ``"cito"`` nas duas origens e não distingue canto real de canto atribuído.
+    """
+    _seed_persisted_event(
+        db_session,
+        name="UFC 328: Chimaev vs. Strickland",
+        event_date=date(2026, 5, 9),
+        cito_slug="ufc-328",
+    )
+
+    resumo, _ = _run_gap(db_session, tmp_path)
+
+    assert resumo.corner_origins == {CornerOrigin.ART: 3}
+    assert sum(resumo.corner_origins.values()) == resumo.bouts.inserted

@@ -224,10 +224,16 @@ class CitoFighterProfile(BaseModel):
 
 
 class CitoBoutFighterRef(BaseModel):
-    """Um canto do card (``bouts[].fighters[]``) -- é daqui que o ``corner`` vem.
+    """Um canto do card (``bouts[].fighters[]``).
 
-    As linhas de ``boutStats``/``roundStats`` da API real **não** trazem ``corner``; o rótulo de
-    canto só existe aqui, no card. Ver ADR 0005.
+    O ``corner`` daqui é o **desfecho** disfarçado de canto, não o canto de caminhada (ver o
+    comentário 'POR QUE O CANTO NÃO VEM DO CAMPO `corner`' em ``ingestion.cito.gap_sync``); quem
+    carrega o canto de verdade é a URL da arte oficial (``image_url``). As linhas de
+    ``boutStats``/``roundStats`` da API real não trazem canto nenhum. Ver ADR 0005.
+
+    ``image_url`` é a arte **desta luta** (o nome do arquivo traz o lado). Não confundir com
+    ``profile.imageUrl``, que é a arte do evento mais recente **do atleta** e por isso dá o canto
+    de outro card -- medido em 2026-09-01 e deliberadamente não modelado.
     """
 
     model_config = _CAMEL_CONFIG
@@ -236,6 +242,7 @@ class CitoBoutFighterRef(BaseModel):
     fighter_name: str | None = None
     corner: Corner
     outcome: str | None = None  # "win" | "loss" | "draw" | ...
+    image_url: str | None = None
     profile: CitoFighterProfile | None = None
 
 

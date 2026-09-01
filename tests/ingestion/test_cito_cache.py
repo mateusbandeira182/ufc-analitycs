@@ -102,3 +102,25 @@ def test_cache_hit_preserva_o_profile_embutido_no_canto(tmp_path: Path) -> None:
     assert canto.profile is not None
     assert canto.profile.nickname == "Fluffy"
     assert (canto.profile.record.wins, canto.profile.record.losses) == (15, 4)
+
+
+def test_cache_hit_preserva_a_arte_do_card(tmp_path: Path) -> None:
+    """A URL da arte sobrevive ao round-trip -- é dela que sai o canto REAL da luta.
+
+    Desde a correção de 2026-09-01 o canto persistido vem do sufixo ``_L_``/``_R_`` do nome do
+    arquivo da arte (``ingestion.cito.gap_sync.art_side``). Se a serialização esquecesse a URL,
+    um gap retomado do cache degradaria silenciosamente para o canto atribuído -- e a diferença
+    não apareceria em contagem nenhuma, só no viés do modelo meses depois.
+    """
+    slug = "ufc-fight-night-august-22-2026"
+    cache = EventStatsCache(tmp_path)
+    cache.get_or_fetch(slug, _fixture_event_stats)
+
+    stats, hit = cache.get_or_fetch(slug, _fixture_event_stats)
+
+    assert hit is True
+    artes = [canto.image_url for bout in stats.bouts for canto in bout.fighters]
+    assert artes == [
+        canto.image_url for bout in _fixture_event_stats(slug).bouts for canto in bout.fighters
+    ]
+    assert all(arte is not None for arte in artes)
