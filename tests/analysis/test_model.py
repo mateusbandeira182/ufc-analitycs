@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from analysis.model import (
+    ARTIFACT_NAME,
     LoadedModel,
     load_artifact,
     run_training,
@@ -175,6 +176,52 @@ def test_load_artifact_recarrega_modelo_e_features(db_session: Session, tmp_path
     assert loaded.feature_names == result.feature_names
     amostra = pd.DataFrame([dict.fromkeys(loaded.feature_names, 0.0)])
     assert len(loaded.model.predict(amostra)) == 1
+
+
+def test_load_artifact_devolve_trained_at_cru_do_artefato(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """``load_artifact`` devolve o ``trained_at`` **exatamente** como persistido (string ISO).
+
+    Esse valor vira o ``model_version`` de ``bout_predictions``, metade da chave única
+    ``(bout_id, model_version)``. Se fosse parseado e re-serializado, um ``+00:00`` viraria
+    ``Z`` ou os microssegundos se perderiam -- e a idempotência quebraria em silêncio,
+    gravando uma linha nova a cada predição da mesma luta com o mesmo modelo.
+    """
+    _seed_many(db_session, 20)
+    result = run_training(db_session, test_fraction=0.25, random_state=0)
+    save_artifact(result, directory=tmp_path)
+
+    loaded = load_artifact(directory=tmp_path)
+
+    assert loaded.trained_at == result.trained_at.isoformat()
+    assert joblib.load(tmp_path / ARTIFACT_NAME)["trained_at"] == loaded.trained_at
+
+
+def test_load_artifact_rejeita_trained_at_malformado(db_session: Session, tmp_path: Path) -> None:
+    """Artefato com ``trained_at`` inválido falha rápido, em vez de virar versão inútil."""
+    _seed_many(db_session, 20)
+    save_artifact(run_training(db_session, test_fraction=0.25, random_state=0), directory=tmp_path)
+    caminho = tmp_path / ARTIFACT_NAME
+    payload = joblib.load(caminho)
+    payload["trained_at"] = "nao-e-uma-data"
+    joblib.dump(payload, caminho)
+
+    with pytest.raises(ValueError, match="trained_at"):
+        load_artifact(directory=tmp_path)
+
+
+def test_load_artifact_rejeita_trained_at_sem_fuso(db_session: Session, tmp_path: Path) -> None:
+    """``trained_at`` naive é recusado: sem fuso, o instante não identifica o treino."""
+    _seed_many(db_session, 20)
+    save_artifact(run_training(db_session, test_fraction=0.25, random_state=0), directory=tmp_path)
+    caminho = tmp_path / ARTIFACT_NAME
+    payload = joblib.load(caminho)
+    payload["trained_at"] = "2026-08-31T10:00:00"
+    joblib.dump(payload, caminho)
+
+    with pytest.raises(ValueError, match="fuso"):
+        load_artifact(directory=tmp_path)
 
 
 def test_load_artifact_ausente_falha_claro(tmp_path: Path) -> None:

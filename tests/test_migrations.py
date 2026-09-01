@@ -18,6 +18,8 @@ TABELA_DERIVADA = "bout_features"
 TABELA_ROUNDS = "bout_fighter_rounds"
 # Identificadores externos da Cito acrescentados a ``events`` pelo M6 (SPEC 007, Slice 03).
 IDENTIFICADORES_CITO = {"cito_slug", "cito_event_id"}
+# Registro de predições (SPEC 007, Slice 07).
+TABELA_PREDICOES = "bout_predictions"
 
 
 def _tabelas_existentes(engine: Engine) -> set[str]:
@@ -136,8 +138,13 @@ def test_downgrade_um_passo_remove_identificadores_cito_preserva_events(
 
     O restante de ``events`` (e as demais tabelas) permanece intacto: a migration é
     aditiva, então reverter não pode custar nenhum dado pré-existente.
+
+    Fixa a revisão-alvo (``fd5a802eac7b``) em vez de ``head``: com a migration de
+    ``bout_predictions`` empilhada acima, ``head`` deixou de ser a dos identificadores
+    da Cito, e um ``-1`` a partir do head removeria a tabela de predições -- mesmo
+    ajuste que os testes de ``bout_features`` e da M5 já receberam.
     """
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "fd5a802eac7b")
     assert _colunas(migration_engine, "events") >= IDENTIFICADORES_CITO
 
     command.downgrade(alembic_cfg, "-1")
@@ -146,3 +153,39 @@ def test_downgrade_um_passo_remove_identificadores_cito_preserva_events(
     assert not (IDENTIFICADORES_CITO & colunas_events)
     assert {"id", "name", "date", "location", "source"} <= colunas_events
     assert _tabelas_existentes(migration_engine) >= TABELAS | {TABELA_ROUNDS}
+
+
+def test_upgrade_head_cria_bout_predictions(alembic_cfg: Config, migration_engine: Engine) -> None:
+    """CA-02: ``alembic upgrade head`` cria a tabela ``bout_predictions``."""
+    command.upgrade(alembic_cfg, "head")
+    assert TABELA_PREDICOES in _tabelas_existentes(migration_engine)
+    assert _colunas(migration_engine, TABELA_PREDICOES) >= {
+        "bout_id",
+        "predicted_winner_id",
+        "prob_predicted_winner",
+        "model_version",
+        "n_features",
+        "predicted_at",
+        "source",
+    }
+
+
+def test_downgrade_um_passo_remove_bout_predictions_preserva_o_resto(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-02: o downgrade da Slice 07 dropa **só** ``bout_predictions``.
+
+    A slice é inteiramente aditiva: reverter não pode custar o granular
+    (``bouts``/``bout_fighters``), o round-a-round do M5, o cache derivado, os
+    identificadores da Cito nem o enum ``corner`` (dono: ``bout_fighters``).
+    """
+    command.upgrade(alembic_cfg, "head")
+    assert TABELA_PREDICOES in _tabelas_existentes(migration_engine)
+
+    command.downgrade(alembic_cfg, "-1")
+
+    tabelas = _tabelas_existentes(migration_engine)
+    assert TABELA_PREDICOES not in tabelas
+    assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA}
+    assert _colunas(migration_engine, "events") >= IDENTIFICADORES_CITO
+    assert "corner" in _tipos_enum_existentes(migration_engine)
