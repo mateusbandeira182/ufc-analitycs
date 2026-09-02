@@ -124,3 +124,28 @@ def test_cache_hit_preserva_a_arte_do_card(tmp_path: Path) -> None:
         canto.image_url for bout in _fixture_event_stats(slug).bouts for canto in bout.fighters
     ]
     assert all(arte is not None for arte in artes)
+
+
+def test_cache_hit_preserva_as_urls_de_imagem_do_lutador(tmp_path: Path) -> None:
+    """CA-02 (M7, Slice 06): as duas URLs de imagem sobrevivem ao round-trip do disco.
+
+    Sem isso, uma execução do backfill de imagem **retomada do cache** gravaria ``None`` nas
+    duas colunas achando que é ausência real -- e contagem nenhuma acusaria a diferença, porque
+    ``None`` de campo opcional é indistinguível de ausência legítima. É o mesmo modo de falha
+    que a ``image_url`` da arte já documenta, um nível acima.
+    """
+    slug = "ufc-fight-night-august-22-2026"
+    cache = EventStatsCache(tmp_path)
+    cache.get_or_fetch(slug, _fixture_event_stats)
+
+    stats, hit = cache.get_or_fetch(slug, _fixture_event_stats)
+
+    assert hit is True
+    perfis = [canto.profile for bout in stats.bouts for canto in bout.fighters]
+    assert perfis == [
+        canto.profile for bout in _fixture_event_stats(slug).bouts for canto in bout.fighters
+    ]
+    for perfil in perfis:
+        assert perfil is not None
+        assert perfil.headshot_url is not None
+        assert perfil.body_image_url is not None

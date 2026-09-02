@@ -303,3 +303,99 @@ def test_match_fighter_id_by_age_sem_candidato_de_idade_igual() -> None:
     existing = [_persistido(1, "Bruno Silva", date(1990, 3, 16))]
 
     assert match_fighter_id_by_age("Bruno Silva", 42, existing, today=_HOJE) is None
+
+
+# --------------------------------------------------------------------------- #
+# Chave PREFERENCIAL por identificador externo (M7, SPEC 008, Slice 03 -- RF-07).
+#
+# O ``ufc_fighter_id`` da fonte oficial **complementa** o nome normalizado com precedência; não
+# o substitui. Substituir era inviável por dois motivos concretos: lutador ativo só antes de
+# 2010-03-21 está fora da janela da fonte por decisão (RF-03) e nunca terá id, e a Cito não
+# publica esse identificador -- o caminho incremental ficaria sem chave nenhuma.
+# --------------------------------------------------------------------------- #
+
+
+def test_id_externo_resolve_homonimo_sem_desempate_por_idade() -> None:
+    """RF-07: com o id externo, o homônimo resolve direto -- sem DOB e sem idade.
+
+    É o caso ``bruno-silva``: dois persistidos de mesmo nome normalizado e DOBs distintas. Sem
+    o id, um candidato sem DOB levantaria ``AmbiguousFighterMatchError``; com ele, a resposta é
+    imediata e não passa por ``match_fighter_id_by_age``.
+    """
+    existing = [
+        ExistingFighter(
+            id=1638,
+            name_normalized="bruno silva",
+            date_of_birth=date(1990, 3, 16),
+            ufc_fighter_id="3283",
+        ),
+        ExistingFighter(
+            id=2204,
+            name_normalized="bruno silva",
+            date_of_birth=date(1989, 7, 13),
+            ufc_fighter_id="3314",
+        ),
+    ]
+    candidate = FighterCandidate(name="Bruno Silva", date_of_birth=None, ufc_fighter_id="3314")
+
+    assert match_fighter_id(candidate, existing) == 2204
+
+
+def test_candidato_sem_id_externo_mantem_a_politica_por_nome_e_dob() -> None:
+    """RF-07: sem id no candidato, a política do M1 vale **inalterada** (fallback preservado).
+
+    É o caminho da Cito, que não publica o identificador da fonte oficial: o default do campo
+    não é "para o futuro", é o estado real daquela fonte.
+    """
+    existing = [
+        ExistingFighter(
+            id=1638,
+            name_normalized="bruno silva",
+            date_of_birth=date(1990, 3, 16),
+            ufc_fighter_id="3283",
+        ),
+    ]
+    candidate = FighterCandidate(name="Bruno Silva", date_of_birth=date(1990, 3, 16))
+
+    assert match_fighter_id(candidate, existing) == 1638
+
+
+def test_id_externo_que_nenhum_persistido_tem_cai_no_fallback() -> None:
+    """RF-07: id que o backfill ainda não cobriu não devolve ``None`` precipitado.
+
+    O branch por id é preferencial, não exclusivo: sem persistido que o carregue, a decisão
+    volta para nome normalizado + DOB, como antes.
+    """
+    existing = [
+        ExistingFighter(
+            id=7,
+            name_normalized="alexander volkanovski",
+            date_of_birth=date(1988, 9, 29),
+            ufc_fighter_id=None,
+        ),
+    ]
+    candidate = FighterCandidate(
+        name="Alexander Volkanovski", date_of_birth=date(1988, 9, 29), ufc_fighter_id="2732"
+    )
+
+    assert match_fighter_id(candidate, existing) == 7
+
+
+def test_dois_persistidos_com_o_mesmo_id_externo_levantam_ambiguidade() -> None:
+    """RF-07: id externo repetido em dois persistidos é violação de invariante -- falha alto.
+
+    Não é ambiguidade de nome (que o fallback saberia tratar): é o backfill ter escrito o mesmo
+    identificador em duas linhas, e escolher uma delas esconderia o defeito.
+    """
+    existing = [
+        ExistingFighter(
+            id=1, name_normalized="bruno silva", date_of_birth=None, ufc_fighter_id="3283"
+        ),
+        ExistingFighter(
+            id=2, name_normalized="outro nome", date_of_birth=None, ufc_fighter_id="3283"
+        ),
+    ]
+    candidate = FighterCandidate(name="Bruno Silva", date_of_birth=None, ufc_fighter_id="3283")
+
+    with pytest.raises(AmbiguousFighterMatchError):
+        match_fighter_id(candidate, existing)

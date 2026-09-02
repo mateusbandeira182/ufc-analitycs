@@ -23,9 +23,9 @@ from ingestion.cito.dto import CitoCatalogItem
 from ingestion.cito.matching import (
     AmbiguousEventMatchError,
     is_ufc_catalog_item,
-    normalize_event_name,
     resolve_event_match,
 )
+from ingestion.normalize import normalize_event_name
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 

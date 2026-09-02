@@ -1,0 +1,570 @@
+{
+ "success": true,
+ "data": [
+  {
+   "id": "5bd447e9-0ffd-4722-baf1-cb0262aa7e70",
+   "slug": "ufc-fight-night-august-29-2026",
+   "title": "UFC Fight Night: Nurmagomedov vs Song",
+   "shortTitle": "Nurmagomedov vs Song",
+   "status": "completed",
+   "startsAt": "2026-08-29T10:00:00.000Z",
+   "eventDate": "2026-08-29",
+   "venue": "Oriental Sports Center",
+   "city": "Pudong District",
+   "state": null,
+   "country": "China",
+   "locationText": "Oriental Sports Center, Pudong District China",
+   "bouts": [
+    {
+     "id": "228fefc6923c40a5",
+     "cardSection": "Main Card",
+     "cardSectionOrder": 1,
+     "boutOrder": 1001,
+     "weightClass": "Bantamweight",
+     "titleBout": false,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": "song-yadong",
+     "resultRound": 2,
+     "resultTime": "1:48",
+     "method": "KO/TKO",
+     "methodDetails": "Punch",
+     "fighters": [
+      {
+       "fighterSlug": "umar-nurmagomedov",
+       "fighterName": "Umar Nurmagomedov",
+       "corner": "blue",
+       "outcome": "loss",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/NURMAGOMEDOV_UMAR_L_08-29.png?itok=MlLFQLoP",
+       "profile": {
+        "slug": "umar-nurmagomedov",
+        "name": "Umar Nurmagomedov",
+        "nickname": null,
+        "record": {
+         "wins": 20,
+         "losses": 2,
+         "draws": 0,
+         "noContest": null,
+         "text": "20-2-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-01/NURMAGOMEDOV_UMAR_01-24.png?itok=42cWtPfi",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-01/NURMAGOMEDOV_UMAR_L_01-24.png?itok=OZjSlOHS"
+       }
+      },
+      {
+       "fighterSlug": "song-yadong",
+       "fighterName": "Song Yadong",
+       "corner": "red",
+       "outcome": "win",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/YADONG_SONG_R_08-29.png?itok=AuT05HLe",
+       "profile": {
+        "slug": "song-yadong",
+        "name": "Song Yadong",
+        "nickname": "Kung Fu Kid",
+        "record": {
+         "wins": 24,
+         "losses": 9,
+         "draws": 1,
+         "noContest": null,
+         "text": "24-9-1 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-05/YADONG_SONG_05-30.png?itok=ZSGpgQqR",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-05/YADONG_SONG_L_05-30.png?itok=yMtLdKZS"
+       }
+      }
+     ]
+    },
+    {
+     "id": "73cb6c4e060c4ee9",
+     "cardSection": "Main Card",
+     "cardSectionOrder": 1,
+     "boutOrder": 1002,
+     "weightClass": "Women's Strawweight",
+     "titleBout": false,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": "denise-gomes",
+     "resultRound": 1,
+     "resultTime": "4:49",
+     "method": "KO/TKO",
+     "methodDetails": "Elbow",
+     "fighters": [
+      {
+       "fighterSlug": "denise-gomes",
+       "fighterName": "Denise Gomes",
+       "corner": "red",
+       "outcome": "win",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/GOMES_DENISE_R_08-29.png?itok=0El0imSy",
+       "profile": {
+        "slug": "denise-gomes",
+        "name": "Denise Gomes",
+        "nickname": "Dee",
+        "record": {
+         "wins": 13,
+         "losses": 3,
+         "draws": 0,
+         "noContest": null,
+         "text": "13-3-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2025-05/GOMES_DENISE_05-17.png?itok=1ppGctRD",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2024-11/GOMES_DENISE_L_11-04.png?itok=TD3_gJ1z"
+       }
+      },
+      {
+       "fighterSlug": "xiaonan-yan",
+       "fighterName": "Yan Xiaonan",
+       "corner": "blue",
+       "outcome": "loss",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/XIAONAN_YAN_L_08-29.png?itok=SY7WyQMw",
+       "profile": {
+        "slug": "xiaonan-yan",
+        "name": "Yan Xiaonan",
+        "nickname": null,
+        "record": {
+         "wins": 19,
+         "losses": 5,
+         "draws": 0,
+         "noContest": 0,
+         "text": "19-5-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2025-04/XIAONAN_YAN_04-12.png?itok=rKNCv6KF",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2025-04/XIAONAN_YAN_L_04-12.png?itok=8k6eQpyS"
+       }
+      }
+     ]
+    },
+    {
+     "id": "4af8cb715ac0d459",
+     "cardSection": "Main Card",
+     "cardSectionOrder": 1,
+     "boutOrder": 1003,
+     "weightClass": "Bantamweight",
+     "titleBout": false,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": "kai-asakura",
+     "resultRound": 2,
+     "resultTime": "0:34",
+     "method": "KO/TKO",
+     "methodDetails": "Punches",
+     "fighters": [
+      {
+       "fighterSlug": "kai-asakura",
+       "fighterName": "Kai Asakura",
+       "corner": "red",
+       "outcome": "win",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/ASAKURA_KAI_R_08-29.png?itok=7zJHfOOk",
+       "profile": {
+        "slug": "kai-asakura",
+        "name": "Kai Asakura",
+        "nickname": null,
+        "record": {
+         "wins": 23,
+         "losses": 6,
+         "draws": 0,
+         "noContest": null,
+         "text": "23-6-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-05/ASAKURA_KAI_05-30.png?itok=zK8HdTe4",
+        "bodyImageUrl": null
+       }
+      },
+      {
+       "fighterSlug": "aoriqileng",
+       "fighterName": "Aoriqileng",
+       "corner": "blue",
+       "outcome": "loss",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/AORIQILENG_L_08-29.png?itok=agXV2U5o",
+       "profile": {
+        "slug": "aoriqileng",
+        "name": "Aoriqileng",
+        "nickname": "The Mongolian Murderer",
+        "record": {
+         "wins": 26,
+         "losses": 14,
+         "draws": 0,
+         "noContest": null,
+         "text": "26-14-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-05/AORIQILENG_05-30.png?itok=jnMfPR3X",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-05/AORIQILENG_L_05-30.png?itok=I45de0t0"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "f0762f64-4e0a-4186-8fba-55ec2379ffae",
+   "slug": "ufc-324",
+   "title": "UFC 324",
+   "shortTitle": "UFC 324",
+   "status": "completed",
+   "startsAt": "2026-01-25T02:00:00.000Z",
+   "eventDate": "2026-01-24",
+   "venue": "T-Mobile Arena",
+   "city": "Las Vegas",
+   "state": null,
+   "country": "United States",
+   "locationText": "T-Mobile Arena, Las Vegas United States",
+   "bouts": [
+    {
+     "id": "007e8e0d4a39d82c",
+     "cardSection": "Main Card",
+     "cardSectionOrder": 1,
+     "boutOrder": 1002,
+     "weightClass": "Bantamweight",
+     "titleBout": false,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": "sean-omalley",
+     "resultRound": 3,
+     "resultTime": "5:00",
+     "method": "Decision - Unanimous",
+     "methodDetails": null,
+     "fighters": [
+      {
+       "fighterSlug": "sean-omalley",
+       "fighterName": "Sean O'Malley",
+       "corner": "red",
+       "outcome": "win",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-06/OMALLEY_SEAN_L_06-14.png?itok=4i3VLGqW",
+       "profile": {
+        "slug": "sean-omalley",
+        "name": "Sean O'Malley",
+        "nickname": "Suga",
+        "record": {
+         "wins": 20,
+         "losses": 3,
+         "draws": 0,
+         "noContest": 1,
+         "text": "20-3-0 (1 NC)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-06/OMALLEY_SEAN_06-14.png?itok=VTuIRbu-",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-06/OMALLEY_SEAN_L_06-14.png?itok=mk-P63ge"
+       }
+      },
+      {
+       "fighterSlug": "song-yadong",
+       "fighterName": "Song Yadong",
+       "corner": "blue",
+       "outcome": "loss",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/YADONG_SONG_R_08-29.png?itok=AuT05HLe",
+       "profile": {
+        "slug": "song-yadong",
+        "name": "Song Yadong",
+        "nickname": "Kung Fu Kid",
+        "record": {
+         "wins": 24,
+         "losses": 9,
+         "draws": 1,
+         "noContest": null,
+         "text": "24-9-1 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-05/YADONG_SONG_05-30.png?itok=ZSGpgQqR",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-05/YADONG_SONG_L_05-30.png?itok=yMtLdKZS"
+       }
+      }
+     ]
+    },
+    {
+     "id": "6c9f4799990c3c33",
+     "cardSection": "Prelims",
+     "cardSectionOrder": 2,
+     "boutOrder": 2001,
+     "weightClass": "Bantamweight",
+     "titleBout": false,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": "umar-nurmagomedov",
+     "resultRound": 3,
+     "resultTime": "5:00",
+     "method": "Decision - Unanimous",
+     "methodDetails": null,
+     "fighters": [
+      {
+       "fighterSlug": "umar-nurmagomedov",
+       "fighterName": "Umar Nurmagomedov",
+       "corner": "red",
+       "outcome": "win",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/NURMAGOMEDOV_UMAR_L_08-29.png?itok=MlLFQLoP",
+       "profile": {
+        "slug": "umar-nurmagomedov",
+        "name": "Umar Nurmagomedov",
+        "nickname": null,
+        "record": {
+         "wins": 20,
+         "losses": 2,
+         "draws": 0,
+         "noContest": null,
+         "text": "20-2-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-01/NURMAGOMEDOV_UMAR_01-24.png?itok=42cWtPfi",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-01/NURMAGOMEDOV_UMAR_L_01-24.png?itok=OZjSlOHS"
+       }
+      },
+      {
+       "fighterSlug": "deiveson-figueiredo",
+       "fighterName": "Deiveson Figueiredo",
+       "corner": "blue",
+       "outcome": "loss",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-05/FIGUEIREDO_DEIVESON_R_05-30.png?itok=MUeNlZQc",
+       "profile": {
+        "slug": "deiveson-figueiredo",
+        "name": "Deiveson Figueiredo",
+        "nickname": "Deus da Guerra",
+        "record": {
+         "wins": 25,
+         "losses": 7,
+         "draws": 1,
+         "noContest": 0,
+         "text": "25-7-1 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-05/FIGUEIREDO_DEIVESON_05-30.png?itok=Qon5BP9b",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2025-10/FIGUEIREDO_DEIVESON_L_10-11.png?itok=arHv-wVH"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "59a47f91-f544-43ac-ba69-6ae2f40362fe",
+   "slug": "ufc-330",
+   "title": "UFC 330: Makhachev vs. Machado Garry",
+   "shortTitle": "UFC 330",
+   "status": "completed",
+   "startsAt": "2026-08-16T01:00:00.000Z",
+   "eventDate": "2026-08-15",
+   "venue": "Xfinity Mobile Arena",
+   "city": "Philadelphia",
+   "state": null,
+   "country": "United States",
+   "locationText": "Xfinity Mobile Arena, Philadelphia United States",
+   "bouts": [
+    {
+     "id": "12910",
+     "cardSection": "Main Card",
+     "cardSectionOrder": 1,
+     "boutOrder": 1002,
+     "weightClass": "Welterweight",
+     "titleBout": true,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": "islam-makhachev",
+     "resultRound": 5,
+     "resultTime": "5:00",
+     "method": "U-DEC",
+     "methodDetails": null,
+     "fighters": [
+      {
+       "fighterSlug": "ian-machado-garry",
+       "fighterName": "Ian Machado Garry",
+       "corner": "blue",
+       "outcome": "loss",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-08/MACHADO_GARRY_IAN_R_08-15.png?itok=7O_VRTQ7",
+       "profile": {
+        "slug": "ian-machado-garry",
+        "name": "Ian Machado Garry",
+        "nickname": "The Future",
+        "record": {
+         "wins": 17,
+         "losses": 2,
+         "draws": 0,
+         "noContest": null,
+         "text": "17-2-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2025-11/MACHADO_GARRY_IAN_11-22.png?itok=H2T89_Bz",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2025-04/MACHADO_GARRY_IAN_L_04-26.png?itok=DVG8yebN"
+       }
+      },
+      {
+       "fighterSlug": "islam-makhachev",
+       "fighterName": "Islam Makhachev",
+       "corner": "red",
+       "outcome": "win",
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2025-01/7/MAKHACHEV_ISLAM_L_BELT_01-18.png?itok=3HwhAwpT",
+       "profile": {
+        "slug": "islam-makhachev",
+        "name": "Islam Makhachev",
+        "nickname": null,
+        "record": {
+         "wins": 29,
+         "losses": 1,
+         "draws": 0,
+         "noContest": null,
+         "text": "29-1-0 (W-L-D)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2025-01/7/MAKHACHEV_ISLAM_BELT_01-18.png?itok=IabJoyhX",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2025-01/7/MAKHACHEV_ISLAM_L_BELT_01-18.png?itok=crqbSRmt"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "b170ec7f-ee22-4541-9426-7b58e252ec33",
+   "slug": "dwcs-10-3",
+   "title": "Dana White's Contender Series 10.3",
+   "shortTitle": "DWCS 10.3",
+   "status": "completed",
+   "startsAt": "2026-08-25T23:00:00.000Z",
+   "eventDate": "2026-08-25",
+   "venue": "Meta Apex",
+   "city": "Las Vegas",
+   "state": "Nevada",
+   "country": "USA",
+   "locationText": "Meta Apex, Las Vegas, Nevada, USA",
+   "bouts": [
+    {
+     "id": "13041",
+     "cardSection": "Main",
+     "cardSectionOrder": 1,
+     "boutOrder": 1,
+     "weightClass": "Women's Bantamweight",
+     "titleBout": false,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": "alex-apodaca",
+     "resultRound": 3,
+     "resultTime": "5:00",
+     "method": "Decision - Unanimous",
+     "methodDetails": null,
+     "fighters": [
+      {
+       "fighterSlug": "bella-mir",
+       "fighterName": "Bella Mir",
+       "corner": "blue",
+       "outcome": "loss",
+       "imageUrl": null,
+       "profile": {
+        "slug": "bella-mir",
+        "name": "Bella Mir",
+        "nickname": null,
+        "record": {
+         "wins": 4,
+         "losses": 1,
+         "draws": 0,
+         "noContest": 0,
+         "text": "4-1-0 (W-L-D)"
+        },
+        "headshotUrl": null,
+        "bodyImageUrl": null
+       }
+      },
+      {
+       "fighterSlug": "alex-apodaca",
+       "fighterName": "Alex Apodaca",
+       "corner": "red",
+       "outcome": "win",
+       "imageUrl": null,
+       "profile": {
+        "slug": "alex-apodaca",
+        "name": "Alex Apodaca",
+        "nickname": null,
+        "record": {
+         "wins": null,
+         "losses": null,
+         "draws": null,
+         "noContest": null,
+         "text": null
+        },
+        "headshotUrl": null,
+        "bodyImageUrl": null
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "00000000-0000-4000-8000-0000000000a8",
+   "slug": "ufc-108",
+   "title": "UFC 108: Evans vs Silva",
+   "shortTitle": "UFC 108",
+   "status": "completed",
+   "startsAt": "2010-01-03T02:00:00.000Z",
+   "eventDate": "2010-01-02",
+   "venue": "Etihad Arena",
+   "city": "Yas Island/Yas West",
+   "state": null,
+   "country": "United Arab Emirates",
+   "locationText": "Etihad Arena, Yas Island/Yas West United Arab Emirates",
+   "bouts": [
+    {
+     "id": "6390c8e74630473e",
+     "cardSection": "Main Card",
+     "cardSectionOrder": 1,
+     "boutOrder": 1001,
+     "weightClass": "Heavyweight Title",
+     "titleBout": true,
+     "status": "completed",
+     "isCancelled": false,
+     "winnerFighterSlug": null,
+     "resultRound": 1,
+     "resultTime": "4:35",
+     "method": "Could Not Continue",
+     "methodDetails": null,
+     "fighters": [
+      {
+       "fighterSlug": "ciryl-gane",
+       "fighterName": "Ciryl Gane",
+       "corner": "blue",
+       "outcome": null,
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2026-06/GANE_CIRYL_R_BELT_01-22.png?itok=_OPJ_6G0",
+       "profile": {
+        "slug": "ciryl-gane",
+        "name": "Ciryl Gane",
+        "nickname": "Bon Gamin",
+        "record": {
+         "wins": 14,
+         "losses": 2,
+         "draws": 0,
+         "noContest": 1,
+         "text": "14-2-0 (1 NC)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2026-06/GANE_CIRYL_BELT_01-22.png?itok=mClz8gqQ",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2026-06/GANE_CIRYL_L_BELT_01-22.png?itok=6Dy6iwAT"
+       }
+      },
+      {
+       "fighterSlug": "tom-aspinall",
+       "fighterName": "Tom Aspinall",
+       "corner": "red",
+       "outcome": null,
+       "imageUrl": "https://ufc.com/images/styles/event_fight_card_upper_body_of_standing_athlete/s3/2025-10/ASPINALL_TOM_L_BELT_10-25.png?itok=qvHDroqA",
+       "profile": {
+        "slug": "tom-aspinall",
+        "name": "Tom Aspinall",
+        "nickname": null,
+        "record": {
+         "wins": 15,
+         "losses": 3,
+         "draws": 0,
+         "noContest": 1,
+         "text": "15-3-0 (1 NC)"
+        },
+        "headshotUrl": "https://ufc.com/images/styles/event_results_athlete_headshot/s3/2025-10/ASPINALL_TOM_BELT_10-25.png?itok=nDu6BO2u",
+        "bodyImageUrl": "https://ufc.com/images/styles/athlete_bio_full_body/s3/2025-10/ASPINALL_TOM_L_BELT_10-25.png?itok=wdUr8VUg"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "meta": {
+  "page": 1,
+  "limit": 25,
+  "total": 5,
+  "totalPages": 1,
+  "hasNextPage": false,
+  "hasPreviousPage": false,
+  "nextPage": null,
+  "previousPage": null,
+  "filters": {
+   "includeBouts": true
+  }
+ }
+}

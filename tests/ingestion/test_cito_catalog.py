@@ -24,6 +24,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from ingestion.cito.cache import CatalogPageCache
 from ingestion.cito.client import (
     CallBudget,
     CitoClient,
@@ -330,3 +331,168 @@ def test_paginacao_ignora_o_limit_clampado_pela_api() -> None:
     client.fetch_event_catalog(limit=200)
 
     assert paginas == ["200", "200"]  # o pedido segue como enviado; o clamp é da API
+
+
+# --------------------------------------------------------------------------- #
+# CA-03 (M7, Slice 06) -- catálogo com ``includeBouts`` e chave de cache distinta
+# --------------------------------------------------------------------------- #
+
+
+def _pagina_com_card(page: int, *, com_bouts: bool) -> dict[str, object]:
+    """Uma página de catálogo de um item só, com ou sem o card embutido.
+
+    A forma do card é a **medida** na captura crua de 2026-09-01
+    (``.cache/cito-includebouts/gap_includebouts_p1_l50.json``): idêntica à de
+    ``/events/{slug}/stats``, o que é a razão de ``CitoBoutBlock`` ser reusado sem DTO novo.
+    """
+    item: dict[str, object] = {
+        "id": "evento-com-card",
+        "slug": "ufc-fight-night-august-29-2026",
+        "title": "UFC Fight Night: Nurmagomedov vs Tsarukyan",
+        "status": "completed",
+        "startsAt": "2026-08-29T10:00:00.000Z",
+        "eventDate": "2026-08-29",
+    }
+    if com_bouts:
+        item["bouts"] = [
+            {
+                "id": "bout-1",
+                "cardSection": "Main Card",
+                "boutOrder": 1001,
+                "weightClass": "Lightweight",
+                "winnerFighterSlug": "umar-nurmagomedov",
+                "fighters": [
+                    {
+                        "fighterSlug": "umar-nurmagomedov",
+                        "fighterName": "Umar Nurmagomedov",
+                        "corner": "red",
+                        "outcome": "win",
+                        "imageUrl": (
+                            "https://ufc.com/images/styles/"
+                            "event_fight_card_upper_body_of_standing_athlete/s3/2026-08/"
+                            "NURMAGOMEDOV_UMAR_R_08-29.png?itok=abc"
+                        ),
+                        "profile": {
+                            "slug": "umar-nurmagomedov",
+                            "name": "Umar Nurmagomedov",
+                            "headshotUrl": (
+                                "https://ufc.com/images/styles/event_results_athlete_headshot/"
+                                "s3/2026-01/NURMAGOMEDOV_UMAR_01-24.png?itok=42cWtPfi"
+                            ),
+                            "bodyImageUrl": (
+                                "https://ufc.com/images/styles/athlete_bio_full_body/"
+                                "s3/2026-01/NURMAGOMEDOV_UMAR_L_01-24.png?itok=OZjSlOHS"
+                            ),
+                        },
+                    }
+                ],
+            }
+        ]
+    return {
+        "success": True,
+        "data": [item],
+        "meta": {
+            "page": page,
+            "limit": 25,
+            "total": 1,
+            "totalPages": 1,
+            "hasNextPage": False,
+            "nextPage": None,
+        },
+    }
+
+
+def _cliente_mock(
+    urls: list[httpx.URL], *, com_bouts: bool, budget: CallBudget | None = None
+) -> CitoClient:
+    """Cliente HTTP sobre ``MockTransport`` que registra cada URL pedida."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(request.url)
+        return httpx.Response(200, json=_pagina_com_card(1, com_bouts=com_bouts))
+
+    return CitoClient(
+        token="token-fake",
+        base_url="https://api.citoapi.com",
+        transport=httpx.MockTransport(handler),
+        budget=budget,
+    )
+
+
+def test_fetch_event_catalog_envia_include_bouts_na_query() -> None:
+    """CA-03: ``include_bouts=True`` vira ``includeBouts`` no query string do catálogo."""
+    urls: list[httpx.URL] = []
+
+    _cliente_mock(urls, com_bouts=True).fetch_event_catalog(include_bouts=True)
+
+    assert len(urls) == 1
+    assert urls[0].params["includeBouts"] == "true"
+
+
+def test_fetch_event_catalog_sem_include_bouts_nao_envia_o_parametro() -> None:
+    """CA-03: sem o recorte pedido, o parâmetro não é enviado -- a chamada segue a do M6."""
+    urls: list[httpx.URL] = []
+
+    _cliente_mock(urls, com_bouts=False).fetch_event_catalog()
+
+    assert len(urls) == 1
+    assert "includeBouts" not in urls[0].params
+
+
+def test_item_de_catalogo_desembrulha_o_card_com_cantos_e_perfis() -> None:
+    """CA-03: com ``includeBouts``, o item traz ``bouts[]`` tipado (cantos, arte e perfis)."""
+    urls: list[httpx.URL] = []
+
+    itens = _cliente_mock(urls, com_bouts=True).fetch_event_catalog(include_bouts=True)
+
+    (item,) = itens
+    (bout,) = item.bouts
+    (canto,) = bout.fighters
+    assert bout.weight_class == "Lightweight"
+    assert canto.fighter_slug == "umar-nurmagomedov"
+    assert canto.image_url is not None
+    assert "event_fight_card_upper_body_of_standing_athlete" in canto.image_url
+    assert canto.profile is not None
+    assert "event_results_athlete_headshot" in (canto.profile.headshot_url or "")
+    assert "athlete_bio_full_body" in (canto.profile.body_image_url or "")
+
+
+def test_item_de_catalogo_sem_include_bouts_tem_card_vazio() -> None:
+    """CA-03: sem o recorte, ``bouts`` é lista vazia -- ausência, nunca erro."""
+    urls: list[httpx.URL] = []
+
+    itens = _cliente_mock(urls, com_bouts=False).fetch_event_catalog()
+
+    assert itens[0].bouts == []
+
+
+def test_pagina_cacheada_sem_card_nao_e_servida_para_pedido_com_card(tmp_path: Path) -> None:
+    """CA-03: a chave de cache separa os dois recortes -- página sem card nunca vira card.
+
+    Sem o segmento, o pedido com ``includeBouts`` seria servido da página cacheada sem card e o
+    backfill reportaria cobertura zero **sem erro nenhum** -- o pior modo de falha possível.
+    """
+    cache = CatalogPageCache(tmp_path)
+    urls: list[httpx.URL] = []
+
+    _cliente_mock(urls, com_bouts=False).fetch_event_catalog(cache=cache)
+    itens = _cliente_mock(urls, com_bouts=True).fetch_event_catalog(cache=cache, include_bouts=True)
+
+    assert len(urls) == 2  # o segundo pedido NÃO foi servido do cache do primeiro
+    assert itens[0].bouts != []
+
+
+def test_chave_de_cache_sem_card_permanece_a_do_m6(tmp_path: Path) -> None:
+    """CA-03: sem ``include_bouts``, a chave é a de antes -- as 9 páginas já pagas seguem válidas.
+
+    Um segmento incondicional na chave transformaria o catálogo já cacheado em 9 misses, ou
+    seja, 9 chamadas novas por uma mudança que não pediu dado novo.
+    """
+    cache = CatalogPageCache(tmp_path)
+    urls: list[httpx.URL] = []
+
+    _cliente_mock(urls, com_bouts=False).fetch_event_catalog(cache=cache)
+    _cliente_mock(urls, com_bouts=False).fetch_event_catalog(cache=cache)
+
+    assert len(urls) == 1  # o segundo pedido veio do disco (cache hit, 0 quota)
+    assert [caminho.name for caminho in tmp_path.iterdir()] == ["catalog_l100_fall_tall_p1.json"]

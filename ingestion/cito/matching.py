@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -53,7 +52,7 @@ from ingestion.cito.client import (
     build_cito_client,
 )
 from ingestion.cito.dto import CitoCatalogItem, CitoEventStats
-from ingestion.normalize import normalize_name
+from ingestion.normalize import normalize_event_name, normalize_name
 from mma_analytics.db import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -265,9 +264,6 @@ if __name__ == "__main__":
 # Nights, cujo slug usa a data local e não tem convenção derivável com segurança.
 # ---------------------------------------------------------------------------
 
-# Pontuação e qualquer caractere não-alfanumérico remanescente viram separador de token.
-_NON_ALNUM = re.compile(r"[^0-9a-z]+")
-
 # Promoções fora do escopo desta fase (decisão do humano, SPEC 007): DWCS e Road to UFC.
 # O filtro é por EXCLUSÃO destes marcadores, nunca por allowlist de prefixo 'ufc-' no slug:
 # 'cryptocom-ufc-331' e 'ufc-freedom-250' são UFC e um prefixo os descartaria, enquanto
@@ -293,16 +289,6 @@ class AmbiguousEventMatchError(EventMatchError):
     Espelha ``AmbiguousBoutFighterMatchError`` (M5) e a entity resolution do M1: a
     ambiguidade **falha alto**; quem chama decide se aborta ou conta e segue (RF-05).
     """
-
-
-def normalize_event_name(name: str) -> str:
-    """'UFC 319: Du Plessis vs. Chimaev' -> 'ufc 319 du plessis vs chimaev'.
-
-    Aplica ``normalize_name`` PRIMEIRO (NFKD -> ASCII, caixa, espaços) e só então troca a
-    pontuação restante por espaço. A ordem importa: remover não-alfanuméricos antes do NFKD
-    comeria letras acentuadas ('Šarić' -> 'ari').
-    """
-    return " ".join(_NON_ALNUM.sub(" ", normalize_name(name)).split())
 
 
 def is_ufc_catalog_item(item: CitoCatalogItem) -> bool:

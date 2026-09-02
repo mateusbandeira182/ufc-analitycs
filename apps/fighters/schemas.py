@@ -36,6 +36,8 @@ class FighterOut(BaseModel):
     reach_cm: int | None
     stance: Stance | None
     weight_kg: float | None  # atributo físico do M5 (ADR 0004), nullable
+    headshot_url: str | None  # retrato (Cito, M7 -- Slice 06); ausência permanece nula
+    body_image_url: str | None  # corpo inteiro (Cito, M7 -- Slice 06); ausência permanece nula
     wins: int
     losses: int
     draws: int

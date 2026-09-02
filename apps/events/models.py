@@ -33,3 +33,13 @@ class Event(Base):
     # o acesso do backfill (do slug para o evento persistido).
     cito_slug: Mapped[str | None] = mapped_column(String(128), index=True)
     cito_event_id: Mapped[str | None] = mapped_column(String(64))
+
+    # Identificador do evento na API oficial da UFC (SPEC 008, M7, RF-07), resolvido
+    # casando data local + nome normalizado contra o catálogo varrido por
+    # ``ingestion.ufc_official.discovery`` -- nunca derivado por regra a partir do nome.
+    # Nullable: evento sem correspondência na fonte oficial permanece nulo -- ausência
+    # explícita, nunca sentinela. Aqui a ausência é preferível ao palpite: a Slice 04
+    # corrige o canto a partir deste id, e um id errado corrigiria o canto com o card do
+    # evento errado. Indexado porque é desse acesso (id externo -> evento persistido) que
+    # a Slice 04 parte.
+    ufc_event_id: Mapped[str | None] = mapped_column(String(32), index=True)

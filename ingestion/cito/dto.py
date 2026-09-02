@@ -221,6 +221,14 @@ class CitoFighterProfile(BaseModel):
     name: str
     nickname: str | None = None
     record: CitoFighterRecord = Field(default_factory=CitoFighterRecord)
+    # Duas variantes de imagem do ATLETA (M7, SPEC 008, Slice 06), distintas da arte do card:
+    # headshot_url   <- styles/event_results_athlete_headshot/...  (retrato)
+    # body_image_url <- styles/athlete_bio_full_body/...           (corpo inteiro)
+    # ``profile.imageUrl`` NÃO é modelado: o M6 já o rejeitou (ver o comentário de ``art_side``
+    # em ``gap_sync``) e, na captura do catálogo, ele apenas repete o headshot -- campo sem
+    # contrato. Ausência permanece ``None``, nunca string vazia.
+    headshot_url: str | None = None
+    body_image_url: str | None = None
 
 
 class CitoBoutFighterRef(BaseModel):
@@ -482,6 +490,11 @@ class CitoCatalogItem(BaseModel):
     state: str | None = None
     country: str | None = None
     location_text: str | None = None
+    # Card do evento, só preenchido quando a chamada pede ``includeBouts=true`` (M7, Slice 06);
+    # ausência é lista vazia, nunca erro. O formato é o MESMO de ``CitoEventStats.bouts``
+    # (medido na captura crua de 2026-09-01), por isso ``CitoBoutBlock`` é reusado sem nenhum
+    # DTO de luta novo.
+    bouts: list[CitoBoutBlock] = []
 
     @property
     def local_date(self) -> date:

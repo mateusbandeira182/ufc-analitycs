@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -51,12 +51,14 @@ from ingestion.cito.gap_sync import (
     resolve_gap_fighters,
     run_gap_sync,
     select_gap_events,
+    warn_assigned_corners_in_official_window,
 )
 from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
 from ingestion.cito.matching import is_ufc_catalog_item
 from ingestion.entity_resolution import AmbiguousFighterMatchError
 from ingestion.incremental import map_bout_core
 from ingestion.normalize import normalize_name
+from ingestion.ufc_official import OFFICIAL_WINDOW_START
 from mma_analytics.settings import settings
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -1487,3 +1489,138 @@ def test_run_gap_sync_reports_the_corner_origin_of_every_bout(
 
     assert resumo.corner_origins == {CornerOrigin.ART: 3}
     assert sum(resumo.corner_origins.values()) == resumo.bouts.inserted
+
+
+# --------------------------------------------------------------------------- #
+# CA-09 da Sprint 008-04 -- aviso quando o lote fecha com canto ATRIBUÍDO por nós
+# dentro da janela da fonte oficial. O fallback e a arte continuam no código: o que
+# muda é que deixar um canto provisório na janela passa a ser dito alto.
+# --------------------------------------------------------------------------- #
+
+_DENTRO_DA_JANELA = date(2025, 7, 26)
+_ANTES_DA_JANELA = OFFICIAL_WINDOW_START - timedelta(days=1)
+
+
+def test_warn_assigned_corners_names_the_event_and_the_authoritative_command(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Canto atribuído por nós dentro da janela: o aviso nomeia o evento e o que rodar.
+
+    O fallback determinístico acerta 39,29% -- pior que cara-ou-coroa. Deixar isso persistido
+    em silêncio foi o que produziu 17 das 21 divergências que a Sprint 008-04 corrigiu.
+    """
+    with caplog.at_level(logging.WARNING, logger="ingestion.cito.gap_sync"):
+        warn_assigned_corners_in_official_window(
+            "UFC Fight Night: Whittaker vs de Ridder",
+            _DENTRO_DA_JANELA,
+            {CornerOrigin.ART: 1, CornerOrigin.ASSIGNED_NO_ART: 5},
+        )
+
+    assert "Whittaker vs de Ridder" in caplog.text
+    assert "ingestion.ufc_official.corner --aplicar" in caplog.text
+    assert "5" in caplog.text
+
+
+def test_warn_assigned_corners_stays_silent_when_the_corner_came_from_the_art(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Canto vindo da arte (99,58%) não pede passada autoritativa -- o aviso seria ruído."""
+    with caplog.at_level(logging.WARNING, logger="ingestion.cito.gap_sync"):
+        warn_assigned_corners_in_official_window(
+            "UFC Fight Night: Whittaker vs de Ridder",
+            _DENTRO_DA_JANELA,
+            {CornerOrigin.ART: 6},
+        )
+
+    assert caplog.text == ""
+
+
+def test_warn_assigned_corners_stays_silent_before_the_official_window(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Antes de 2010-03-21 a fonte oficial não ajuda: mandar rodá-la seria conselho errado.
+
+    O canto anterior a essa data é fabricado nas três fontes (ADR 0006), e a Sprint 008-04 não
+    escreve nada ali (RF-03).
+    """
+    with caplog.at_level(logging.WARNING, logger="ingestion.cito.gap_sync"):
+        warn_assigned_corners_in_official_window(
+            "Evento anterior à fronteira",
+            _ANTES_DA_JANELA,
+            {CornerOrigin.ASSIGNED_NO_ART: 6},
+        )
+
+    assert caplog.text == ""
+
+
+def _fixture_dir_do_card_sem_arte(tmp_path: Path) -> Path:
+    """Diretório de fixture com o catálogo de UMA página contendo só o card sem arte.
+
+    O item do catálogo é o do próprio evento da fixture (mesmos id, slug, título, status e
+    datas), e o payload de stats é copiado sem edição -- forma derivada, valores reais.
+    """
+    destino = tmp_path / "fixture_sem_arte"
+    destino.mkdir()
+    item = _item_sem_arte()
+    (destino / "events_catalog_page_1.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "data": [
+                    {
+                        "id": item.id,
+                        "slug": item.slug,
+                        "title": item.title,
+                        "status": item.status,
+                        "startsAt": "2025-07-26T19:00:00.000Z",
+                        "eventDate": str(item.local_date),
+                    }
+                ],
+                "meta": {
+                    "page": 1,
+                    "limit": 100,
+                    "total": 1,
+                    "totalPages": 1,
+                    "hasNextPage": False,
+                    "hasPreviousPage": False,
+                    "nextPage": None,
+                    "previousPage": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    nome = f"event_stats_{_PAYLOAD_SEM_ARTE}.json"
+    (destino / nome).write_text((_FIXTURES / nome).read_text(encoding="utf-8"), encoding="utf-8")
+    return destino
+
+
+def test_run_gap_sync_warns_when_it_closes_with_an_assigned_corner_in_the_window(
+    db_session: Session, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """O lote que fecha com canto atribuído dentro da janela avisa alto, nomeando o evento.
+
+    A guarda vive no laço de ``run_gap_sync``, e não só numa função pura: é ali que o operador
+    descobre, no fim da execução, que ficou dado provisório para corrigir.
+    """
+    orcamento = CallBudget(limit=20)
+    cliente = CitoClient(
+        token=settings.cito_api_token,
+        base_url=settings.cito_base_url,
+        fixture_dir=_fixture_dir_do_card_sem_arte(tmp_path),
+        budget=orcamento,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="ingestion.cito.gap_sync"):
+        resumo = run_gap_sync(
+            db_session,
+            cliente,
+            orcamento,
+            EventStatsCache(tmp_path / "cache"),
+            today=_HOJE,
+            date_from=date(2025, 1, 1),
+        )
+
+    assert resumo.corner_origins == {CornerOrigin.ASSIGNED_NO_ART: 6}
+    assert "Whittaker vs de Ridder" in caplog.text
+    assert "ingestion.ufc_official.corner --aplicar" in caplog.text

@@ -386,3 +386,75 @@ def test_api_v1_expoe_somente_verbos_get() -> None:
         methods: set[str] = getattr(route, "methods", None) or set()
         if path.startswith("/api/v1"):
             assert not (methods & _MUTATING_VERBS), (path, methods)
+
+
+def test_get_fighter_expoe_as_duas_urls_de_imagem(client: TestClient, db_session: Session) -> None:
+    """CA-08: o detalhe devolve ``headshot_url`` e ``body_image_url`` exatas quando preenchidas."""
+    fighter = FighterFactory.build(
+        name="Umar Nurmagomedov",
+        headshot_url="https://ufc.com/images/styles/event_results_athlete_headshot/s3/a.png",
+        body_image_url="https://ufc.com/images/styles/athlete_bio_full_body/s3/b.png",
+    )
+    db_session.add(fighter)
+    db_session.flush()
+
+    body = client.get(f"/api/v1/fighters/{fighter.id}").json()
+
+    assert (
+        body["headshot_url"]
+        == "https://ufc.com/images/styles/event_results_athlete_headshot/s3/a.png"
+    )
+    assert body["body_image_url"] == "https://ufc.com/images/styles/athlete_bio_full_body/s3/b.png"
+
+
+def test_get_fighter_sem_imagem_sai_com_as_duas_chaves_nulas(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-08: sem imagem, as duas chaves estão **presentes** com ``null`` -- nunca ausentes."""
+    fighter = FighterFactory.build(name="Royce Gracie", headshot_url=None, body_image_url=None)
+    db_session.add(fighter)
+    db_session.flush()
+
+    body = client.get(f"/api/v1/fighters/{fighter.id}").json()
+
+    assert "headshot_url" in body
+    assert "body_image_url" in body
+    assert body["headshot_url"] is None
+    assert body["body_image_url"] is None
+
+
+def test_get_fighter_com_so_o_retrato_deixa_o_corpo_nulo(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-08: só o retrato persistido -> ``body_image_url`` nulo (nunca string vazia)."""
+    fighter = FighterFactory.build(
+        name="Kai Asakura",
+        headshot_url="https://ufc.com/images/styles/event_results_athlete_headshot/s3/c.png",
+        body_image_url=None,
+    )
+    db_session.add(fighter)
+    db_session.flush()
+
+    body = client.get(f"/api/v1/fighters/{fighter.id}").json()
+
+    assert body["headshot_url"].endswith("c.png")
+    assert body["body_image_url"] is None
+
+
+def test_listagem_expoe_as_urls_de_imagem_pelo_mesmo_schema(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-08: a listagem reusa ``FighterOut`` e passa a expor os dois campos, a custo zero."""
+    fighter = FighterFactory.build(
+        name="Song Yadong",
+        headshot_url="https://ufc.com/images/styles/event_results_athlete_headshot/s3/d.png",
+        body_image_url=None,
+    )
+    db_session.add(fighter)
+    db_session.flush()
+
+    body = client.get("/api/v1/fighters", params={"name": "Song Yadong"}).json()
+
+    (item,) = body["items"]
+    assert item["headshot_url"].endswith("d.png")
+    assert item["body_image_url"] is None
