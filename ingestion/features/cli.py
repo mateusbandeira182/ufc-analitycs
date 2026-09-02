@@ -21,13 +21,18 @@ from ingestion.features.freshness import (
     check_cache_freshness,
 )
 from ingestion.features.long_frame import build_long_frame, read_granular
-from ingestion.features.matchup import build_matchup_matrix
+from ingestion.features.matchup import (
+    BOUT_LEVEL_FEATURE_COLUMNS,
+    MatchupMatrix,
+    build_matchup_matrix,
+)
 from ingestion.features.materialize import SOURCE, materialize_features
 from ingestion.features.rolling import (
     COL_FIGHTER_ID,
     RECENT_FORM_FEATURES,
     add_recent_form_features,
     add_round_dynamics_features,
+    add_stance_history_features,
 )
 from ingestion.features.trajectory import (
     TRAJECTORY_FEATURES,
@@ -61,14 +66,22 @@ def _enriched_long_frame(session: Session) -> pd.DataFrame:
 
     Encadeia a leitura do granular, a frame longa (Slice 01), as features de forma
     recente e perfil de striking (Slice 02/M5), as de trajetória/contexto físico (Slice
-    03) e a dinâmica por round (M5, a partir de ``bout_fighter_rounds``). Isolada para ser
-    o ponto único de injeção nos testes do estágio matchup (sem tocar o Postgres).
+    03), o histórico de bases (SPEC 009, bloco D1) e a dinâmica por round (M5, a partir de
+    ``bout_fighter_rounds``). Isolada para ser o ponto único de injeção nos testes do estágio
+    matchup (sem tocar o Postgres).
+
+    A posição de ``add_stance_history_features`` é **load-bearing**: ela lê ``stance``, que só
+    entra na frame em ``add_trajectory_features`` (``add_physical_attributes``). Adiantá-la
+    para junto das demais features de ``rolling`` produziria ``KeyError`` -- é exatamente por
+    isso que ela é função pública própria, e não mais um passo interno de
+    ``add_recent_form_features``.
     """
     frames = read_granular(session)
     df = build_long_frame(frames)
     df = add_recent_form_features(df)
     fighters = load_fighters_bio(session.connection())
     df = add_trajectory_features(df, fighters)
+    df = add_stance_history_features(df)
     round_stats = load_round_stats(session.connection())
     return add_round_dynamics_features(df, round_stats)
 
@@ -86,8 +99,37 @@ def _run_matchup_stage(session: Session) -> pd.DataFrame:
         result.excluded_no_result,
         result.red_corner_win_rate,
     )
+    _log_bout_level_columns(result)
     logger.info("Preview:\n%s", result.frame.head().to_string())
     return result.frame
+
+
+def _log_bout_level_columns(result: MatchupMatrix) -> None:
+    """Nomeia as features bout-level presentes na matriz, com a cobertura de cada uma.
+
+    Linha de log **dedicada** de propósito: o preview usa ``head().to_string()`` e trunca com
+    60+ colunas, então sem ela o valor demonstrável da slice ("as bout-level entram como
+    coluna única, sem ``_a``/``_b`` e sem ``_diff`` degenerado") ficaria invisível na execução
+    real. A cobertura vem junto porque é o que a RF-09 quer ler antes de qualquer ganho.
+
+    A lista esperada vem da allowlist de ``matchup``, nunca redigitada: é a mesma fonte que
+    dá precedência a essas colunas em ``_feature_columns``, e duas listas do mesmo fato
+    divergiriam na próxima slice -- com o log jurando cobertura de um conjunto e o payload
+    carregando outro.
+    """
+    esperadas = list(BOUT_LEVEL_FEATURE_COLUMNS)
+    presentes = [coluna for coluna in esperadas if coluna in result.feature_columns]
+    total = len(result.frame)
+    resumo = ", ".join(
+        f"{coluna} ({int(result.frame[coluna].notna().sum())}/{total} não-nulas)"
+        for coluna in presentes
+    )
+    logger.info(
+        "Features bout-level (coluna única, sem sufixo de canto): %d de %d -- %s",
+        len(presentes),
+        len(esperadas),
+        resumo or "nenhuma",
+    )
 
 
 def run_materialize(session: Session, source: str = SOURCE) -> int:
@@ -135,8 +177,16 @@ def run_check(session: Session) -> FreshnessReport:
             drift.recomputed_non_null,
         )
     if report.is_stale:
+        # Nomear as colunas, não só contá-las: sem os nomes, descobrir o que envelheceu exige
+        # reproduzir a pipeline à mão. ``column_diff`` já vem ordenado, então a mensagem é
+        # determinística. A lógica de frescor (``check_cache_freshness``) não muda aqui.
+        detalhe = (
+            f" Colunas presentes só de um lado: {', '.join(report.column_diff)}."
+            if report.column_diff
+            else ""
+        )
         raise StaleFeatureCacheError(
-            "bout_features defasado em relação ao granular. "
+            f"bout_features defasado em relação ao granular.{detalhe} "
             "Rode: python -m ingestion.features build --stage materialize"
         )
     return report

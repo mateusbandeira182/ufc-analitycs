@@ -23,7 +23,12 @@ from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
-from ingestion.features.long_frame import SPLIT_COLUMNS, build_long_frame, read_granular
+from ingestion.features.long_frame import (
+    LONG_FRAME_COLUMNS,
+    SPLIT_COLUMNS,
+    build_long_frame,
+    read_granular,
+)
 from ingestion.normalize import normalize_name
 
 
@@ -64,13 +69,18 @@ def _add_bout(
     winner: Fighter | None,
     method: BoutMethod = BoutMethod.DECISION,
     red_sig_strikes: int | None = None,
+    weight_class: str | None = None,
+    title_bout: bool | None = None,
+    scheduled_rounds: int | None = None,
     source: str = "kaggle",
 ) -> Bout:
     """Semeia uma luta com exatamente duas linhas em ``bout_fighters`` (red/blue).
 
     ``winner`` nulo com ``method`` != ``NO_CONTEST`` representa empate; nulo com
     ``NO_CONTEST`` representa no contest. As stats do canto red são parametrizáveis
-    para exercitar a preservação do dado bruto por luta.
+    para exercitar a preservação do dado bruto por luta, e o contexto de luta
+    (categoria, disputa de cinturão, rounds agendados) para exercitar a projeção
+    das colunas cruas pré-gongo na frame longa.
     """
     bout = Bout(
         event_id=event.id,
@@ -78,7 +88,9 @@ def _add_bout(
         method=method,
         round=None,
         ending_time_seconds=None,
-        weight_class=None,
+        weight_class=weight_class,
+        title_bout=title_bout,
+        scheduled_rounds=scheduled_rounds,
         source=source,
     )
     session.add(bout)
@@ -236,6 +248,9 @@ def test_build_long_frame_preserva_stats_brutas_e_source(db_session: Session) ->
         "method",
         "round",
         "ending_time_seconds",
+        "weight_class",
+        "title_bout",
+        "scheduled_rounds",
         "knockdowns",
         "sig_strikes_landed",
         "sig_strikes_attempted",
@@ -333,3 +348,52 @@ def test_build_long_frame_e_deterministico(db_session: Session) -> None:
     segunda = build_long_frame(read_granular(db_session))
 
     pd.testing.assert_frame_equal(primeira, segunda)
+
+
+def test_frame_longa_projeta_o_contexto_de_luta(db_session: Session) -> None:
+    """As três colunas cruas de contexto pré-gongo chegam à frame longa com o valor do banco.
+
+    ``weight_class``, ``title_bout`` e ``scheduled_rounds`` existem em ``bouts`` desde o
+    M5/M6 e nunca eram lidas pela pipeline de features. São projetadas de uma vez (bloco B1
+    consome a divisão; o bloco B2 consumirá o formato) e valem para os **dois** cantos --
+    vêm da mesma linha de ``bouts``, não do canto.
+    """
+    red = _add_fighter(db_session, "Alexander Volkanovski")
+    blue = _add_fighter(db_session, "Ilia Topuria")
+    event = _add_event(db_session, "UFC 298: Test", date(2024, 2, 17))
+    bout = _add_bout(
+        db_session,
+        event=event,
+        red=red,
+        blue=blue,
+        winner=blue,
+        method=BoutMethod.KO_TKO,
+        weight_class="featherweight",
+        title_bout=True,
+        scheduled_rounds=5,
+    )
+
+    long_df = build_long_frame(read_granular(db_session))
+
+    for coluna in ("weight_class", "title_bout", "scheduled_rounds"):
+        assert coluna in LONG_FRAME_COLUMNS, coluna
+    linhas = long_df.loc[long_df["bout_id"] == bout.id]
+    assert len(linhas) == 2  # os dois cantos carregam o mesmo contexto
+    assert set(linhas["weight_class"]) == {"featherweight"}
+    assert set(linhas["title_bout"]) == {True}
+    assert set(linhas["scheduled_rounds"]) == {5}
+
+
+def test_frame_longa_preserva_contexto_de_luta_ausente_como_nulo(db_session: Session) -> None:
+    """Contexto ausente no banco permanece nulo na frame longa -- nunca zero, nunca chute."""
+    red = _add_fighter(db_session, "Jon Jones")
+    blue = _add_fighter(db_session, "Stipe Miocic")
+    event = _add_event(db_session, "UFC 1: Test", date(1993, 11, 12))
+    bout = _add_bout(db_session, event=event, red=red, blue=blue, winner=red)
+
+    long_df = build_long_frame(read_granular(db_session))
+
+    linhas = long_df.loc[long_df["bout_id"] == bout.id]
+    assert linhas["weight_class"].isna().all()
+    assert linhas["title_bout"].isna().all()
+    assert linhas["scheduled_rounds"].isna().all()

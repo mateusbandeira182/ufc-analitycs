@@ -31,13 +31,28 @@ from apps.events.models import Event
 from apps.features.models import BoutFeatures
 from apps.fighters.models import Fighter
 from ingestion.features.cli import _enriched_long_frame, run_check, run_materialize
+from ingestion.features.division import (
+    DIVISION_FINISH_RATE_PRIOR,
+    IS_WOMENS_DIVISION,
+    WEIGHT_CLASS_LBS,
+)
 from ingestion.features.freshness import (
     StaleFeatureCacheError,
     check_cache_freshness,
     read_cached_payloads,
 )
-from ingestion.features.matchup import MatchupMatrix, build_matchup_matrix
-from ingestion.features.rolling import SHARE_HEAD_R3
+from ingestion.features.matchup import (
+    IS_TITLE_BOUT,
+    SCHEDULED_ROUNDS,
+    MatchupMatrix,
+    build_matchup_matrix,
+)
+from ingestion.features.rolling import (
+    FIVE_ROUND_BOUTS_BEFORE,
+    KNOCKDOWNS_PM_R3,
+    SHARE_HEAD_R3,
+    SIG_STRIKE_ACCURACY_R3,
+)
 from ingestion.normalize import normalize_name
 
 # Splits de golpe conectado do canto vencedor: alimentam o perfil de striking as-of do M5.
@@ -92,7 +107,9 @@ def _seed_bout(
         method=BoutMethod.DECISION,
         round=3,
         ending_time_seconds=300,
-        weight_class=None,
+        weight_class="lightweight",
+        title_bout=False,
+        scheduled_rounds=3,
         source="kaggle",
     )
     db_session.add(bout)
@@ -294,3 +311,107 @@ def test_run_check_levanta_stale_feature_cache_error_com_cache_defasado(
 
     with pytest.raises(StaleFeatureCacheError, match="materialize"):
         run_check(db_session)
+
+
+def test_run_check_nomeia_as_colunas_defasadas_e_volta_a_passar_apos_materializar(
+    db_session: Session,
+) -> None:
+    """CA-07 da SPEC 009 (RF-08): a falha **nomeia** as colunas e some após re-materializar.
+
+    Simula o estado que a Slice 01 produz no banco real: o cache foi materializado antes de a
+    pipeline ganhar as features do bloco A, então as chaves novas existem só no recomputo.
+    Contar as divergências não basta -- quem lê o erro precisa saber **quais** colunas
+    faltam, senão descobrir o que envelheceu exige reproduzir a pipeline à mão. Depois de
+    ``run_materialize``, o mesmo ``run_check`` passa sem levantar.
+    """
+    _seed_two_bouts(db_session, splits=_SPLITS)
+    run_materialize(db_session)
+    ausentes = [f"{SIG_STRIKE_ACCURACY_R3}_a", f"{KNOCKDOWNS_PM_R3}_diff"]
+    for coluna in ausentes:
+        db_session.execute(
+            text("UPDATE bout_features SET features = features - :chave"), {"chave": coluna}
+        )
+    db_session.flush()
+
+    with pytest.raises(StaleFeatureCacheError) as excinfo:
+        run_check(db_session)
+
+    mensagem = str(excinfo.value)
+    for coluna in ausentes:
+        assert coluna in mensagem, coluna
+    assert "materialize" in mensagem
+
+    run_materialize(db_session)
+    assert run_check(db_session).is_stale is False
+
+
+def test_run_check_nomeia_as_colunas_de_divisao_e_volta_a_passar_apos_materializar(
+    db_session: Session,
+) -> None:
+    """CA-11 da SPEC 009 (RF-08): a guarda acusa as bout-level novas e some após materializar.
+
+    Reproduz o estado que esta slice produz no banco real: o cache foi materializado antes de
+    a pipeline ganhar as features de divisão, então as três chaves existem só no recomputo.
+    Elas são **coluna única** (sem sufixo de canto), o que torna este teste também uma guarda
+    de que o caminho bout-level chega intacto ao payload persistido -- se o colapso voltasse a
+    produzir par degenerado, as chaves nomeadas aqui seriam outras.
+    """
+    _seed_two_bouts(db_session, splits=_SPLITS)
+    run_materialize(db_session)
+    ausentes = [WEIGHT_CLASS_LBS, IS_WOMENS_DIVISION, DIVISION_FINISH_RATE_PRIOR]
+    for coluna in ausentes:
+        db_session.execute(
+            text("UPDATE bout_features SET features = features - :chave"), {"chave": coluna}
+        )
+    db_session.flush()
+
+    with pytest.raises(StaleFeatureCacheError) as excinfo:
+        run_check(db_session)
+
+    mensagem = str(excinfo.value)
+    for coluna in ausentes:
+        assert coluna in mensagem, coluna
+    assert "materialize" in mensagem
+
+    run_materialize(db_session)
+    assert run_check(db_session).is_stale is False
+
+
+def test_run_check_nomeia_as_colunas_de_formato_e_volta_a_passar_apos_materializar(
+    db_session: Session,
+) -> None:
+    """CA-11 da SPEC 009 (RF-08): a guarda acusa as 5 colunas do bloco B2 e some depois.
+
+    Reproduz o estado que esta slice produz no banco real: o cache foi materializado antes de
+    a pipeline ganhar as features de formato, então as cinco chaves existem só no recomputo.
+    Duas delas são **coluna única** (bout-level) e três são o trio de canto, o que torna este
+    teste também a guarda de que os dois caminhos chegam intactos ao payload persistido.
+
+    ``scheduled_rounds`` está na lista de propósito: é a chave de nome colidente com a coluna
+    crua excluída, e se a precedência da allowlist regredisse ela **não** apareceria no
+    recomputo -- o ``check`` passaria em silêncio sobre um cache sem a feature.
+    """
+    _seed_two_bouts(db_session, splits=_SPLITS)
+    run_materialize(db_session)
+    ausentes = [
+        IS_TITLE_BOUT,
+        SCHEDULED_ROUNDS,
+        *(f"{FIVE_ROUND_BOUTS_BEFORE}{sufixo}" for sufixo in ("_a", "_b", "_diff")),
+    ]
+    assert len(ausentes) == 5
+    for coluna in ausentes:
+        db_session.execute(
+            text("UPDATE bout_features SET features = features - :chave"), {"chave": coluna}
+        )
+    db_session.flush()
+
+    with pytest.raises(StaleFeatureCacheError) as excinfo:
+        run_check(db_session)
+
+    mensagem = str(excinfo.value)
+    for coluna in ausentes:
+        assert coluna in mensagem, coluna
+    assert "materialize" in mensagem
+
+    run_materialize(db_session)
+    assert run_check(db_session).is_stale is False

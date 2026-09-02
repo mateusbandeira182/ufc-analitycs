@@ -21,17 +21,30 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from sqlalchemy.orm import Session
 
 from analysis.model import load_artifact, run_training, save_artifact
-from analysis.predict import MatchupPrediction, predict_card, predict_matchup
+from analysis.predict import (
+    MatchupPrediction,
+    _align_features,
+    _asof_matchup_rows,
+    predict_card,
+    predict_matchup,
+)
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.enums import Stance
 from apps.fighters.models import Fighter
 from ingestion.features.cli import run_materialize
+from ingestion.features.long_frame import build_long_frame, read_granular
+from ingestion.features.rolling import (
+    OPPONENT_WIN_RATE_PRIOR_AVG,
+    SIMILAR_STYLE_WIN_RATE_PRIOR,
+    SOUTHPAW_OPPONENTS_FACED_PRIOR,
+)
 from ingestion.normalize import normalize_name
 
 # Roster sintético: nome -> alcance (cm). O alcance é o sinal preditivo (quem tem mais
@@ -63,7 +76,13 @@ def _make_fighter(name: str, reach_cm: int) -> Fighter:
 
 
 def _bout_fighter(bout_id: int, fighter_id: int, corner: Corner, sig_strikes: int) -> BoutFighter:
-    """Um canto com box-score granular mínimo (base das features de forma recente)."""
+    """Um canto com box-score granular mínimo (base das features de forma recente).
+
+    Os splits de posição (distância/solo) entram desde a Slice 06 da SPEC 009: sem eles as
+    shares nascem com denominador zero, os **eixos de estilo** ficam nulos e o bloco D3 sairia
+    ``NaN`` em toda linha -- o teste do serving passaria dizendo "a feature existe" sobre uma
+    coluna vazia, que é justamente o que a RF-09 manda não aceitar em silêncio.
+    """
     return BoutFighter(
         bout_id=bout_id,
         fighter_id=fighter_id,
@@ -75,6 +94,9 @@ def _bout_fighter(bout_id: int, fighter_id: int, corner: Corner, sig_strikes: in
         takedowns_attempted=3,
         submission_attempts=0,
         control_time_seconds=60,
+        distance_landed=sig_strikes - 10,
+        clinch_landed=0,
+        ground_landed=10,
         source="kaggle",
     )
 
@@ -361,3 +383,109 @@ def test_predict_card_sem_pares_nao_toca_o_granular(db_session: Session, tmp_pat
 
     assert card.matchups == []
     assert card.model_version == load_artifact(tmp_path).trained_at
+
+
+# As colunas que as Sprints 01-06 da SPEC 009 acrescentaram ao treino e que o confronto
+# hipotético **não** reconstrói (ver a docstring de ``analysis.predict``). Oito são bout-level de
+# contexto (nascem em ``build_matchup_matrix``, que o serving não chama); o trio de
+# ``southpaw_opponents_faced_prior`` é a exceção de grão diferente -- é base as-of por lutador,
+# mas nasce em ``add_stance_history_features``, que ``_asof_matchup_rows`` também não chama.
+# Ele é montado a partir da constante do módulo de origem, nunca redigitado: um rename lá
+# quebraria esta guarda em vez de esvaziá-la em silêncio.
+_CONTEXTO_NAO_SERVIDO: tuple[str, ...] = (
+    "weight_class_lbs",
+    "is_womens_division",
+    "division_finish_rate_prior",
+    "is_title_bout",
+    "scheduled_rounds",
+    "is_open_stance_matchup",
+    "involves_switch_stance",
+    "style_distance",
+    *(f"{SOUTHPAW_OPPONENTS_FACED_PRIOR}{sufixo}" for sufixo in ("_a", "_b", "_diff")),
+)
+
+
+def test_confronto_hipotetico_funciona_com_o_conjunto_completo_de_features(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-16: o serving sobrevive às features das Sprints 01-06 e o alinhamento se mantém.
+
+    O modelo treinado sobre o cache já traz as bout-level de contexto, que
+    ``_asof_matchup_rows`` não reconstrói -- elas viram ``NaN`` pelo ``reindex`` de
+    ``_align_features`` e o ``HistGradientBoostingClassifier`` as trata nativamente. O que este
+    teste exige é que a **degradação seja só essa**: o vetor continua alinhado a
+    ``feature_names`` na mesma ordem e a predição não levanta.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    loaded = load_artifact(tmp_path)
+
+    predicao = predict_matchup(
+        db_session, ids["Fighter Alpha"], ids["Fighter Bravo"], directory=tmp_path
+    )
+
+    assert 0.0 <= predicao.prob_a_wins <= 1.0
+    # As duas bases as-of da Slice 06 chegaram ao treino (nenhuma descartada em silêncio).
+    for sufixo in ("_a", "_b", "_diff"):
+        assert f"{SIMILAR_STYLE_WIN_RATE_PRIOR}{sufixo}" in loaded.feature_names, sufixo
+        assert f"{OPPONENT_WIN_RATE_PRIOR_AVG}{sufixo}" in loaded.feature_names, sufixo
+
+
+def test_confronto_hipotetico_calcula_o_estilo_semelhante_da_linha_sintetica(
+    db_session: Session,
+) -> None:
+    """CA-16: o D3 da linha sintética usa **todo** o histórico do lutador, não ``NaN``.
+
+    Ponto crítico do bloco: o D3 depende da **ordem posicional dentro do grupo do lutador** (o
+    prefixo é "tudo antes desta linha"), e ``_asof_matchup_rows`` concatena as sintéticas no
+    fim da frame sem reordenar. Como ``add_recent_form_features`` reordena defensivamente pela
+    chave canônica e a sintética é datada de hoje, ela cai por último no grupo e o prefixo
+    continua sendo o passado real -- mas isso precisa de asserção, e não de confiança na
+    ordem de concatenação.
+
+    A asserção positiva (a feature **existe** na linha sintética) é o que distingue "o serving
+    calculou o D3" de "o serving devolveu ausência e ninguém notou".
+    """
+    ids = _seed_history(db_session)
+    as_of = datetime.now(UTC).date()
+    long = build_long_frame(read_granular(db_session))
+    par = (ids["Fighter Alpha"], ids["Fighter Bravo"])
+
+    linhas = _asof_matchup_rows(db_session, long, [par], [-1], as_of)
+
+    assert len(linhas) == 1
+    for sufixo in ("_a", "_b"):
+        valor = linhas[f"{SIMILAR_STYLE_WIN_RATE_PRIOR}{sufixo}"].iloc[0]
+        assert not pd.isna(valor), sufixo
+        assert 0.0 <= float(valor) <= 1.0, sufixo
+        assert not pd.isna(linhas[f"{OPPONENT_WIN_RATE_PRIOR_AVG}{sufixo}"].iloc[0]), sufixo
+
+
+def test_confronto_hipotetico_degrada_o_contexto_de_luta_para_nulo(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-16: a degradação declarada é **só** o contexto bout-level -- explícita e testada.
+
+    Não é ponta solta escondida: qual divisão tem um confronto hipotético é decisão de
+    produto, e a SPEC 009 registrou a propagação do contexto ao serving como PRD próprio
+    posterior. O que não pode acontecer é a limitação virar surpresa -- daí o teste nomear
+    exatamente as colunas que chegam nulas.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    loaded = load_artifact(tmp_path)
+    as_of = datetime.now(UTC).date()
+    long = build_long_frame(read_granular(db_session))
+
+    linhas = _asof_matchup_rows(
+        db_session, long, [(ids["Fighter Alpha"], ids["Fighter Bravo"])], [-1], as_of
+    )
+    alinhadas = _align_features(linhas, loaded.feature_names)
+
+    assert list(alinhadas.columns) == loaded.feature_names
+    # A guarda contra vacuidade: se nenhuma bout-level tivesse sobrevivido ao treino, o laço
+    # abaixo não asseriria nada e o teste passaria sem exercer a degradação que ele descreve.
+    degradadas = [coluna for coluna in _CONTEXTO_NAO_SERVIDO if coluna in loaded.feature_names]
+    assert degradadas, loaded.feature_names
+    for coluna in degradadas:
+        assert pd.isna(alinhadas[coluna].iloc[0]), coluna

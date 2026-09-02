@@ -25,7 +25,9 @@ from sqlalchemy.orm import Session
 
 from analysis.dataset import (
     FIRST_RELIABLE_CORNER_DATE,
+    PROSCRIBED_FEATURE_BASES,
     build_dataset,
+    build_dataset_without_window_filter,
     read_bout_features,
     restrict_to_trainable_columns,
     temporal_split,
@@ -35,6 +37,36 @@ from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout
 from apps.events.models import Event
 from apps.features.models import BoutFeatures
+from ingestion.features.rolling import (
+    BODY_ACCURACY_R3,
+    CLINCH_ACCURACY_R3,
+    DISTANCE_ACCURACY_R3,
+    GROUND_ACCURACY_R3,
+    HEAD_ACCURACY_R3,
+    KNOCKDOWNS_AVG_R3,
+    KNOCKDOWNS_PM_R3,
+    LEG_ACCURACY_R3,
+    SIG_STRIKE_ACCURACY_R3,
+    SUBMISSION_ATTEMPTS_AVG_R3,
+    TAKEDOWN_ACCURACY_R3,
+    TOTAL_TO_SIG_STRIKE_RATIO_R3,
+)
+
+# As 12 bases as-of do bloco A da SPEC 009 (Slice 01).
+_BLOCO_A_BASES: tuple[str, ...] = (
+    SIG_STRIKE_ACCURACY_R3,
+    HEAD_ACCURACY_R3,
+    BODY_ACCURACY_R3,
+    LEG_ACCURACY_R3,
+    DISTANCE_ACCURACY_R3,
+    CLINCH_ACCURACY_R3,
+    GROUND_ACCURACY_R3,
+    TAKEDOWN_ACCURACY_R3,
+    KNOCKDOWNS_PM_R3,
+    KNOCKDOWNS_AVG_R3,
+    SUBMISSION_ATTEMPTS_AVG_R3,
+    TOTAL_TO_SIG_STRIKE_RATIO_R3,
+)
 
 
 def _raw_row(
@@ -237,6 +269,98 @@ def test_build_dataset_descarta_lutas_com_canto_fabricado_anteriores_ao_corte() 
     assert dataset.bout_id.tolist() == [2, 3]
     assert dataset.target.tolist() == [0, 1]
     assert dataset.features["reach_cm_diff"].tolist() == [2.0, 3.0]
+
+
+def test_janela_do_treino_comeca_em_2010_03_21_e_exclui_a_vespera() -> None:
+    """CA-17: as 40 lutas de alvo fabricado de 2010-01-01 a 2010-03-20 saem do treino.
+
+    Medido no banco de produção em 2026-09-02: naquele intervalo o canto vermelho venceu
+    40 de 40 (100%), distribuídas em UFC 108 (10), UFC Fight Night: Maynard vs Diaz (10),
+    UFC 109 (11) e UFC 110 (9) -- contra 113/210 (53,8%) no resto de 2010. Mesmo alvo
+    fabricado, mesmo remédio: o corte da ADR 0006 (2010-01-01) ficou 80 dias frouxo.
+
+    A asserção do literal é deliberada. O teste da ADR 0006 usa a constante simbolicamente,
+    então ficaria verde com **qualquer** valor -- inclusive com o valor frouxo que esta
+    slice existe para corrigir. Aqui a data está fixada ao lado da constante.
+    """
+    assert date(2010, 3, 21) == FIRST_RELIABLE_CORNER_DATE
+
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=1,
+                event_date=date(2010, 1, 5),
+                target="red",
+                features={"reach_cm_diff": 1.0},
+            ),
+            _raw_row(
+                bout_id=2,
+                event_date=date(2010, 3, 20),
+                target="red",
+                features={"reach_cm_diff": 2.0},
+            ),
+            _raw_row(
+                bout_id=3,
+                event_date=date(2010, 3, 21),
+                target="blue",
+                features={"reach_cm_diff": 3.0},
+            ),
+            _raw_row(
+                bout_id=4,
+                event_date=date(2015, 6, 1),
+                target="red",
+                features={"reach_cm_diff": 4.0},
+            ),
+        ]
+    )
+
+    dataset = build_dataset(raw)
+
+    assert dataset.bout_id.tolist() == [3, 4]
+
+
+def test_build_dataset_sem_filtro_de_janela_preserva_as_lutas_que_o_corte_removeria() -> None:
+    """Caminho exclusivo do harness de ablação: constrói o dataset SEM a janela.
+
+    Existe por um motivo só -- reproduzir a variante histórica (janela de 2010-01-01) para
+    medir a correção contra ela. O caminho de produção é ``build_dataset``, que aplica a
+    janela e **não** tem parâmetro para desligá-la: a ADR 0006 recusou explicitamente a
+    parametrização do corte, e a extração é a alternativa a ela, não um contorno.
+    """
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=1,
+                event_date=date(2010, 2, 1),
+                target="red",
+                features={"reach_cm_diff": 1.0},
+            ),
+            _raw_row(
+                bout_id=2,
+                event_date=date(2015, 6, 1),
+                target="blue",
+                features={"reach_cm_diff": 2.0},
+            ),
+        ]
+    )
+
+    assert build_dataset_without_window_filter(raw).bout_id.tolist() == [1, 2]
+    assert build_dataset(raw).bout_id.tolist() == [2]
+
+
+def test_caminho_sem_filtro_nao_e_usado_por_nenhum_treino_nem_pelo_serving() -> None:
+    """A porta dos fundos que a ADR 0006 fecha continua fechada.
+
+    A ADR recusou um parâmetro com valor padrão justamente porque convidaria a "treinar sem
+    o filtro". A função sem janela é o mesmo risco sob outro nome: só o harness de ablação
+    pode tocá-la. Treino, modelo, serving e walk-forward passam por ``build_dataset``.
+    """
+    import inspect
+
+    from analysis import model, predict, train, walk_forward
+
+    for modulo in (train, model, predict, walk_forward):
+        assert "build_dataset_without_window_filter" not in inspect.getsource(modulo)
 
 
 def test_build_dataset_loga_quantas_lutas_de_canto_fabricado_descartou(
@@ -542,3 +666,48 @@ def test_build_dataset_nunca_admite_coluna_de_media_de_carreira_proscrita() -> N
         assert coluna not in dataset.feature_names
         assert coluna not in dataset.features.columns
     assert dataset.feature_names == ["reach_cm_diff"]
+
+
+def test_nenhuma_feature_do_bloco_a_colide_com_media_de_carreira_proscrita() -> None:
+    """CA-05 (RF-10): nenhum nome do bloco A pertence às médias de carreira proscritas.
+
+    Guarda de caracterização (nasce verde): o par confundível é ``takedown_accuracy_r3``
+    (legítima, point-in-time, calculada sobre a janela de 3 lutas anteriores) contra
+    ``td_avg_acc`` (média de carreira do snapshot de 2025, proscrita pela ADR 0002). São
+    grandezas diferentes com nomes parecidos -- a proscrição é por conjunto explícito de
+    nomes, nunca por prefixo, e um nome novo não pode entrar nesse conjunto por acidente.
+    """
+    for base in _BLOCO_A_BASES:
+        assert base not in PROSCRIBED_FEATURE_BASES, base
+        for sufixo in ("", "_a", "_b", "_diff"):
+            coluna = f"{base}{sufixo}"
+            assert coluna not in {
+                f"{proscrita}{s}"
+                for proscrita in PROSCRIBED_FEATURE_BASES
+                for s in ("", "_a", "_b", "_diff")
+            }, coluna
+
+
+def test_build_dataset_preserva_as_features_do_bloco_a() -> None:
+    """CA-05: as colunas do bloco A sobrevivem a ``build_dataset`` (nenhuma some em silêncio)."""
+    bloco = {f"{base}_diff": 0.5 for base in _BLOCO_A_BASES}
+    raw = pd.DataFrame(
+        [
+            _raw_row(
+                bout_id=1,
+                event_date=date(2020, 1, 1),
+                target="red",
+                features={"reach_cm_diff": 5.0, **bloco},
+            ),
+            _raw_row(
+                bout_id=2,
+                event_date=date(2020, 2, 1),
+                target="blue",
+                features={"reach_cm_diff": -3.0, **dict.fromkeys(bloco, 0.25)},
+            ),
+        ]
+    )
+
+    dataset = build_dataset(raw)
+
+    assert set(bloco) <= set(dataset.feature_names)

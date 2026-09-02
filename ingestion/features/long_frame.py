@@ -65,6 +65,12 @@ LONG_FRAME_COLUMNS: list[str] = [
     "method",
     "round",
     "ending_time_seconds",
+    # Contexto de luta pré-gongo: fica junto do desfecho da luta (e antes das stats do
+    # canto) porque é da luta, não do lutador -- os dois cantos carregam o mesmo valor.
+    # A distinção semântica contexto x desfecho é executável em ``matchup._BOUT_CONTEXT_BASES``.
+    "weight_class",
+    "title_bout",
+    "scheduled_rounds",
     "knockdowns",
     "sig_strikes_landed",
     "sig_strikes_attempted",
@@ -123,6 +129,14 @@ def read_granular(session: Session) -> GranularFrames:
             Bout.method,
             Bout.round,
             Bout.ending_time_seconds,
+            # Contexto de luta (M5/M6 -- ADR 0004): conhecido ANTES do gongo, distinto de
+            # ``round``/``method``, que são desfecho. As três entram de uma vez porque a
+            # projeção é a mesma função: a divisão alimenta o bloco B1 da SPEC 009 e o
+            # formato (título/rounds agendados) alimenta o B2 -- reabrir ``read_granular``
+            # duas vezes pelo mesmo motivo seria retrabalho puro.
+            Bout.weight_class,
+            Bout.title_bout,
+            Bout.scheduled_rounds,
         ),
         con,
     )
