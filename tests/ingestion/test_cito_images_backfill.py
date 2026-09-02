@@ -29,15 +29,12 @@ from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
+from ingestion.cito import images
 from ingestion.cito.cache import CatalogPageCache
 from ingestion.cito.client import CallBudget, CitoClient
-from ingestion.cito.images import (
-    IMAGE_WINDOW_START,
-    ImageBackfillReport,
-    main,
-    run_image_backfill,
-)
+from ingestion.cito.images import ImageBackfillReport, main, run_image_backfill
 from ingestion.normalize import normalize_name
+from ingestion.ufc_official import OFFICIAL_WINDOW_START
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "catalog_imagens_derivado"
 
@@ -314,9 +311,26 @@ def test_evento_anterior_a_janela_nao_recebe_escrita(db_session: Session) -> Non
     assert relatorio.fighters_updated == 0
 
 
-def test_janela_da_spec_e_a_data_do_primeiro_canto_real() -> None:
-    """CA-07: a constante da janela é 2010-03-21, a mesma do restante da SPEC."""
-    assert IMAGE_WINDOW_START.isoformat() == "2010-03-21"
+def test_janela_do_backfill_e_a_constante_unica_da_spec() -> None:
+    """CA-07: a janela usada aqui é a própria ``OFFICIAL_WINDOW_START``, importada e não copiada.
+
+    Duas asserções com dentes, cada uma cobrindo uma forma de a janela se partir em duas:
+
+    - a **identidade** (``is``) falha se alguém voltar a declarar o literal dentro de
+      ``ingestion.cito.images`` -- dois ``date(2010, 3, 21)`` são objetos distintos, então uma
+      redeclaração de mesmo valor não passa;
+    - a comparação com a data documentada (ADR 0006) falha se a constante única **mudar de
+      valor**, que é exatamente o que a versão anterior deste teste não percebia: ela afirmava
+      um literal contra uma cópia local, e ficava verde com a fonte da verdade em outra data.
+
+    O nome do módulo é lido por ``vars()`` e não como atributo porque ``mypy --strict``
+    (``no_implicit_reexport``) recusa ler um nome **importado** como atributo do módulo que o
+    importou -- a recusa é, ela própria, a confirmação de que ali há importação e não declaração.
+    """
+    janela_do_modulo: date = vars(images)["OFFICIAL_WINDOW_START"]
+
+    assert janela_do_modulo is OFFICIAL_WINDOW_START
+    assert date(2010, 3, 21) == OFFICIAL_WINDOW_START
 
 
 # --------------------------------------------------------------------------- #

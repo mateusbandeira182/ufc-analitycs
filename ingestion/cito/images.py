@@ -25,7 +25,9 @@ Regras de escrita
 - **``None`` nunca apaga**: ausência no payload jamais sobrescreve URL já persistida.
 - **Idempotente**: só escreve o que muda, então reexecutar não produz UPDATE nem gasta quota
   (as páginas de catálogo vêm do cache em disco).
-- **Janela** (RF-03/CA-08 da SPEC): nada anterior a 2010-03-21 é tocado, em nenhuma tabela.
+- **Janela** (RF-03/CA-08 da SPEC): nada anterior a ``OFFICIAL_WINDOW_START`` (2010-03-21) é
+  tocado, em nenhuma tabela. A constante é **importada** de ``ingestion.ufc_official``, nunca
+  redeclarada: duas definições da mesma fronteira são o começo de duas fronteiras.
 - **``source`` não muda**: ``source`` é a origem da **linha** (CLAUDE.md), então um backfill da
   Cito sobre uma linha semeada do Kaggle mantém ``source="kaggle"``. Não compor valores.
 - **Gate humano de quota**: execução contra a Cito real sem ``--confirmar-gasto-de-quota``
@@ -67,14 +69,10 @@ from ingestion.cito.dto import CitoCatalogItem
 from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
 from ingestion.cito.matching import _slug_to_normalized_name, is_ufc_catalog_item
 from ingestion.incremental import resolve_call_budget
+from ingestion.ufc_official import OFFICIAL_WINDOW_START
 from mma_analytics.db import SessionLocal
 
 logger = logging.getLogger(__name__)
-
-# A janela da SPEC (RF-03/CA-08): nada anterior a esta data é tocado, em nenhuma tabela. É a
-# data do primeiro evento com canto REAL registrado (UFC Live: Vera vs Jones); antes disso as
-# três fontes descendem da mesma operação de estatística fabricada da UFC.
-IMAGE_WINDOW_START = date(2010, 3, 21)
 
 # Conjunto de fixtures da execução de demonstração (``--fixture``), sem consumir quota: a
 # página derivada com card, montada a partir da captura crua já paga.
@@ -300,7 +298,7 @@ def run_image_backfill(
         if is_ufc_catalog_item(item)
     ]
 
-    na_janela = [item for item in catalog if item.local_date >= IMAGE_WINDOW_START]
+    na_janela = [item for item in catalog if item.local_date >= OFFICIAL_WINDOW_START]
     eventos = _events_by_cito_slug(session, {item.slug for item in na_janela})
 
     events_without_match: list[str] = []
@@ -376,10 +374,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--from",
         dest="date_from",
         type=date.fromisoformat,
-        default=IMAGE_WINDOW_START,
+        default=OFFICIAL_WINDOW_START,
         help=(
             "Início da janela (AAAA-MM-DD); filtra a chamada à Cito. "
-            f"Default: {IMAGE_WINDOW_START.isoformat()} (a janela da SPEC)."
+            f"Default: {OFFICIAL_WINDOW_START.isoformat()} (a janela da SPEC)."
         ),
     )
     parser.add_argument(
