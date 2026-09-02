@@ -80,8 +80,11 @@ plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions/", "\\.venv/"]
 
 [[tool.mypy.overrides]]
-# numpy é alcançado transitivamente (pytest.approx importa numpy sob TYPE_CHECKING);
-# seus stubs usam sintaxe 3.12 (PEP 695) e não devem ser seguidos. pandas idem: o
+# numpy passou a ser importado **diretamente** por analysis.ablation (bootstrap pareado
+# vetorizado, SPEC 009 Slice 00); antes só chegava transitivamente (pytest.approx o importa
+# sob TYPE_CHECKING). Seus stubs usam sintaxe 3.12 (PEP 695) e não devem ser seguidos, então
+# toda expressão numpy é Any e precisa ser convertida na borda (float(...)/int(...)) antes
+# de sair de função anotada -- warn_return_any do modo strict cobra isso. pandas idem: o
 # DataFrame é fronteira dinâmica, tipada na borda (ingestion.entity_resolution).
 module = ["pandas", "pandas.*", "numpy", "numpy.*"]
 ignore_missing_imports = true

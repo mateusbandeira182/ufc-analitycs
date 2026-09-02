@@ -21,10 +21,33 @@ nesse caso em vez de devolver features corrompidas em silêncio.
 Convenção fixa A = red, B = blue (ADR 0001): o modelo prevê ``P(winner_corner == red)``, que
 aqui é ``P(A vence)``. O modelo cru é sensível ao canto (aprendeu a vantagem do vermelho); a
 neutralização vive na camada de API, que chama o serving nas duas ordens de canto. Anti-leakage
-/``_safe_ratio`` (denominador zero -> ``NaN``, nunca ``inf``) e a degradação para ``NaN`` de
+/``safe_ratio`` (denominador zero -> ``NaN``, nunca ``inf``) e a degradação para ``NaN`` de
 features não-backfilladas (round-a-round) são herdados da pipeline; o
 ``HistGradientBoostingClassifier`` trata ``NaN`` nativamente. Nada é escrito no banco (leitura
 pura sobre o granular).
+
+**Degradação declarada do serving com as features da SPEC 009 (M8), CA-16.** ``_asof_matchup_rows``
+reconstrói a cadeia as-of à mão e chama ``pivot_corners``/``add_differentials`` direto, sem o
+orquestrador ``matchup.build_matchup_matrix``. Consequência, explícita e testada:
+
+- as features **bout-level de contexto** (``weight_class_lbs``, ``is_womens_division``,
+  ``division_finish_rate_prior``, ``is_title_bout``, ``scheduled_rounds``,
+  ``is_open_stance_matchup``, ``involves_switch_stance``, ``style_distance``) e
+  ``southpaw_opponents_faced_prior`` **não** são calculadas: viram ``NaN`` pelo ``reindex`` de
+  ``_align_features``. Qual divisão, formato ou base tem um confronto **hipotético** é decisão
+  de produto, não de engenharia de features -- um default aqui resolveria o sintoma e
+  esconderia a pergunta. A propagação do contexto ao serving já está registrada como PRD
+  próprio posterior;
+- as features **as-of por lutador** continuam íntegras, inclusive os blocos D3 e D4 da Slice 06
+  (``similar_style_win_rate_prior``, ``opponent_win_rate_prior_avg``), porque nascem dentro de
+  ``rolling.add_recent_form_features``, que o serving chama. O D3 depende da **ordem posicional
+  dentro do grupo do lutador** (o prefixo é "tudo antes desta linha") e as linhas sintéticas
+  são concatenadas no fim da frame; ``add_recent_form_features`` reordena defensivamente pela
+  chave canônica, e a sintética -- datada de hoje -- cai por último no grupo, de modo que o
+  prefixo continua sendo o passado real do lutador.
+
+O alinhamento a ``feature_names`` permanece correto em ambos os casos: é limitação aceita e
+coberta por teste, não ponta solta.
 """
 
 from __future__ import annotations

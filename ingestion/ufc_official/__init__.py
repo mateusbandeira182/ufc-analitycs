@@ -20,9 +20,14 @@ from typing import Final
 # argumento de função, não vira variável de ambiente e não vira flag de linha de comando. Um
 # corte que se pode afrouxar por conveniência deixa de ser garantia.
 #
-# NÃO é a mesma constante que ``analysis.dataset.FIRST_RELIABLE_CORNER_DATE`` (2010-01-01):
-# aquela é o filtro do **treino** e esta é a janela de **autoridade da fonte**. Valores e
-# propósitos diferentes -- não unificar, não importar uma no lugar da outra.
+# NÃO é a mesma constante que ``analysis.dataset.FIRST_RELIABLE_CORNER_DATE``. Desde a Slice
+# 00B da SPEC 009 as duas **coincidem em valor** (2010-03-21) -- por **medição convergente**,
+# não por unificação: esta é a janela de **autoridade da fonte** (SPEC 008) e aquela é o filtro
+# do **treino** (ADR 0006, Emenda 1). Propósitos, módulos e consumidores diferentes; uma pode
+# mudar sem a outra. Continuam **proibidas** de virar uma constante só ou de ser importada uma
+# no lugar da outra -- a coincidência de hoje é resultado, não definição. A guarda executável é
+# ``test_constante_da_janela_nao_e_a_do_filtro_de_treino``, que afirma identidade, módulo e
+# valor.
 #
 # Definida aqui, no pacote, porque todas as slices seguintes do M7 (03 a 07) precisam do mesmo
 # corte: cinco definições locais da mesma data divergiriam em silêncio na primeira correção.

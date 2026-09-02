@@ -358,13 +358,27 @@ def test_janela_devolve_em_ordem_cronologica_estavel(db_session: Session) -> Non
 
 
 def test_constante_da_janela_nao_e_a_do_filtro_de_treino() -> None:
-    """``OFFICIAL_WINDOW_START`` e ``FIRST_RELIABLE_CORNER_DATE`` são constantes distintas.
+    """As duas constantes de 2010 coincidem em VALOR e continuam distintas em PROPÓSITO.
 
-    Valores e propósitos diferentes: 2010-03-21 é a autoridade da **fonte** (limitação medida,
-    SPEC 008) e 2010-01-01 é o corte do **treino** (ADR 0006). Unificá-las mudaria em silêncio
-    o recorte de uma das duas.
+    Desde a Slice 00B da SPEC 009 as duas valem 2010-03-21 -- por **medição convergente**,
+    não por unificação: ``OFFICIAL_WINDOW_START`` é a janela de AUTORIDADE DA FONTE (M7,
+    SPEC 008) e ``FIRST_RELIABLE_CORNER_DATE`` é o filtro do TREINO (ADR 0006, emendada).
+    Uma pode mudar sem a outra.
+
+    Três asserções, cada uma cobrindo uma forma de a separação se perder: identidade
+    (alias ou importação cruzada), módulo (redeclaração no lugar errado) e valor (deriva
+    silenciosa de qualquer uma das duas). A coincidência de hoje é **resultado**, não
+    definição -- é a mesma configuração que produziu o defeito de ``IMAGE_WINDOW_START``
+    (duas definições da mesma constante), com a diferença de que aqui a separação é
+    intencional e necessária.
     """
-    from analysis.dataset import FIRST_RELIABLE_CORNER_DATE
+    from analysis import dataset as analysis_dataset
+    from ingestion import ufc_official
 
-    assert date(2010, 3, 21) == OFFICIAL_WINDOW_START
-    assert OFFICIAL_WINDOW_START != FIRST_RELIABLE_CORNER_DATE
+    filtro_do_treino: date = vars(analysis_dataset)["FIRST_RELIABLE_CORNER_DATE"]
+    janela_da_fonte: date = vars(ufc_official)["OFFICIAL_WINDOW_START"]
+
+    assert filtro_do_treino is not janela_da_fonte
+    assert "OFFICIAL_WINDOW_START" not in vars(analysis_dataset)
+    assert "FIRST_RELIABLE_CORNER_DATE" not in vars(ufc_official)
+    assert filtro_do_treino == date(2010, 3, 21) == janela_da_fonte

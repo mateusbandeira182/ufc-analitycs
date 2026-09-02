@@ -4,8 +4,8 @@ Núcleo de dados da fase 2 (modelo preditivo). Lê o cache reconstrutível ``bou
 (M4) juntando a data do evento (``bout_features`` -> ``bouts`` -> ``events``), expande o
 payload JSONB ``features`` em colunas **numéricas** (X) e mapeia o alvo
 ``target_winner_corner`` para binário (vermelho=1, azul=0), descartando as lutas de alvo
-nulo (NC/empate) e as anteriores a ``FIRST_RELIABLE_CORNER_DATE``, cujo canto o Kaggle
-fabricou (alvo falso; ver ADR 0006).
+nulo (NC/empate) e as anteriores a ``FIRST_RELIABLE_CORNER_DATE`` (2010-03-21), cujo canto o
+Kaggle fabricou (alvo falso; ver ADR 0006 e a Emenda 1 da SPEC 009).
 
 Invariante load-bearing (mesma disciplina anti-leakage do M4): o split é **temporal**,
 nunca aleatório. Ordena por data de evento e reserva as lutas mais recentes como holdout
@@ -43,17 +43,27 @@ COL_FEATURES = "features"
 # Alvo binário: canto vermelho = 1 (o baseline ingênuo prevê sempre 1), azul = 0.
 _CORNER_TO_LABEL: dict[str, int] = {"red": 1, "blue": 0}
 
-# Data do primeiro evento cujo canto o Kaggle registra de verdade. Antes dela o canto do
-# dataset é **fabricado**: a taxa de vitória do vermelho é exatamente 100,0% em TODOS os anos
-# de 1994 a 2009 (1.249 lutas decididas), e passa a 61,2% em 2010, 59,7% em 2011 e a oscilar
-# entre 53,8% e 63,2% até 2025. O corte é seco, não gradiente -- naquelas linhas a coluna de
-# canto foi preenchida com a ordem do resultado, porque o ufcstats da época não registrava
-# canto. Confirmação independente: a convenção "o primeiro nome do título do evento é o canto
-# vermelho" acerta 99,4% (478/481) de 2010 em diante e só 64,3% (18/28) antes disso.
+# Data do primeiro evento cujo canto o Kaggle registra de verdade: 2010-03-21, UFC Live:
+# Vera vs Jones. Antes dela o canto do dataset é **fabricado**: a taxa de vitória do vermelho
+# é exatamente 100,0% em TODOS os anos de 1994 a 2009 (1.249 lutas decididas), e passa a
+# oscilar entre 53,8% e 63,2% depois do corte. O corte é seco, não gradiente -- naquelas
+# linhas a coluna de canto foi preenchida com a ordem do resultado, porque o ufcstats da época
+# não registrava canto. Confirmação independente: a convenção "o primeiro nome do título do
+# evento é o canto vermelho" acerta 99,4% (478/481) de 2010 em diante e só 64,3% (18/28)
+# antes disso.
+#
+# O corte original da ADR 0006 era 2010-01-01 e ficou **80 dias frouxo**: medido no banco de
+# produção em 2026-09-02, as 40 lutas de 2010-01-01 a 2010-03-20 -- UFC 108 (10), UFC Fight
+# Night: Maynard vs Diaz (10), UFC 109 (11) e UFC 110 (9) -- têm 40 de 40 vitórias do vermelho
+# (100%, e 100% em cada evento isoladamente), contra 113/210 (53,8%) no resto de 2010. Mesmo
+# alvo fabricado, mesmo remédio. Ver ADR 0006, Emenda 1 (SPEC 009, Slice 00B).
 #
 # É constante fixa, não parâmetro: não é ajuste de tuning que se calibra, é limitação
-# conhecida da fonte. Ver ADR 0006.
-FIRST_RELIABLE_CORNER_DATE = date(2010, 1, 1)
+# conhecida da fonte -- não vira argumento, variável de ambiente nem flag de linha de comando.
+# Coincide em valor com ``ingestion.ufc_official.OFFICIAL_WINDOW_START`` por **medição
+# convergente**: são constantes distintas, com propósitos, módulos e consumidores distintos,
+# e continuam proibidas de serem unificadas (ver o comentário lá).
+FIRST_RELIABLE_CORNER_DATE = date(2010, 3, 21)
 
 # As 8 médias de carreira do ``fighter_details.csv`` são um **snapshot de 2025**: cada uma
 # resume a carreira inteira do lutador, inclusive as lutas posteriores àquela que se quer
@@ -227,7 +237,7 @@ def _drop_fabricated_corner_rows(raw: pd.DataFrame) -> pd.DataFrame:
     """Descarta as lutas anteriores a ``FIRST_RELIABLE_CORNER_DATE``; loga quantas saíram.
 
     O alvo do modelo é o **canto** (``target_winner_corner``), e nas lutas do Kaggle anteriores
-    a 2010 o canto é o vencedor renomeado (ver o comentário da constante). Treinar com rótulo
+    a 2010-03-21 o canto é o vencedor renomeado (ver o comentário da constante). Treinar com rótulo
     que sabemos ser falso é o mesmo defeito que barrou o ``cardSection`` default e o ``corner``
     da Cito -- a fonte ser a nossa não abre exceção.
 
@@ -246,8 +256,8 @@ def _drop_fabricated_corner_rows(raw: pd.DataFrame) -> pd.DataFrame:
     logger.warning(
         "Descartando %d luta(s) anteriores a %s do dataset preditivo: nesses eventos o canto "
         "do Kaggle é fabricado (o vermelho venceu 100%% das lutas em todos os anos de 1994 a "
-        "2009), logo o alvo é o vencedor renomeado, não o canto. Restam %d luta(s). "
-        "Ver ADR 0006.",
+        "2009 e nas 40 lutas de 2010-01-01 a 2010-03-20), logo o alvo é o vencedor renomeado, "
+        "não o canto. Restam %d luta(s). Ver ADR 0006 e a Emenda 1.",
         n_fabricated,
         FIRST_RELIABLE_CORNER_DATE.isoformat(),
         len(raw) - n_fabricated,
@@ -255,20 +265,25 @@ def _drop_fabricated_corner_rows(raw: pd.DataFrame) -> pd.DataFrame:
     return raw[~fabricated]
 
 
-def build_dataset(raw: pd.DataFrame) -> Dataset:
-    """Constrói o dataset preditivo a partir da frame crua de ``read_bout_features``.
+def build_dataset_without_window_filter(rows: pd.DataFrame) -> Dataset:
+    """Constrói o dataset **sem** aplicar a janela de canto confiável.
 
-    Descarta linhas de alvo nulo (NC/empate), expande o JSONB ``features`` em colunas,
-    seleciona apenas as numéricas (X) e mapeia o alvo para binário (y). O ``NaN`` das
-    features é preservado (ausência explícita, sem imputação).
+    Caminho exclusivo do harness de ablação (``analysis.ablation``, bloco
+    ``janela-canto-fabricado``), que precisa reproduzir a variante **histórica** do dataset
+    -- a janela de 2010-01-01, anterior à Emenda 1 da ADR 0006 -- para medir a correção
+    contra ela. A variante histórica é *menos* restritiva que a de produção, então não há
+    como obtê-la filtrando a saída de ``build_dataset`` por cima.
 
-    Duas guardas correm sobre X, nesta ordem: as médias de carreira proscritas (vazamento de
-    futuro, ADR 0002) e as colunas 100% ``NaN`` (backfill parcial). A ordem importa pouco no
-    resultado, mas a proscrição vem antes para que uma coluna proibida e vazia seja reportada
-    pelo motivo certo.
+    **Nenhum treino, walk-forward ou serving pode chamá-la**: o rótulo pré-janela é
+    fabricado (ADR 0006) e o caminho de produção é ``build_dataset``. Esta extração é a
+    alternativa exata à parametrização do corte que a ADR 0006 recusou -- um parâmetro com
+    valor padrão convidaria a "treinar sem o filtro" na chamada mais próxima; uma função de
+    nome denunciante fica visível em qualquer revisão e é guardada por teste
+    (``test_caminho_sem_filtro_nao_e_usado_por_nenhum_treino_nem_pelo_serving``).
+
+    Fora a janela, faz o mesmo que ``build_dataset`` -- ver a docstring dela.
     """
-    trustworthy = _drop_fabricated_corner_rows(raw)
-    decided = trustworthy[trustworthy[COL_TARGET].notna()].reset_index(drop=True)
+    decided = rows[rows[COL_TARGET].notna()].reset_index(drop=True)
     expanded = pd.DataFrame(list(decided[COL_FEATURES]), index=decided.index)
     numeric_columns = _numeric_feature_columns(expanded)
     if numeric_columns:
@@ -285,6 +300,25 @@ def build_dataset(raw: pd.DataFrame) -> Dataset:
         bout_id=decided[COL_BOUT_ID],
         feature_names=[str(column) for column in features.columns],
     )
+
+
+def build_dataset(raw: pd.DataFrame) -> Dataset:
+    """Constrói o dataset preditivo a partir da frame crua de ``read_bout_features``.
+
+    Aplica a janela de canto confiável (ADR 0006: nada anterior a
+    ``FIRST_RELIABLE_CORNER_DATE`` chega ao treino), descarta linhas de alvo nulo
+    (NC/empate), expande o JSONB ``features`` em colunas, seleciona apenas as numéricas (X)
+    e mapeia o alvo para binário (y). O ``NaN`` das features é preservado (ausência
+    explícita, sem imputação).
+
+    Duas guardas correm sobre X, nesta ordem: as médias de carreira proscritas (vazamento de
+    futuro, ADR 0002) e as colunas 100% ``NaN`` (backfill parcial). A ordem importa pouco no
+    resultado, mas a proscrição vem antes para que uma coluna proibida e vazia seja reportada
+    pelo motivo certo.
+
+    Este é o **único** caminho de produção. A janela não é parâmetro e não se desliga aqui.
+    """
+    return build_dataset_without_window_filter(_drop_fabricated_corner_rows(raw))
 
 
 def temporal_split(dataset: Dataset, test_fraction: float = 0.2) -> TemporalSplit:
