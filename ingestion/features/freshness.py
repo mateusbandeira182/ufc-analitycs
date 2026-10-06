@@ -26,6 +26,18 @@ Três sinais de defasagem, todos read-only:
 
 Valores de feature **não** são comparados por igualdade: float round-trip por JSONB não é
 confiável, e a contagem de não-nulos já captura o caso real com diagnóstico melhor.
+
+**Quando usar esta guarda e quando usar a outra** (SPEC 011, Slice 01). Existe agora uma irmã,
+``apps.features.selectors.get_features_freshness``, com a mesma tese e outro orçamento:
+
+- **esta** recompõe a pipeline inteira e compara coluna a coluna. Custa uma execução completa;
+  é a certa no **gate de treino** (``python -m ingestion.features check``), onde o diagnóstico
+  precisa nomear a coluna defasada e onde alguns segundos não importam;
+- **aquela** compara ``n_bouts_source`` com o ``count(*)`` real -- dois ``COUNT``. É a única
+  viável num request HTTP, e acompanha toda resposta que lê o cache as-of (RF-05). Detecta
+  granular que andou, não coluna que sumiu.
+
+As duas coexistem de propósito: trocar uma pela outra cega um dos dois cenários.
 """
 
 from __future__ import annotations

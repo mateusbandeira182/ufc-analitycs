@@ -8,15 +8,22 @@ import type {
 } from "@/api/schema";
 import { BOUT_DETAIL_FIXTURES, BOUT_FIXTURES } from "@/mocks/bouts";
 import { EVENT_DETAIL_FIXTURES, EVENT_FIXTURES } from "@/mocks/events";
-import { FIGHTER_FIXTURES, FIGHTER_STATS_FIXTURES } from "@/mocks/fighters";
+import {
+  FIGHTER_FIXTURES,
+  FIGHTER_STATS_FIXTURES,
+  FRESH_FEATURES,
+} from "@/mocks/fighters";
 import { headToHeadBouts } from "@/mocks/headToHead";
 
 /*
-  Handlers MSW espelhando o contrato do M2: GET /api/v1/fighters devolve o
-  envelope paginado Page[FighterOut], filtra server-side por `name` (substring,
-  case-insensitive) e pagina por `limit`/`offset`, como o backend faz. `total`
-  reflete o conjunto filtrado inteiro (não só a página). Os testes podem
-  sobrescrever handlers específicos (erro 500, lista vazia) via server.use(...).
+  Handlers MSW espelhando o contrato: GET /api/v1/fighters devolve o envelope
+  paginado Page[FighterOut], filtra server-side por `q` (substring,
+  case-insensitive, em **nome ou apelido**) e pagina por `limit`/`offset`, como
+  o backend faz. `total` reflete o conjunto filtrado inteiro (não só a página).
+  O handler não reimplementa o escape de curinga: tratar `%`/`_` como texto
+  literal é responsabilidade do Postgres, coberta pelos testes de Selector e de
+  API do backend. Os testes podem sobrescrever handlers específicos (erro 500,
+  lista vazia) via server.use(...).
 */
 
 /** Lê `limit`/`offset` da query string com os mesmos padrões do backend. */
@@ -29,11 +36,15 @@ function readPageParams(url: URL): { limit: number; offset: number } {
 export const handlers = [
   http.get("*/api/v1/fighters", ({ request }) => {
     const url = new URL(request.url);
-    const name = url.searchParams.get("name")?.trim().toLowerCase();
+    const q = url.searchParams.get("q")?.trim().toLowerCase();
     const { limit, offset } = readPageParams(url);
 
-    const filtered = name
-      ? FIGHTER_FIXTURES.filter((f) => f.name.toLowerCase().includes(name))
+    const filtered = q
+      ? FIGHTER_FIXTURES.filter(
+          (f) =>
+            f.name.toLowerCase().includes(q) ||
+            (f.nickname?.toLowerCase().includes(q) ?? false),
+        )
       : FIGHTER_FIXTURES;
 
     const body: PageFighterOut = {
@@ -168,6 +179,7 @@ export const handlers = [
       prob_a_wins: probA,
       prob_b_wins: 1 - probA,
       predicted_winner_id: probA >= 0.5 ? fighterA.id : fighterB.id,
+      features_freshness: FRESH_FEATURES,
     };
     return HttpResponse.json(body);
   }),

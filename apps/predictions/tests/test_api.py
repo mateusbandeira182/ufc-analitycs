@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from analysis.model import load_artifact
@@ -36,7 +37,9 @@ from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.events.selectors import list_event_bouts
+from apps.features.models import FighterAsOfFeatures
 from apps.predictions.api import get_artifacts_dir
+from ingestion.features.cli import run_materialize_asof
 from mma_analytics.app import create_app
 from mma_analytics.db import get_session
 from tests.analysis.test_predict import (
@@ -397,3 +400,117 @@ def test_event_luta_sem_historico_nao_derruba_o_card(db_session: Session, tmp_pa
     # A outra luta do MESMO card foi predita normalmente.
     assert predita["unavailable_reason"] is None
     assert predita["prob_red_wins"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Diagnóstico de defasagem do cache as-of (SPEC 011, Slice 01 -- RF-05/CA-04)
+# ---------------------------------------------------------------------------
+
+# Os quatro campos do contrato de ``FeaturesFreshnessOut``. Nomeados aqui porque os três
+# endpoints que o carregam asserem exatamente o mesmo conjunto -- e é esse conjunto, não uma
+# chave solta, que a interface da RF-06 consome.
+_CAMPOS_FRESHNESS = {"materialized_at", "n_bouts_source", "n_bouts_current", "stale"}
+
+
+def test_matchup_traz_o_diagnostico_de_defasagem(db_session: Session, tmp_path: Path) -> None:
+    """CA-04: ``/predict/matchup`` devolve ``features_freshness`` com os quatro campos."""
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup",
+            params={"fighter_a": ids["Fighter Alpha"], "fighter_b": ids["Fighter Delta"]},
+        )
+
+    assert resp.status_code == 200
+    freshness = resp.json()["features_freshness"]
+    assert set(freshness) == _CAMPOS_FRESHNESS
+    assert freshness["stale"] is False
+    assert freshness["materialized_at"] is not None
+    assert freshness["n_bouts_source"] == freshness["n_bouts_current"] > 0
+
+
+def test_event_traz_o_diagnostico_de_defasagem_no_envelope(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-04/D-09: o campo vive no ``EventPredictionOut``, não dentro de cada luta.
+
+    A defasagem é do **cache**, não de uma luta: repeti-la por item seria ruído, e omiti-la do
+    envelope deixaria a tela do card previsto sem o que exibir (RF-06).
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    event_id = _seed_card(db_session, ids, [("Fighter Alpha", "Fighter Delta")])
+    # Re-materializa DEPOIS de semear o card: é a ordem da produção (ingere o evento, então
+    # refresca o cache) e é o que torna a asserção de "em dia" significativa.
+    run_materialize_asof(db_session)
+
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(f"/api/v1/predict/event/{event_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body["features_freshness"]) == _CAMPOS_FRESHNESS
+    assert body["features_freshness"]["stale"] is False
+    assert all("features_freshness" not in luta for luta in body["bouts"])
+
+
+def test_luta_nova_torna_a_resposta_defasada_sem_rematerializar(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-04: inserir uma luta entre dois requests faz ``stale`` virar ``true``.
+
+    É a cicatriz do ``bout_features`` fechada onde ela dói: na resposta que entrega o dado
+    defasado. Antes, o cache podia envelhecer meses e o único sinal era um log que ninguém
+    lia -- aqui a defasagem chega junto com o palpite, sem custo de recomputo.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    params = {"fighter_a": ids["Fighter Alpha"], "fighter_b": ids["Fighter Delta"]}
+
+    with _client(db_session, tmp_path) as client:
+        antes = client.get("/api/v1/predict/matchup", params=params).json()
+        _seed_future_bout(db_session, ids["Fighter Bravo"], ids["Fighter Charlie"])
+        depois = client.get("/api/v1/predict/matchup", params=params).json()
+
+    assert antes["features_freshness"]["stale"] is False
+    assert depois["features_freshness"]["stale"] is True
+    assert (
+        depois["features_freshness"]["n_bouts_current"]
+        == antes["features_freshness"]["n_bouts_current"] + 1
+    )
+    # O carimbo da materialização NÃO se move: nada foi re-materializado entre os requests.
+    assert (
+        depois["features_freshness"]["materialized_at"]
+        == (antes["features_freshness"]["materialized_at"])
+    )
+
+
+def test_matchup_com_cache_nunca_materializado_reporta_a_causa(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Sem cache, a predição é 422 -- e o diagnóstico é o que distingue a causa.
+
+    Todo lutador parece "sem histórico" quando o cache nunca foi materializado. O 422 é o
+    contrato existente; o que a SPEC 011 acrescenta é a informação que separa "estreante" de
+    "ninguém rodou a materialização" -- aqui visível em ``/fighters/{id}/stats``, que responde
+    200 mesmo sem cache nenhum (emenda DP-05: ``materialized_at`` é nulável).
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    db_session.execute(delete(FighterAsOfFeatures))
+
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(
+            "/api/v1/predict/matchup",
+            params={"fighter_a": ids["Fighter Alpha"], "fighter_b": ids["Fighter Delta"]},
+        )
+        stats = client.get(f"/api/v1/fighters/{ids['Fighter Alpha']}/stats")
+
+    assert resp.status_code == 422
+    assert stats.status_code == 200
+    freshness = stats.json()["features_freshness"]
+    assert freshness["materialized_at"] is None
+    assert freshness["n_bouts_source"] == 0
+    assert freshness["stale"] is True

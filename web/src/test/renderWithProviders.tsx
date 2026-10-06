@@ -17,7 +17,7 @@ export interface RenderWithProvidersResult extends RenderResult {
 interface RenderWithProvidersOptions {
   /** Rotas a montar. Quando omitido, o `ui` é renderizado na rota "/". */
   routes?: RouteObject[];
-  /** Entrada inicial do histórico (ex.: "/fighters?name=jon"). */
+  /** Entrada inicial do histórico (ex.: "/fighters?q=jon"). */
   initialEntries?: string[];
 }
 

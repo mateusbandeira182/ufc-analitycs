@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from apps.bouts.api import bout_fighter_stats_out
+from apps.features.schemas import FeaturesFreshnessOut
+from apps.features.selectors import get_features_freshness
 from apps.fighters.schemas import (
     FighterBoutOut,
     FighterOpponentOut,
@@ -36,10 +38,13 @@ router = APIRouter(prefix="/fighters", tags=["fighters"])
 def list_fighters_endpoint(
     session: Annotated[Session, Depends(get_session)],
     params: Annotated[PageParams, Depends(page_params)],
-    name: Annotated[str | None, Query()] = None,
+    q: Annotated[
+        str | None,
+        Query(description="Busca por nome ou apelido; o termo vale como texto literal."),
+    ] = None,
 ) -> Page[FighterOut]:
-    """Lista fighters paginados, com filtro opcional por nome."""
-    rows, total = list_fighters(session, name=name, limit=params.limit, offset=params.offset)
+    """Lista fighters paginados, com busca opcional por nome ou apelido."""
+    rows, total = list_fighters(session, q=q, limit=params.limit, offset=params.offset)
     return Page[FighterOut](
         items=[FighterOut.model_validate(row) for row in rows],
         total=total,
@@ -96,7 +101,13 @@ def get_fighter_stats_endpoint(
     fighter_id: int,
     session: Annotated[Session, Depends(get_session)],
 ) -> FighterStatsOut:
-    """Estatísticas resumidas do lutador, computadas on demand; 404 quando não existe."""
+    """Estatísticas resumidas do lutador, computadas on demand; 404 quando não existe.
+
+    Carrega ``features_freshness`` (SPEC 011, RF-05/D-09): é a resposta que alimenta a "forma
+    atual" da página do lutador, uma das três que leem o cache as-of. O agregado em si **não**
+    depende do cache -- é computado on demand do granular --, então a resposta continua 200
+    mesmo com o cache nunca materializado; nesse caso ``materialized_at`` volta nulo.
+    """
     stats = get_fighter_stats(session, fighter_id)
     if stats is None:
         raise HTTPException(status_code=404, detail="Fighter não encontrado")
@@ -115,4 +126,5 @@ def get_fighter_stats_endpoint(
             share_clinch=stats.striking_profile.share_clinch,
             share_ground=stats.striking_profile.share_ground,
         ),
+        features_freshness=FeaturesFreshnessOut.model_validate(get_features_freshness(session)),
     )

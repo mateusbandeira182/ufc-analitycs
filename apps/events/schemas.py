@@ -51,7 +51,8 @@ class BoutCardOut(BaseModel):
 
     id: int
     winner_id: int | None
-    method: BoutMethod
+    # Nulo na luta agendada: ela ainda não tem desfecho (M9, RF-07).
+    method: BoutMethod | None
     round: int | None
     ending_time_seconds: int | None
     weight_class: str | None

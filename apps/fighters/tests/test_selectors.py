@@ -1,6 +1,7 @@
 """Testes de Selector de fighters contra o Postgres de teste transacional.
 
-Cobrem ``list_fighters`` (sem filtro, filtro por nome case-insensitive substring,
+Cobrem ``list_fighters`` (sem filtro, busca por nome **ou** apelido case-insensitive
+por substring, curinga do ``LIKE`` valendo como texto literal nos dois campos,
 paginação por limit/offset com ordem estável), ``get_fighter_by_id`` (encontrado
 e inexistente), ``get_fighter_history`` (série cronológica, stats do canto
 consultado, lutador sem lutas) e ``get_fighter_stats`` (médias e vitórias por
@@ -15,7 +16,7 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
 from apps.fighters.models import Fighter
@@ -29,9 +30,14 @@ from apps.fighters.tests.factories import FighterFactory
 from mma_analytics.db import Base
 
 
-def _add(session: Session, name: str) -> Fighter:
-    """Semeia um fighter com o ``name`` dado e devolve o model persistido."""
-    fighter = FighterFactory.build(name=name)
+def _add(session: Session, name: str, *, nickname: str | None = None) -> Fighter:
+    """Semeia um fighter com o ``name``/``nickname`` dados e devolve o model persistido.
+
+    ``nickname`` é explícito (e nulo por padrão) para que os testes de curinga controlem
+    o acervo inteiro: um apelido gerado ao acaso pela factory poderia introduzir o próprio
+    caractere sob prova e tornar a asserção não-determinística.
+    """
+    fighter = FighterFactory.build(name=name, nickname=nickname)
     session.add(fighter)
     session.flush()
     return fighter
@@ -44,15 +50,21 @@ def _add_history_bout(
     event_name: str,
     event_date: date,
     won: bool,
+    status: BoutStatus = BoutStatus.COMPLETED,
 ) -> Bout:
-    """Semeia um evento, uma luta e o canto do ``fighter`` naquela luta."""
+    """Semeia um evento, uma luta e o canto do ``fighter`` naquela luta.
+
+    ``status`` é explícito para os testes da luta agendada (M9, RF-07): ela tem linha em
+    ``bout_fighters`` como qualquer outra, e é por ela que vaza para histórico e agregados.
+    """
     event = EventFactory.build(name=event_name, date=event_date)
     session.add(event)
     session.flush()
     bout = BoutFactory.build(
         event_id=event.id,
         winner_id=fighter.id if won else None,
-        method=BoutMethod.DECISION,
+        method=BoutMethod.DECISION if status is BoutStatus.COMPLETED else None,
+        status=status,
     )
     session.add(bout)
     session.flush()
@@ -66,22 +78,81 @@ def test_list_fighters_sem_filtro_devolve_todos(db_session: Session) -> None:
     for name in ("Jon Jones", "Alex Pereira", "Israel Adesanya"):
         _add(db_session, name)
 
-    rows, total = list_fighters(db_session, name=None, limit=50, offset=0)
+    rows, total = list_fighters(db_session, q=None, limit=50, offset=0)
 
     assert total == 3
     assert {row.name for row in rows} == {"Jon Jones", "Alex Pereira", "Israel Adesanya"}
 
 
 def test_list_fighters_filtra_por_nome_case_insensitive(db_session: Session) -> None:
-    """``name`` filtra por substring ignorando caixa; ``total`` reflete o filtro."""
+    """``q`` filtra o nome por substring ignorando caixa; ``total`` reflete o filtro."""
     _add(db_session, "Alexander Volkanovski")
     _add(db_session, "Alex Pereira")
     _add(db_session, "Jon Jones")
 
-    rows, total = list_fighters(db_session, name="alex", limit=50, offset=0)
+    rows, total = list_fighters(db_session, q="alex", limit=50, offset=0)
 
     assert total == 2
     assert {row.name for row in rows} == {"Alexander Volkanovski", "Alex Pereira"}
+
+
+def test_list_fighters_encontra_pelo_apelido(db_session: Session) -> None:
+    """``q`` também casa o apelido: "bones" devolve Jon Jones, cujo nome não contém o termo."""
+    _add(db_session, "Jon Jones", nickname="Bones")
+    _add(db_session, "Alex Pereira", nickname="Poatan")
+
+    rows, total = list_fighters(db_session, q="bones", limit=50, offset=0)
+
+    assert total == 1
+    assert [row.name for row in rows] == ["Jon Jones"]
+
+
+def test_list_fighters_percentual_nao_e_curinga(db_session: Session) -> None:
+    """CA-26a: num acervo sem ``%``, buscar ``%`` devolve zero -- não o acervo inteiro."""
+    _add(db_session, "Jon Jones", nickname="Bones")
+    _add(db_session, "Alex Pereira", nickname="Poatan")
+
+    rows, total = list_fighters(db_session, q="%", limit=50, offset=0)
+
+    assert rows == []
+    assert total == 0
+
+
+def test_list_fighters_encontra_apelido_com_percentual_literal(db_session: Session) -> None:
+    """CA-26b: o ``%`` digitado é texto, então o apelido que o contém é encontrado."""
+    alvo = _add(db_session, "Jon Jones", nickname="100%")
+    _add(db_session, "Alex Pereira", nickname="Poatan")
+
+    rows, total = list_fighters(db_session, q="100%", limit=50, offset=0)
+
+    assert total == 1
+    assert [row.id for row in rows] == [alvo.id]
+
+
+def test_list_fighters_underline_no_apelido_nao_e_curinga(db_session: Session) -> None:
+    """CA-26c: ``_`` no apelido é literal -- ``The_Rock`` não casa ``TheXRock``."""
+    alvo = _add(db_session, "Dwayne Johnson", nickname="The_Rock")
+    _add(db_session, "Brock Lesnar", nickname="TheXRock")
+
+    rows, total = list_fighters(db_session, q="The_Rock", limit=50, offset=0)
+
+    assert total == 1
+    assert [row.id for row in rows] == [alvo.id]
+
+
+def test_list_fighters_underline_no_nome_nao_e_curinga(db_session: Session) -> None:
+    """CA-26c no campo **nome**: o mesmo padrão escapado alimenta os dois ``ilike``.
+
+    Espelha o caso do apelido porque um escape aplicado só ao ``ilike`` do apelido
+    passaria despercebido pelos casos da SPEC, que usam apelido nos dois lados.
+    """
+    alvo = _add(db_session, "The_Rock")
+    _add(db_session, "TheXRock")
+
+    rows, total = list_fighters(db_session, q="The_Rock", limit=50, offset=0)
+
+    assert total == 1
+    assert [row.id for row in rows] == [alvo.id]
 
 
 def test_list_fighters_pagina_com_ordem_estavel(db_session: Session) -> None:
@@ -89,8 +160,8 @@ def test_list_fighters_pagina_com_ordem_estavel(db_session: Session) -> None:
     for name in ("Charlie", "Alpha", "Bravo", "Delta"):
         _add(db_session, name)
 
-    primeira, total = list_fighters(db_session, name=None, limit=2, offset=0)
-    segunda, _ = list_fighters(db_session, name=None, limit=2, offset=2)
+    primeira, total = list_fighters(db_session, q=None, limit=2, offset=0)
+    segunda, _ = list_fighters(db_session, q=None, limit=2, offset=2)
 
     assert total == 4
     assert [row.name for row in primeira] == ["Alpha", "Bravo"]
@@ -101,7 +172,7 @@ def test_list_fighters_nome_sem_match_devolve_vazio(db_session: Session) -> None
     """Filtro sem correspondência devolve lista vazia e ``total`` zero."""
     _add(db_session, "Jon Jones")
 
-    rows, total = list_fighters(db_session, name="inexistente", limit=50, offset=0)
+    rows, total = list_fighters(db_session, q="inexistente", limit=50, offset=0)
 
     assert rows == []
     assert total == 0
@@ -112,7 +183,7 @@ def test_list_fighters_offset_alem_do_total_devolve_vazio(db_session: Session) -
     _add(db_session, "Jon Jones")
     _add(db_session, "Alex Pereira")
 
-    rows, total = list_fighters(db_session, name=None, limit=50, offset=10)
+    rows, total = list_fighters(db_session, q=None, limit=50, offset=10)
 
     assert rows == []
     assert total == 2
@@ -506,3 +577,131 @@ def test_get_fighter_stats_on_demand_sem_persistencia_de_agregado(db_session: Se
     assert not any("stat" in table for table in Base.metadata.tables)
     fighter_columns = {column.key for column in Base.metadata.tables["fighters"].columns}
     assert not any(column.startswith(("avg_", "mean_", "total_")) for column in fighter_columns)
+
+
+def test_get_fighter_history_ignora_a_luta_agendada(db_session: Session) -> None:
+    """Ponto 3 da varredura (M9, RF-07): histórico é **passado**.
+
+    A luta já marcada do lutador chega à tela pelo card do evento futuro. Incluí-la aqui
+    somaria ao cartel uma luta que ainda não aconteceu, com desfecho nulo.
+    """
+    fighter = _add(db_session, "Alexander Volkanovski")
+    realizada = _add_history_bout(
+        db_session, fighter, event_name="UFC 245", event_date=date(2019, 12, 14), won=True
+    )
+    agendada = _add_history_bout(
+        db_session,
+        fighter,
+        event_name="UFC Card Futuro",
+        event_date=date(2026, 12, 12),
+        won=False,
+        status=BoutStatus.SCHEDULED,
+    )
+
+    historico = get_fighter_history(db_session, fighter.id)
+
+    assert [linha.bout.id for linha in historico] == [realizada.id]
+    # Guarda de não-vacuidade: a agendada está persistida, com o canto do lutador.
+    persistida = db_session.get(Bout, agendada.id)
+    assert persistida is not None
+    assert persistida.status is BoutStatus.SCHEDULED
+    assert len(persistida.bout_fighters) == 1
+
+
+def _add_scheduled_bout_com_cantos_nulos(session: Session, fighter: Fighter) -> Bout:
+    """Semeia uma luta **agendada** do lutador: sem desfecho e com stats nulas no canto.
+
+    Stats nulas de propósito -- é o estado real de um card por vir, e é exatamente o que
+    torna o defeito do ponto 9 silencioso: ``func.avg`` do Postgres ignora ``NULL``, então
+    as médias sobrevivem intactas enquanto ``func.count`` conta a linha.
+    """
+    evento = EventFactory.build(name="UFC Card Futuro", date=date(2026, 12, 12))
+    session.add(evento)
+    session.flush()
+    bout = BoutFactory.build(
+        event_id=evento.id, winner_id=None, method=None, status=BoutStatus.SCHEDULED
+    )
+    session.add(bout)
+    session.flush()
+    session.add(
+        BoutFighterFactory.build(
+            bout_id=bout.id,
+            fighter_id=fighter.id,
+            corner=Corner.RED,
+            sig_strikes_landed=None,
+            takedowns_landed=None,
+            control_time_seconds=None,
+            head_landed=None,
+            body_landed=None,
+            leg_landed=None,
+            distance_landed=None,
+            clinch_landed=None,
+            ground_landed=None,
+        )
+    )
+    session.flush()
+    return bout
+
+
+def test_get_fighter_stats_ignora_agendada(db_session: Session) -> None:
+    """Ponto 9 da varredura (M9, RF-07): a **contagem** é quem denuncia o defeito.
+
+    Sem o filtro, ``bouts_counted`` e o denominador do ``striking_profile`` inflam com uma
+    luta que ainda não aconteceu, enquanto as médias permanecem corretas -- ``func.avg`` do
+    Postgres ignora ``NULL``. Asserir só a média deixaria o defeito passar; por isso o
+    assert obrigatório é sobre ``bouts_counted``.
+
+    ``wins_by_method`` é conferido junto como caracterização: a query de vitórias filtra
+    ``winner_id``, e luta agendada tem vencedor nulo -- ela já era imune, e isso fica fixado
+    em vez de virar suposição.
+    """
+    target = _add(db_session, "Max Holloway")
+    for numero in (245, 251):
+        _add_history_bout(
+            db_session,
+            target,
+            event_name=f"UFC {numero}",
+            event_date=date(2019, 12, 14),
+            won=True,
+        )
+    antes = get_fighter_stats(db_session, target.id)
+    assert antes is not None
+
+    _add_scheduled_bout_com_cantos_nulos(db_session, target)
+    depois = get_fighter_stats(db_session, target.id)
+
+    assert depois is not None
+    assert depois.bouts_counted == 2
+    assert depois.bouts_counted == antes.bouts_counted
+    assert depois.striking_profile == antes.striking_profile
+    assert depois.wins_by_method == antes.wins_by_method
+
+
+def test_get_fighter_stats_agendada_nao_move_as_medias(db_session: Session) -> None:
+    """A assimetria do ponto 9, fixada: as médias passam mesmo com o defeito presente.
+
+    Existe para documentar por que o teste acima olha a contagem. Se algum dia a média
+    também passar a se mover, é sinal de que o canto agendado ganhou stats -- e aí o recorte
+    precisa ser revisto, não este assert.
+    """
+    target = _add(db_session, "Max Holloway")
+    _add_split_bout(
+        db_session,
+        target,
+        head_landed=20,
+        body_landed=10,
+        leg_landed=0,
+        distance_landed=25,
+        clinch_landed=5,
+        ground_landed=0,
+    )
+    antes = get_fighter_stats(db_session, target.id)
+    assert antes is not None
+
+    _add_scheduled_bout_com_cantos_nulos(db_session, target)
+    depois = get_fighter_stats(db_session, target.id)
+
+    assert depois is not None
+    assert depois.avg_sig_strikes_landed == antes.avg_sig_strikes_landed
+    assert depois.avg_takedowns_landed == antes.avg_takedowns_landed
+    assert depois.avg_control_time_seconds == antes.avg_control_time_seconds

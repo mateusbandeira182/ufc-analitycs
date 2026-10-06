@@ -33,7 +33,7 @@ describe("HomePage", () => {
     ).toBeInTheDocument();
   });
 
-  it("navega para /fighters propagando o termo buscado como name", async () => {
+  it("navega para /fighters propagando o termo buscado como `q`", async () => {
     const user = userEvent.setup();
     const { router } = renderHome();
 
@@ -42,6 +42,7 @@ describe("HomePage", () => {
 
     expect(await screen.findByText("Rota de lutadores")).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/fighters");
-    expect(router.state.location.search).toContain("name=adesanya");
+    expect(router.state.location.search).toContain("q=adesanya");
+    expect(router.state.location.search).not.toContain("name=");
   });
 });

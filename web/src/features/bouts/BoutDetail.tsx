@@ -114,7 +114,16 @@ function Verdict({ result }: { result: ReturnType<typeof resolveResult> }) {
     );
   }
 
-  const label = result.kind === "draw" ? "Empate" : "Sem vencedor";
+  // A luta agendada não tem vencedor porque ainda não aconteceu — dizer "Sem
+  // vencedor" ali afirmaria um desfecho. A tela completa da luta agendada
+  // (aviso, sem box-score, sem zeros) é da Sprint 09 / CA-30; aqui fica só o
+  // rótulo honesto que o contrato nulável passou a exigir.
+  const label =
+    result.kind === "draw"
+      ? "Empate"
+      : result.kind === "scheduled"
+        ? "Luta agendada"
+        : "Sem vencedor";
   return (
     <div className="flex items-center gap-3">
       <Swords

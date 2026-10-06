@@ -47,11 +47,11 @@ describe("Pagination", () => {
   it("preserva os demais parâmetros da URL ao mudar de página", () => {
     renderPagination(
       { total: 50, limit: 10, offset: 0, label: "lutadores" },
-      "/fighters?name=jones",
+      "/fighters?q=jones",
     );
 
     const next = screen.getByRole("link", { name: /próxima/i });
-    expect(next).toHaveAttribute("href", "/fighters?name=jones&offset=10");
+    expect(next).toHaveAttribute("href", "/fighters?q=jones&offset=10");
   });
 
   it("remove o parâmetro offset ao voltar para a primeira página", () => {

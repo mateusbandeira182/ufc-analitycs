@@ -26,3 +26,5 @@ export type HeadToHeadOut = components["schemas"]["HeadToHeadOut"];
 export type MatchupPredictionOut =
   components["schemas"]["MatchupPredictionOut"];
 export type MatchupFighterOut = components["schemas"]["MatchupFighterOut"];
+export type FeaturesFreshnessOut =
+  components["schemas"]["FeaturesFreshnessOut"];

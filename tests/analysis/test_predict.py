@@ -18,11 +18,14 @@ a predição sairia fabricada sobre um vetor inteiramente ``NaN``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from sqlalchemy import delete, event
 from sqlalchemy.orm import Session
 
 from analysis.model import load_artifact, run_training, save_artifact
@@ -30,15 +33,17 @@ from analysis.predict import (
     MatchupPrediction,
     _align_features,
     _asof_matchup_rows,
+    _prob_a_wins_by_bout,
     predict_card,
     predict_matchup,
 )
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
+from apps.features.models import FighterAsOfFeatures
 from apps.fighters.enums import Stance
 from apps.fighters.models import Fighter
-from ingestion.features.cli import run_materialize
+from ingestion.features.cli import run_materialize, run_materialize_asof
 from ingestion.features.long_frame import build_long_frame, read_granular
 from ingestion.features.rolling import (
     OPPONENT_WIN_RATE_PRIOR_AVG,
@@ -49,6 +54,12 @@ from ingestion.normalize import normalize_name
 
 # Roster sintético: nome -> alcance (cm). O alcance é o sinal preditivo (quem tem mais
 # alcance vence), variado por canto para produzir alvos R e B (ambas as classes).
+# Teto de statements do caminho quente de ``predict_card`` (CA-02). Com o cache, a predição
+# é UMA leitura por chamada; o teto acomoda o eventual ``SELECT`` de sessão sem acomodar a
+# releitura do granular (que custava quatro consultas sobre as 8.837 lutas, mais bio e
+# round-a-round, e em DUAS ordens de canto).
+_TETO_DE_STATEMENTS = 3
+
 _ROSTER: dict[str, int] = {
     "Fighter Alpha": 205,
     "Fighter Bravo": 198,
@@ -155,8 +166,15 @@ def _seed_history(session: Session) -> dict[str, int]:
 
 
 def _train_and_persist(session: Session, directory: Path) -> None:
-    """Materializa ``bout_features`` a partir do granular, treina e persiste o artefato."""
+    """Materializa os **dois** caches derivados, treina e persiste o artefato.
+
+    Espelha o que a produção precisa ter em pé para servir uma predição desde o M9:
+    ``bout_features`` (grão luta) alimenta o treino e ``fighter_asof_features`` (grão lutador)
+    alimenta o serving. Um teste que treinasse sem materializar o as-of exercitaria o caminho
+    de "cache nunca materializado", não o de serving -- e passaria dizendo o contrário.
+    """
     run_materialize(session)
+    run_materialize_asof(session)
     result = run_training(session, test_fraction=0.25, random_state=0)
     save_artifact(result, directory=directory)
 
@@ -489,3 +507,133 @@ def test_confronto_hipotetico_degrada_o_contexto_de_luta_para_nulo(
     assert degradadas, loaded.feature_names
     for coluna in degradadas:
         assert pd.isna(alinhadas[coluna].iloc[0]), coluna
+
+
+# ---------------------------------------------------------------------------
+# Serving pelo cache as-of (SPEC 011, Slice 01)
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _statements_emitidos(session: Session) -> Iterator[list[str]]:
+    """Coleta os statements SQL emitidos na conexão da sessão durante o bloco.
+
+    Prova **determinística** do CA-02: cronometrar em suíte é frágil (depende da máquina),
+    mas "o caminho quente não relê o granular" é contável. O relógio real do CA-02 é a
+    medição manual registrada no relatório de implementação.
+    """
+    emitidos: list[str] = []
+    bind = session.get_bind()
+
+    def registrar(
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        emitidos.append(statement)
+
+    event.listen(bind, "before_cursor_execute", registrar)
+    try:
+        yield emitidos
+    finally:
+        event.remove(bind, "before_cursor_execute", registrar)
+
+
+def test_predict_card_pelo_cache_reproduz_as_probabilidades_da_pipeline(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-03: ler o cache dá as MESMAS probabilidades que reconstruir a pipeline (``1e-9``).
+
+    O lado "de antes" é reconstruído aqui pelo caminho ao vivo (``_asof_matchup_rows`` +
+    ``_prob_a_wins_by_bout``), que permanece no código exatamente como implementação de
+    referência (DP-06). Se os dois divergirem, o serving passou a servir outro vetor.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    pares = [
+        (ids["Fighter Alpha"], ids["Fighter Delta"]),
+        (ids["Fighter Bravo"], ids["Fighter Charlie"]),
+    ]
+    as_of = datetime.now(UTC).date()
+    long = build_long_frame(read_granular(db_session))
+    bout_ids = [-1, -2]
+    ao_vivo = _prob_a_wins_by_bout(
+        load_artifact(tmp_path),
+        _asof_matchup_rows(db_session, long, pares, bout_ids, as_of),
+    )
+
+    card = predict_card(db_session, pares, directory=tmp_path)
+
+    for posicao, previsto in enumerate(card.matchups):
+        assert previsto.prob_a_wins is not None
+        assert previsto.prob_a_wins == pytest.approx(ao_vivo[bout_ids[posicao]], abs=1e-9)
+
+
+def test_predict_card_lutador_sem_linha_no_cache_volta_em_missing_history(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Contrato inalterado: sem linha no cache, o par volta nulo e marcado, sem derrubar o card."""
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    sem_historico = _make_fighter("Fighter Sem Historico", 195)
+    db_session.add(sem_historico)
+    db_session.flush()
+    orfao = int(sem_historico.id)
+
+    card = predict_card(
+        db_session,
+        [(ids["Fighter Alpha"], orfao), (ids["Fighter Bravo"], ids["Fighter Charlie"])],
+        directory=tmp_path,
+    )
+
+    impredizivel, predito = card.matchups
+    assert impredizivel.prob_a_wins is None
+    assert impredizivel.missing_history_ids == (orfao,)
+    assert predito.prob_a_wins is not None
+
+
+def test_predict_card_com_cache_vazio_devolve_tudo_indisponivel(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Cache nunca materializado: todo par volta indisponível -- e isso **não** é "estreante".
+
+    O que distingue as duas causas é ``features_freshness`` na mesma resposta
+    (``n_bouts_source = 0``, ``stale = true``): sem cache, todo lutador parece não ter
+    histórico. O ``unavailable_code`` que torna isso explícito é da Sprint 05 -- não
+    antecipar.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    # Esvaziar explicitamente é o que torna o cenário legível: o artefato existe e o granular
+    # existe; o que falta é **só** a materialização as-of.
+    db_session.execute(delete(FighterAsOfFeatures))
+
+    card = predict_card(
+        db_session, [(ids["Fighter Alpha"], ids["Fighter Delta"])], directory=tmp_path
+    )
+
+    (unico,) = card.matchups
+    assert unico.prob_a_wins is None
+    assert set(unico.missing_history_ids) == {ids["Fighter Alpha"], ids["Fighter Delta"]}
+
+
+def test_predict_card_nao_rele_o_granular_no_caminho_quente(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-02 (guarda determinística): o caminho quente emite **poucos** statements.
+
+    Antes desta slice, uma predição custava quatro ``SELECT`` sobre as 8.837 lutas mais os de
+    bio e round-a-round, **duas vezes** (a neutralização de canto chama o serving nas duas
+    ordens) -- os ~67s do CA-02. Com o cache é uma leitura por chamada. O teto é baixo de
+    propósito: se alguém reintroduzir a leitura do granular aqui, o teste falha antes de o
+    usuário sentir.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    with _statements_emitidos(db_session) as emitidos:
+        predict_card(db_session, [(ids["Fighter Alpha"], ids["Fighter Delta"])], directory=tmp_path)
+
+    assert len(emitidos) <= _TETO_DE_STATEMENTS, emitidos

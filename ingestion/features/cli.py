@@ -1,9 +1,20 @@
 """CLI do feature engineering: ``python -m ingestion.features build --stage long``.
 
-``run_build`` é a lógica testável -- despacha por estágio e devolve a frame, reportando
-a contagem e um preview via ``logging`` (``print`` é proibido, regra ``T20``). ``main`` é
-fino: abre a ``Session`` real, chama ``run_build`` e **não commita** (a slice só lê -- é
-código de análise sobre o granular, sem escrita). Espelha o padrão de ``ingestion/seed.py``.
+``run_build`` é a lógica testável dos estágios de **leitura** -- despacha por estágio e devolve
+a frame, reportando a contagem e um preview via ``logging`` (``print`` é proibido, regra
+``T20``). ``main`` é fino: abre a ``Session`` real e despacha. Espelha o padrão de
+``ingestion/seed.py``.
+
+Os estágios de **escrita** têm função própria, chamada direto pelo ``main`` (nunca por
+``run_build``), para que nenhum estágio read-only possa persistir por engano -- e o ``main``
+commita no sucesso. São dois, um por grão de cache derivado:
+
+- ``materialize`` -> ``bout_features`` (grão **luta**, SPEC 005/M4);
+- ``materialize-asof`` -> ``fighter_asof_features`` (grão **lutador**, SPEC 011/M9).
+
+Os dois são reconstrutíveis e idempotentes; o granular permanece a fonte (ADR 0001). Cada um
+nomeia o **próprio** comando na mensagem de defasagem (``MATERIALIZE_COMMAND`` e
+``MATERIALIZE_ASOF_COMMAND``): um é prefixo do outro, então a ambiguidade não acusaria sozinha.
 """
 
 from __future__ import annotations
@@ -11,10 +22,16 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from ingestion.features.asof import (
+    MATERIALIZE_ASOF_COMMAND,
+    build_asof_materialization,
+    materialize_asof_features,
+)
 from ingestion.features.freshness import (
     FreshnessReport,
     StaleFeatureCacheError,
@@ -26,7 +43,7 @@ from ingestion.features.matchup import (
     MatchupMatrix,
     build_matchup_matrix,
 )
-from ingestion.features.materialize import SOURCE, materialize_features
+from ingestion.features.materialize import MATERIALIZE_COMMAND, SOURCE, materialize_features
 from ingestion.features.rolling import (
     COL_FIGHTER_ID,
     RECENT_FORM_FEATURES,
@@ -51,9 +68,14 @@ _STAGE_TRAJECTORY = "trajectory"
 _STAGE_MATCHUP = "matchup"
 _STAGES: tuple[str, ...] = (_STAGE_LONG, _STAGE_ROLLING, _STAGE_TRAJECTORY, _STAGE_MATCHUP)
 
-# Estágio de escrita (Slice 05): roda a pipeline completa e persiste ``bout_features``.
+# Estágios de escrita: rodam a pipeline e persistem um cache derivado.
+# ``materialize`` (Slice 05 da SPEC 005) é o grão LUTA (``bout_features``);
+# ``materialize-asof`` (Slice 01 da SPEC 011) é o grão LUTADOR (``fighter_asof_features``).
+# O segundo é o primeiro estágio hifenizado do projeto, aceito por agrupar com o irmão: um
+# ``asof`` solto não diria o que materializa.
 _STAGE_MATERIALIZE = "materialize"
-_CLI_STAGES: tuple[str, ...] = (*_STAGES, _STAGE_MATERIALIZE)
+_STAGE_MATERIALIZE_ASOF = "materialize-asof"
+_CLI_STAGES: tuple[str, ...] = (*_STAGES, _STAGE_MATERIALIZE, _STAGE_MATERIALIZE_ASOF)
 
 # Subcomandos do CLI. ``check`` (SPEC 007) é read-only e não tem ``--stage``, por isso o
 # dispatch do ``main`` olha ``args.command`` antes de ``args.stage``.
@@ -151,6 +173,28 @@ def run_materialize(session: Session, source: str = SOURCE) -> int:
     return count
 
 
+def run_materialize_asof(session: Session, source: str = SOURCE) -> int:
+    """Materializa ``fighter_asof_features`` as-of hoje, sem commitar.
+
+    Irmão de ``run_materialize`` no grão **lutador** (aquele é no grão luta). Encadeia a
+    construção das linhas as-of (uma luta sintética por lutador, mesma cadeia point-in-time da
+    pipeline) com o upsert idempotente por ``fighter_id``. **Não** commita -- o ``main``
+    (produção) abre a transação e commita no sucesso; nos testes a sessão transacional assere
+    e faz rollback. A idempotência é observável reexecutando: mesma contagem, mesmo conteúdo,
+    só ``materialized_at`` muda. Devolve o número de linhas materializadas.
+    """
+    materialization = build_asof_materialization(session, datetime.now(UTC).date())
+    count = materialize_asof_features(session, materialization, source=source)
+    logger.info(
+        "Materialização as-of: %d lutadores (source=%s), %d lutas consideradas. Para refrescar: %s",
+        count,
+        source,
+        materialization.n_bouts_source,
+        MATERIALIZE_ASOF_COMMAND,
+    )
+    return count
+
+
 def run_check(session: Session) -> FreshnessReport:
     """Recomputa a pipeline e falha alto se ``bout_features`` estiver defasado.
 
@@ -185,9 +229,13 @@ def run_check(session: Session) -> FreshnessReport:
             if report.column_diff
             else ""
         )
+        # Nomear o cache pelo GRÃO, e não só pela tabela: desde a SPEC 011 existem dois caches
+        # derivados, e ``"--stage materialize"`` é PREFIXO de ``"--stage materialize-asof"``.
+        # Uma mensagem ambígua aqui mandaria o usuário reconstruir o cache errado, e o
+        # defasado continuaria defasado -- exatamente o silêncio que a SPEC 007 fechou.
         raise StaleFeatureCacheError(
-            f"bout_features defasado em relação ao granular.{detalhe} "
-            "Rode: python -m ingestion.features build --stage materialize"
+            f"bout_features (cache por luta) defasado em relação ao granular.{detalhe} "
+            f"Rode: {MATERIALIZE_COMMAND}"
         )
     return report
 
@@ -249,8 +297,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=_STAGE_LONG,
         help=(
             "Estágio da pipeline: 'long' (base), 'rolling' (forma recente), 'trajectory' "
-            "(idade/layoff/experiência/físico), 'matchup' (matriz de confronto bout-level) ou "
-            "'materialize' (roda a pipeline completa e persiste bout_features)."
+            "(idade/layoff/experiência/físico), 'matchup' (matriz de confronto bout-level), "
+            "'materialize' (roda a pipeline completa e persiste bout_features, grão luta) ou "
+            "'materialize-asof' (persiste fighter_asof_features, grão lutador)."
         ),
     )
     return parser.parse_args(argv)
@@ -262,9 +311,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     Abre a ``Session`` real. O subcomando ``check`` só lê (levanta ``StaleFeatureCacheError``
     quando o cache está defasado, saindo com código diferente de zero). Em ``build``, os
     estágios de leitura (long/rolling/trajectory/matchup) constroem a frame em memória e
-    **não commitam**; o estágio ``materialize`` roda a pipeline completa, persiste
-    ``bout_features`` e **commita no sucesso** -- a idempotência é observável reexecutando
-    (mesma contagem). A frame/resumo é reportada via ``logging``.
+    **não commitam**; os estágios de escrita ``materialize`` (``bout_features``, grão luta) e
+    ``materialize-asof`` (``fighter_asof_features``, grão lutador) rodam a pipeline e
+    **commitam no sucesso** -- a idempotência é observável reexecutando (mesma contagem, só o
+    carimbo de geração muda). A frame/resumo é reportada via ``logging``.
     """
     logging.basicConfig(level=logging.INFO)
     args = _parse_args(argv)
@@ -273,6 +323,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             run_check(session)
         elif args.stage == _STAGE_MATERIALIZE:
             run_materialize(session)
+            session.commit()
+        elif args.stage == _STAGE_MATERIALIZE_ASOF:
+            run_materialize_asof(session)
             session.commit()
         else:
             run_build(session, args.stage)

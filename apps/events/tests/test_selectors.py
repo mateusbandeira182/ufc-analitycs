@@ -2,8 +2,9 @@
 
 Cobrem ``list_events`` (ordem por data decrescente, paginação por limit/offset,
 janela vazia), ``get_event_by_id`` (encontrado e inexistente) e ``list_event_bouts``
-(bouts do card e event sem bouts). Semeiam via factories e exercitam o selector
-direto, sem subir a API.
+(bouts do card, event sem bouts e -- no M9, ponto 2 da varredura de ``bouts.status`` --
+a luta agendada, que **entra** no card, com a ordenação por ``bout_order``). Semeiam via
+factories e exercitam o selector direto, sem subir a API.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
 from apps.events.models import Event
 from apps.events.selectors import get_event_by_id, list_event_bouts, list_events
@@ -128,3 +129,67 @@ def test_list_event_bouts_event_sem_bouts_devolve_vazio(db_session: Session) -> 
     event = _add_event(db_session, "UFC 300", date(2024, 4, 13))
 
     assert list_event_bouts(db_session, event.id) == []
+
+
+def test_list_event_bouts_inclui_a_luta_agendada(db_session: Session) -> None:
+    """Ponto 2 da varredura (M9, RF-07): o card **não** filtra ``status``.
+
+    Decisão ativa, não omissão: o card de um evento futuro é feito inteiro de lutas
+    agendadas, e quem decide o que exibir é a tela. Filtrar aqui esvaziaria a página do
+    evento por vir -- exatamente a tela que o M9 existe para entregar.
+    """
+    event = _add_event(db_session, "UFC Card Futuro", date(2026, 12, 12))
+    realizada = BoutFactory.build(event_id=event.id, weight_class="Lightweight")
+    agendada = BoutFactory.build(
+        event_id=event.id,
+        winner_id=None,
+        method=None,
+        status=BoutStatus.SCHEDULED,
+        weight_class="Welterweight",
+    )
+    db_session.add_all([realizada, agendada])
+    db_session.flush()
+
+    rows = list_event_bouts(db_session, event.id)
+
+    assert {bout.id for bout in rows} == {realizada.id, agendada.id}
+    assert {bout.status for bout in rows} == {BoutStatus.COMPLETED, BoutStatus.SCHEDULED}
+
+
+def test_list_event_bouts_ordena_por_bout_order_com_nulos_no_fim(db_session: Session) -> None:
+    """Ponto 2 da varredura: a ordem do card é ``bout_order asc nulls_last, id asc``.
+
+    ``bout_order`` é **ordenável, mas não sequencial nem denso** -- o payload real da Cito
+    traz 1001 na luta principal --, então o teste afirma a ordem relativa, nunca os valores.
+    Os nulos vão para o fim porque luta sem contexto de card não pode encabeçar o card, e o
+    desempate por ``id`` mantém a lista reprodutível entre execuções.
+
+    As lutas são inseridas **fora** da ordem de ``id`` de propósito: com elas em ordem, o
+    ``order_by(Bout.id)`` antigo passaria por coincidência.
+    """
+    event = _add_event(db_session, "UFC Card Futuro", date(2026, 12, 12))
+    sem_ordem = BoutFactory.build(event_id=event.id, bout_order=None, weight_class="Flyweight")
+    db_session.add(sem_ordem)
+    db_session.flush()
+    principal = BoutFactory.build(
+        event_id=event.id,
+        winner_id=None,
+        method=None,
+        status=BoutStatus.SCHEDULED,
+        bout_order=1001,
+        weight_class="Welterweight",
+    )
+    db_session.add(principal)
+    db_session.flush()
+    coprincipal = BoutFactory.build(
+        event_id=event.id,
+        method=BoutMethod.DECISION,
+        bout_order=1002,
+        weight_class="Lightweight",
+    )
+    db_session.add(coprincipal)
+    db_session.flush()
+
+    rows = list_event_bouts(db_session, event.id)
+
+    assert [bout.id for bout in rows] == [principal.id, coprincipal.id, sem_ordem.id]

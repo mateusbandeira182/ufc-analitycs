@@ -17,7 +17,7 @@ from __future__ import annotations
 from sqlalchemy import Enum, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.fighters.models import Fighter
 from mma_analytics.db import Base
 
@@ -36,7 +36,9 @@ class Bout(Base):
     winner_id: Mapped[int | None] = mapped_column(
         ForeignKey("fighters.id")
     )  # nulo em empate / no contest
-    method: Mapped[BoutMethod] = mapped_column(
+    # Nullable desde o M9: luta agendada não tem desfecho, e fabricar um método placeholder
+    # gravaria dado falso exatamente no rótulo que o modelo treina.
+    method: Mapped[BoutMethod | None] = mapped_column(
         Enum(BoutMethod, name="bout_method", values_callable=lambda enum: [m.value for m in enum])
     )
     round: Mapped[int | None]
@@ -61,6 +63,14 @@ class Bout(Base):
     # ``cardPosition`` ('Main Card 1') NÃO é persistido: é derivável destes dois.
     card_section: Mapped[str | None] = mapped_column(String(32))
     bout_order: Mapped[int | None]
+    # Recorte "luta realizada" x "luta agendada" (M9, SPEC 011 RF-07). O default ``COMPLETED``
+    # é load-bearing: toda escrita anterior a esta coluna -- seed do Kaggle, incremental da
+    # Cito, backfills -- descreve luta já ocorrida, e o default é o que preserva essa semântica
+    # sem que cada callsite precise repetir o valor.
+    status: Mapped[BoutStatus] = mapped_column(
+        Enum(BoutStatus, name="bout_status", values_callable=lambda enum: [m.value for m in enum]),
+        default=BoutStatus.COMPLETED,
+    )
     source: Mapped[str] = mapped_column(String(32))
 
     # Relationship ORM (só leitura, sem migration): os cantos desta luta, ordenados

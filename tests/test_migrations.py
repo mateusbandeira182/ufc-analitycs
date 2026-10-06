@@ -40,6 +40,34 @@ URLS_DE_IMAGEM_FIGHTER = {"headshot_url", "body_image_url"}
 # Revisão da migration da Slice 06, fixada por hash pelo mesmo motivo das anteriores.
 REVISAO_M7_IMAGENS = "f75aacf624eb"
 
+# Cache as-of por lutador criado pelo M9 (SPEC 011, Slice 01) e suas seis colunas.
+TABELA_ASOF = "fighter_asof_features"
+COLUNAS_ASOF = {
+    "fighter_id",
+    "features",
+    "style_history",
+    "n_bouts_source",
+    "source",
+    "materialized_at",
+}
+# Revisão da migration do M9, fixada por hash pelo mesmo motivo das anteriores -- e com
+# urgência extra aqui: a Sprint 02 da SPEC 011 encadeia logo acima desta.
+REVISAO_M9 = "a1c9e5d73b40"
+
+# ``bouts.status`` e ``method`` nullable, criados pelo M9 (SPEC 011, Slice 02).
+COLUNA_STATUS = "status"
+TIPO_ENUM_STATUS = "bout_status"
+# Revisão da migration da Slice 02, fixada por hash pelo mesmo motivo das anteriores.
+REVISAO_M9_STATUS = "c7e1a4f8b920"
+# Colunas de ``bouts`` que o downgrade da Slice 02 não pode levar junto.
+COLUNAS_DE_BOUTS_PRESERVADAS = {
+    "card_section",
+    "bout_order",
+    "title_bout",
+    "scheduled_rounds",
+    "referee",
+}
+
 
 def _tabelas_existentes(engine: Engine) -> set[str]:
     return set(inspect(engine).get_table_names())
@@ -355,4 +383,114 @@ def test_downgrade_um_passo_remove_urls_de_imagem_preserva_o_resto(
     assert IDENTIFICADOR_OFICIAL in _colunas(migration_engine, "events")
     tabelas = _tabelas_existentes(migration_engine)
     assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA, TABELA_PREDICOES}
+    assert "corner" in _tipos_enum_existentes(migration_engine)
+
+
+def test_upgrade_head_cria_fighter_asof_features(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: ``alembic upgrade head`` cria o cache as-of ``fighter_asof_features``."""
+    command.upgrade(alembic_cfg, "head")
+    assert TABELA_ASOF in _tabelas_existentes(migration_engine)
+    assert _colunas(migration_engine, TABELA_ASOF) == COLUNAS_ASOF
+
+
+def test_downgrade_um_passo_remove_fighter_asof_features_preserva_o_resto(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-01: o downgrade da Slice 01 do M9 dropa **só** o cache as-of.
+
+    A migration é inteiramente aditiva (tabela nova, nenhum enum criado): reverter não pode
+    custar o granular, o round-a-round do M5, o cache por luta, o registro de predições, os
+    identificadores externos nem o enum ``corner`` (dono: ``bout_fighters``).
+
+    Fixa a revisão-alvo (``REVISAO_M9``) em vez de ``head``, seguindo o precedente das
+    migrations anteriores: a Sprint 02 desta mesma SPEC empilha acima desta, e um ``-1`` a
+    partir do head reverteria o artefato errado.
+    """
+    command.upgrade(alembic_cfg, REVISAO_M9)
+    assert TABELA_ASOF in _tabelas_existentes(migration_engine)
+
+    command.downgrade(alembic_cfg, "-1")
+
+    tabelas = _tabelas_existentes(migration_engine)
+    assert TABELA_ASOF not in tabelas
+    assert tabelas >= TABELAS | {TABELA_ROUNDS, TABELA_DERIVADA, TABELA_PREDICOES}
+    assert _colunas(migration_engine, "fighters") >= URLS_DE_IMAGEM_FIGHTER
+    assert "corner" in _tipos_enum_existentes(migration_engine)
+
+
+def _nulidade(engine: Engine, tabela: str, coluna: str) -> bool:
+    """``nullable`` da coluna como o Postgres a reporta (não como o model a declara)."""
+    return bool(
+        next(c for c in inspect(engine).get_columns(tabela) if c["name"] == coluna)["nullable"]
+    )
+
+
+def test_upgrade_cria_status_em_bouts(alembic_cfg: Config, migration_engine: Engine) -> None:
+    """CA-P01: ``upgrade head`` cria ``bouts.status`` (NOT NULL) e o tipo ``bout_status``.
+
+    E torna ``method`` nullable no mesmo passo: as duas mudanças são a mesma decisão vista de
+    dois lados -- a luta agendada existe na tabela e não tem desfecho.
+    """
+    command.upgrade(alembic_cfg, "head")
+
+    assert COLUNA_STATUS in _colunas(migration_engine, "bouts")
+    assert TIPO_ENUM_STATUS in _tipos_enum_existentes(migration_engine)
+    assert _nulidade(migration_engine, "bouts", COLUNA_STATUS) is False
+    assert _nulidade(migration_engine, "bouts", "method") is True
+
+
+def test_backfill_marca_luta_preexistente_como_completed(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-P01: a luta que já existia antes da coluna vira ``completed`` ao subir a migration.
+
+    É o teste que a sprint não pode entregar sem. Sobe até a revisão **anterior** (onde
+    ``method`` ainda é NOT NULL), insere uma luta por SQL cru -- sem lutador, porque
+    ``winner_id`` é nullable e a luta só precisa do evento -- e só então aplica a migration:
+    toda luta já persistida é, por definição, realizada, e o ``UPDATE`` precisa preceder o
+    ``NOT NULL`` -- na ordem inversa a migration estouraria em qualquer banco povoado.
+    """
+    command.upgrade(alembic_cfg, REVISAO_M9)
+    with migration_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO events (name, date, source) "
+                "VALUES ('UFC Pre Migration', DATE '2019-01-01', 'kaggle')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO bouts (event_id, method, source) "
+                "SELECT id, 'decision', 'kaggle' FROM events WHERE name = 'UFC Pre Migration'"
+            )
+        )
+
+    command.upgrade(alembic_cfg, REVISAO_M9_STATUS)
+
+    with migration_engine.connect() as conn:
+        assert conn.execute(text("SELECT status FROM bouts")).scalars().all() == ["completed"]
+
+
+def test_downgrade_um_passo_remove_status_e_o_enum(
+    alembic_cfg: Config, migration_engine: Engine
+) -> None:
+    """CA-P01: o downgrade da Slice 02 dropa a coluna e o tipo, e restaura ``method NOT NULL``.
+
+    Esta migration é a **dona** do tipo ``bout_status``, então reverter tem de levá-lo junto --
+    um enum órfão em ``pg_type`` faria o próximo ``upgrade`` estourar com "type already
+    exists". Nada mais de ``bouts`` pode se perder, e o enum ``corner`` (dono:
+    ``bout_fighters``) sobrevive.
+    """
+    command.upgrade(alembic_cfg, REVISAO_M9_STATUS)
+    assert COLUNA_STATUS in _colunas(migration_engine, "bouts")
+
+    command.downgrade(alembic_cfg, "-1")
+
+    colunas = _colunas(migration_engine, "bouts")
+    assert COLUNA_STATUS not in colunas
+    assert colunas >= COLUNAS_DE_BOUTS_PRESERVADAS
+    assert TIPO_ENUM_STATUS not in _tipos_enum_existentes(migration_engine)
+    assert _nulidade(migration_engine, "bouts", "method") is False
     assert "corner" in _tipos_enum_existentes(migration_engine)

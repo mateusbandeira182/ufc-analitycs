@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from apps.bouts.enums import Corner
+from apps.bouts.enums import BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 
@@ -153,7 +153,11 @@ def get_head_to_head(session: Session, a_id: int, b_id: int) -> list[BoutDetail]
         .join(bf_a, bf_a.bout_id == Bout.id)
         .join(bf_b, bf_b.bout_id == Bout.id)
         .join(Event, Event.id == Bout.event_id)
-        .where(bf_a.fighter_id == a_id, bf_b.fighter_id == b_id)
+        .where(
+            bf_a.fighter_id == a_id,
+            bf_b.fighter_id == b_id,
+            Bout.status == BoutStatus.COMPLETED,
+        )
         .order_by(Event.date.asc(), Bout.id.asc())
     )
     rows = session.execute(stmt).tuples().all()

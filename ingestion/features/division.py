@@ -147,7 +147,7 @@ def division_category_features(keys: pd.Series) -> pd.DataFrame:
     """Duas colunas ``float64``: limite de peso em libras e indicador de divisão feminina.
 
     ``float64`` (e não ``Int64``) porque a ausência precisa atravessar a borda já existente
-    de ``materialize._to_json_value``, que mapeia ``NaN`` -> ``None`` no JSONB. Chave nula
+    de ``materialize.to_json_value``, que mapeia ``NaN`` -> ``None`` no JSONB. Chave nula
     (rótulo desconhecido ou ausente) produz nulo nas **duas** colunas: zero em
     ``weight_class_lbs`` seria um peso impossível, e zero em ``is_womens_division`` afirmaria
     "masculino" sobre uma luta cuja divisão ninguém conhece (RF-03).

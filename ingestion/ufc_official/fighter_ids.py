@@ -393,6 +393,12 @@ def _select_window_fighters(session: Session, window_start: date) -> list[Fighte
     É o denominador da cobertura, e é **mais largo** que o conjunto que recebe id: quem lutou
     num evento da janela que a Slice 02 não mapeou entra na conta e fica sem identificador --
     o que é exatamente o que a cobertura precisa mostrar.
+
+    **Não filtra ``bouts.status``, e isso é decisão ativa** (M9, RF-07): filtrar excluiria o
+    estreante de card futuro, que é justamente quem mais precisa de identificador externo --
+    é para ele que a próxima execução existe. Excluí-lo o deixaria permanentemente sem id,
+    com a cobertura reportando 100% sobre uma população artificialmente encolhida. Fixado por
+    ``tests/ingestion/test_guarda_de_luta_agendada.py``.
     """
     statement = (
         select(Fighter)

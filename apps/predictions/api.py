@@ -14,6 +14,11 @@ inexistente -> 404 (via ``get_fighter_by_id``); artefato de modelo ausente -> 50
 clara, nunca 500 cru). O diretório do artefato é uma dependência (``get_artifacts_dir``) para
 ser sobreposta nos testes.
 
+As duas respostas carregam ``features_freshness`` (SPEC 011, RF-05): o palpite vem do cache
+as-of ``fighter_asof_features``, e quem lê o cache reporta se ele está defasado -- uma
+comparação de contagem, não um recomputo de pipeline. Os caminhos de erro (404/422/503) seguem
+sem o campo: eles não chegaram a ler o cache.
+
 O endpoint de card é o primeiro da API v1 que **escreve** (registra cada predição em
 ``bout_predictions``): a gravação e o commit ficam no service, o router segue fino. Nele, a
 ausência de histórico é estado de uma luta (``unavailable_reason``, status 200) e não 422 --
@@ -32,6 +37,8 @@ from analysis.model import ARTIFACTS_DIR
 from analysis.predict import predict_matchup
 from apps.bouts.models import BoutFighter
 from apps.events.selectors import get_event_by_id
+from apps.features.schemas import FeaturesFreshnessOut
+from apps.features.selectors import get_features_freshness
 from apps.fighters.selectors import get_fighter_by_id
 from apps.predictions.schemas import (
     CardBoutPredictionOut,
@@ -125,6 +132,7 @@ def predict_matchup_endpoint(
         prob_a_wins=prob_a_wins,
         prob_b_wins=1.0 - prob_a_wins,
         predicted_winner_id=predicted_winner_id(fighter_a, fighter_b, prob_a_wins),
+        features_freshness=FeaturesFreshnessOut.model_validate(get_features_freshness(session)),
     )
 
 
@@ -181,4 +189,5 @@ def predict_event_card_endpoint(
         model_version=card.model_version,
         n_features=card.n_features,
         bouts=[_to_card_bout_out(previsao) for previsao in card.bouts],
+        features_freshness=FeaturesFreshnessOut.model_validate(get_features_freshness(session)),
     )

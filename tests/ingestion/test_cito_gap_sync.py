@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -1624,3 +1624,105 @@ def test_run_gap_sync_warns_when_it_closes_with_an_assigned_corner_in_the_window
     assert resumo.corner_origins == {CornerOrigin.ASSIGNED_NO_ART: 6}
     assert "Whittaker vs de Ridder" in caplog.text
     assert "ingestion.ufc_official.corner --aplicar" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# Ponto 5 da varredura (M9, RF-07) -- a transição agendada -> realizada.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_luta_agendada(
+    session: Session, *, status: BoutStatus, source: str, method: BoutMethod | None
+) -> int:
+    """Pré-semeia o evento e a luta principal do payload real, e devolve o ``bout_id``.
+
+    A luta é semeada entre **os dois lutadores da principal** do payload
+    (Hernandez x Rodrigues), para que a chave natural ``(event_id, par não-ordenado)``
+    reconcilie com a luta que o ``gap_sync`` vai processar -- sem isso o teste provaria
+    apenas que uma luta nova foi inserida, que é o caminho já coberto.
+    """
+    evento = Event(
+        name="UFC Fight Night: Hernandez vs Rodrigues",
+        date=date(2026, 8, 22),
+        location=None,
+        source="cito",
+        cito_slug=_PAYLOAD_REAL,
+    )
+    session.add(evento)
+    session.flush()
+    red_id = _seed_fighter(session, "Anthony Hernandez", source="cito")
+    blue_id = _seed_fighter(session, "Gregory Rodrigues", source="cito")
+    bout = Bout(
+        event_id=evento.id,
+        winner_id=None,
+        method=method,
+        round=None,
+        ending_time_seconds=None,
+        weight_class=None,
+        status=status,
+        source=source,
+    )
+    session.add(bout)
+    session.flush()
+    for corner, fighter_id in ((Corner.RED, red_id), (Corner.BLUE, blue_id)):
+        session.add(
+            BoutFighter(bout_id=bout.id, fighter_id=fighter_id, corner=corner, source=source)
+        )
+    session.flush()
+    return bout.id
+
+
+def test_gap_sync_promove_a_luta_agendada_a_completed(db_session: Session, tmp_path: Path) -> None:
+    """Ponto 5 da varredura: gravar o desfecho é o que transforma agendada em realizada.
+
+    Hoje ``upsert_bout`` devolve o id existente e sai -- correto para o M1, onde toda luta
+    persistida já tinha desfecho, e insuficiente a partir do M9, em que a Slice 04 escreve a
+    luta **antes** de ela acontecer. Sem este passo a luta agendada ficaria congelada com
+    ``method`` nulo para sempre, invisível às features e ao histórico.
+
+    ``source`` **não** muda: ``source`` é a origem da LINHA (quem a criou), não de cada campo
+    (CLAUDE.md). E a luta não pode duplicar -- a chave natural reconcilia.
+    """
+    bout_id = _seed_luta_agendada(
+        db_session, status=BoutStatus.SCHEDULED, source="cito", method=None
+    )
+
+    _ingest_payload_real(db_session, tmp_path)
+
+    luta = db_session.get(Bout, bout_id)
+    assert luta is not None
+    assert luta.status is BoutStatus.COMPLETED
+    assert luta.method is BoutMethod.DECISION
+    assert luta.round == 5
+    assert luta.ending_time_seconds == 300
+    vencedor = db_session.scalars(
+        select(Fighter).where(Fighter.name_normalized == normalize_name("Gregory Rodrigues"))
+    ).one()
+    assert luta.winner_id == vencedor.id
+    assert luta.source == "cito"
+    # Reconciliou pela chave natural: o card do payload tem 13 lutas e a agendada era uma delas.
+    assert db_session.scalar(select(func.count()).select_from(Bout)) == 13
+
+
+def test_gap_sync_nao_sobrescreve_o_desfecho_de_luta_ja_realizada(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Guarda inversa do ponto 5: luta já ``completed`` é intocada, e ``source`` segue igual.
+
+    O desfecho de uma luta realizada é do seed, e trocar a fonte da verdade do resultado no
+    meio de um enriquecimento mudaria em silêncio o rótulo que o modelo treina -- mesma regra
+    que ``fill_bout_context`` já aplica a ``method``/``winner_id``.
+    """
+    bout_id = _seed_luta_agendada(
+        db_session, status=BoutStatus.COMPLETED, source="kaggle", method=BoutMethod.KO_TKO
+    )
+
+    _ingest_payload_real(db_session, tmp_path)
+
+    luta = db_session.get(Bout, bout_id)
+    assert luta is not None
+    assert luta.status is BoutStatus.COMPLETED
+    assert luta.method is BoutMethod.KO_TKO  # não virou DECISION
+    assert luta.winner_id is None
+    assert luta.round is None
+    assert luta.source == "kaggle"

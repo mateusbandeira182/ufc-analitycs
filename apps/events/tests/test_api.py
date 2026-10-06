@@ -12,7 +12,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
 from apps.events.models import Event
 from apps.fighters.tests.factories import FighterFactory
@@ -162,3 +162,67 @@ def test_get_event_id_nao_inteiro_retorna_422(client: TestClient) -> None:
     resposta = client.get("/api/v1/events/nao-inteiro")
 
     assert resposta.status_code == 422
+
+
+def test_get_event_nao_traz_diagnostico_de_defasagem(
+    client: TestClient, db_session: Session
+) -> None:
+    """Guarda de D-09: ``/events/{id}`` **não** carrega ``features_freshness``.
+
+    O campo acompanha exatamente os três endpoints que **leem** o cache as-of
+    (``/predict/matchup``, ``/predict/event/{id}`` e ``/fighters/{id}/stats``). Eventos não o
+    leem e não têm o que reportar; acrescentá-lo aqui seria um aviso sobre um dado que esta
+    resposta não usa -- e aviso sem consequência é o que treina o usuário a ignorar avisos.
+    """
+    event = _seed_event(db_session, "UFC 300", date(2024, 4, 13))
+
+    body = client.get(f"/api/v1/events/{event.id}").json()
+
+    assert "features_freshness" not in body
+
+
+def test_get_event_com_luta_agendada_devolve_method_nulo(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-P02: o card de um evento com luta agendada responde 200 e ``method: null``.
+
+    É a prova de que ``method`` nullable chegou íntegro ao contrato servido: sem o widening
+    dos schemas de saída, o Pydantic levantaria ``ValidationError`` e a resposta viraria 500
+    -- e a página do evento futuro simplesmente não abriria.
+
+    ``status`` **não** é exposto aqui de propósito: acrescentá-lo a ``BoutCardOut`` é escopo
+    da **Slice 07** (o plano desta sprint o atribui à 08 -- atribuição defasada).
+    """
+    event = _seed_event(db_session, "UFC Card Futuro", date(2026, 12, 12))
+    red = FighterFactory.build(name="Alex Pereira")
+    blue = FighterFactory.build(name="Jamahal Hill")
+    db_session.add_all([red, blue])
+    db_session.flush()
+    bout = BoutFactory.build(
+        event_id=event.id,
+        winner_id=None,
+        method=None,
+        round=None,
+        ending_time_seconds=None,
+        status=BoutStatus.SCHEDULED,
+        weight_class="Light Heavyweight",
+    )
+    db_session.add(bout)
+    db_session.flush()
+    db_session.add_all(
+        [
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=red.id, corner=Corner.RED),
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=blue.id, corner=Corner.BLUE),
+        ]
+    )
+    db_session.flush()
+
+    resposta = client.get(f"/api/v1/events/{event.id}")
+
+    assert resposta.status_code == 200
+    card = resposta.json()["bouts"][0]
+    assert card["id"] == bout.id
+    assert card["method"] is None
+    assert card["winner_id"] is None
+    assert "status" not in card  # ``BoutCardOut.status`` nasce na Slice 07
+    assert {f["corner"] for f in card["fighters"]} == {Corner.RED.value, Corner.BLUE.value}

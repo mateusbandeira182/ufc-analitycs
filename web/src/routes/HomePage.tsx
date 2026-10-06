@@ -33,7 +33,8 @@ const NAV_CARDS = [
 
 /**
  * Home hub (`/`): a porta de entrada. Hero com a busca em destaque e os três
- * caminhos de exploração. Submeter a busca leva à lista propagando `?name=`.
+ * caminhos de exploração. Submeter a busca leva à lista propagando `?q=`, o
+ * parâmetro que casa nome ou apelido.
  */
 export function HomePage() {
   const navigate = useNavigate();
@@ -42,7 +43,7 @@ export function HomePage() {
   function goToFighters(value: string) {
     const query = value.trim();
     void navigate(
-      query ? `/fighters?name=${encodeURIComponent(query)}` : "/fighters",
+      query ? `/fighters?q=${encodeURIComponent(query)}` : "/fighters",
     );
   }
 

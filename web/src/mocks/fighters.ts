@@ -1,8 +1,16 @@
-import type { FighterOut, FighterStatsOut } from "@/api/schema";
+import type {
+  FeaturesFreshnessOut,
+  FighterOut,
+  FighterStatsOut,
+} from "@/api/schema";
 
 /*
   Fixtures de lutadores para os testes e handlers MSW.
-  Espelham o shape real de FighterOut (contrato do M2), incluindo campos anuláveis.
+  Espelham o shape real de FighterOut, incluindo campos anuláveis. As imagens
+  (`headshot_url`, `body_image_url`) entraram no contrato com o M7 e têm
+  cobertura parcial no acervo real — só 794 dos 2.754 lutadores têm retrato, e
+  lutador histórico nunca terá. As fixtures reproduzem os dois lados de
+  propósito: Jon Jones com retrato, os demais sem.
 */
 export const FIGHTER_FIXTURES: FighterOut[] = [
   {
@@ -17,6 +25,8 @@ export const FIGHTER_FIXTURES: FighterOut[] = [
     wins: 27,
     losses: 1,
     draws: 0,
+    headshot_url: "https://imagens.ufc.test/jon-jones-headshot.png",
+    body_image_url: null,
     source: "kaggle",
   },
   {
@@ -31,6 +41,8 @@ export const FIGHTER_FIXTURES: FighterOut[] = [
     wins: 26,
     losses: 4,
     draws: 0,
+    headshot_url: null,
+    body_image_url: null,
     source: "kaggle",
   },
   {
@@ -45,9 +57,23 @@ export const FIGHTER_FIXTURES: FighterOut[] = [
     wins: 24,
     losses: 4,
     draws: 0,
+    headshot_url: null,
+    body_image_url: null,
     source: "kaggle",
   },
 ];
+
+/*
+  Diagnóstico de defasagem do cache as-of que acompanha os agregados (contrato da
+  Sprint 01). As fixtures o declaram em dia: o aviso de dado defasado é da
+  Sprint 06, com a primeira consumidora real.
+*/
+export const FRESH_FEATURES: FeaturesFreshnessOut = {
+  materialized_at: "2026-09-01T00:00:00Z",
+  n_bouts_source: 2,
+  n_bouts_current: 2,
+  stale: false,
+};
 
 /*
   Estatísticas resumidas por lutador (GET /fighters/:id/stats), computadas on
@@ -71,6 +97,7 @@ export const FIGHTER_STATS_FIXTURES: Record<number, FighterStatsOut> = {
       share_clinch: 0.2,
       share_ground: 0.1,
     },
+    features_freshness: FRESH_FEATURES,
   },
   // Israel Adesanya (id 3): perfil sem dado (denominador zero -> null no backend).
   3: {
@@ -88,5 +115,6 @@ export const FIGHTER_STATS_FIXTURES: Record<number, FighterStatsOut> = {
       share_clinch: null,
       share_ground: null,
     },
+    features_freshness: FRESH_FEATURES,
   },
 };

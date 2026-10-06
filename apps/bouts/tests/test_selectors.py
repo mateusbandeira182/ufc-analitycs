@@ -2,7 +2,8 @@
 
 Cobrem ``get_bout_by_id``: composição com o evento correto, os dois cantos e as
 stats granulares **como foram gravadas** em ``bout_fighters`` (nunca médias), e o
-caso de id inexistente (``None``). Também cobrem ``get_head_to_head`` (Slice 05):
+caso de id inexistente (``None``). Também cobrem ``get_head_to_head`` (Slice 05 e, no M9,
+o ponto 1 da varredura de ``bouts.status``):
 os confrontos diretos entre dois lutadores em ordem cronológica, sem vazar lutas
 contra terceiros. Semeiam via factories e exercitam o selector direto, sem subir
 a API.
@@ -15,7 +16,7 @@ from datetime import date
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout
 from apps.bouts.selectors import get_bout_by_id, get_head_to_head
 from apps.bouts.tests.factories import (
@@ -164,8 +165,13 @@ def _seed_confronto(
     red: Fighter,
     blue: Fighter,
     winner: Fighter | None = None,
+    status: BoutStatus = BoutStatus.COMPLETED,
 ) -> Bout:
-    """Semeia 1 evento e 1 luta com os dois cantos entre ``red`` e ``blue``."""
+    """Semeia 1 evento e 1 luta com os dois cantos entre ``red`` e ``blue``.
+
+    ``status`` é explícito para os testes da luta agendada (M9, RF-07): a luta por vir tem
+    os dois cantos em ``bout_fighters`` como qualquer outra, e é por eles que ela vaza.
+    """
     event = EventFactory.build(name=event_name, date=event_date)
     session.add(event)
     session.flush()
@@ -173,7 +179,8 @@ def _seed_confronto(
     bout = BoutFactory.build(
         event_id=event.id,
         winner_id=winner.id if winner is not None else None,
-        method=BoutMethod.DECISION,
+        method=BoutMethod.DECISION if status is BoutStatus.COMPLETED else None,
+        status=status,
         round=3,
         ending_time_seconds=300,
         weight_class="Featherweight",
@@ -356,3 +363,37 @@ def test_head_to_head_carrega_cantos_em_lote_sem_n_mais_1(db_session: Session) -
         assert {bf.fighter_id for bf in detalhe.fighters} == {a.id, b.id}
         assert {bf.corner for bf in detalhe.fighters} == {Corner.RED, Corner.BLUE}
     assert len(statements) == 2
+
+
+def test_head_to_head_ignora_a_luta_agendada_entre_a_dupla(db_session: Session) -> None:
+    """Ponto 1 da varredura (M9, RF-07): confronto direto é **histórico**.
+
+    A revanche já marcada entre os dois aparece na tela de confronto pelo card do evento
+    futuro, não pelo head-to-head -- misturá-la ao histórico faria a dupla parecer ter se
+    enfrentado uma vez a mais do que se enfrentou, e o placar do confronto mentiria.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b])
+    db_session.flush()
+
+    realizada = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=b, winner=a
+    )
+    agendada = _seed_confronto(
+        db_session,
+        event_name="UFC Card Futuro",
+        event_date=date(2026, 12, 12),
+        red=a,
+        blue=b,
+        status=BoutStatus.SCHEDULED,
+    )
+
+    detalhes = get_head_to_head(db_session, a.id, b.id)
+
+    assert [d.bout.id for d in detalhes] == [realizada.id]
+    # Guarda de não-vacuidade: a agendada está persistida, com os dois cantos.
+    persistida = db_session.get(Bout, agendada.id)
+    assert persistida is not None
+    assert persistida.status is BoutStatus.SCHEDULED
+    assert len(persistida.bout_fighters) == 2

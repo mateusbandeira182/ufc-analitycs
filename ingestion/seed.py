@@ -32,6 +32,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from apps.bouts.enums import BoutStatus
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -53,12 +54,23 @@ _ENV_DATASET_DIR = "SEED_DATASET_DIR"
 
 @dataclass(frozen=True)
 class SeedCounts:
-    """Contagem total de cada tabela após a carga (base da verificação de idempotência)."""
+    """Contagem por tabela após a carga, com o recorte de ``status`` declarado.
+
+    Base da verificação de idempotência do seed. Os totais de luta **saem** de propósito
+    (M9, RF-07): a partir da Slice 04 o banco passa a conter luta agendada, que o seed nunca
+    escreve e não controla. Um total que as englobasse se moveria sozinho, e a verificação
+    "rodar de novo não muda nenhuma contagem" passaria a falhar por um motivo que não é falta
+    de idempotência -- sem que ninguém soubesse dizer qual dos dois estava errado.
+
+    ``fighters`` e ``events`` continuam totais: eles não têm recorte de ``status``.
+    """
 
     fighters: int
     events: int
-    bouts: int
-    bout_fighters: int
+    bouts_completed: int
+    bouts_scheduled: int
+    bout_fighters_completed: int
+    bout_fighters_scheduled: int
 
 
 @dataclass(frozen=True)
@@ -116,16 +128,51 @@ def run_seed(session: Session, dataset_dir: Path | None = None) -> SeedCounts:
         bouts_result.bout_fighters_inserted,
         bouts_result.skipped,
     )
-    return _count_tables(session)
+    counts = _count_tables(session)
+    logger.info(
+        "Contagem após o seed: %d fighters, %d events, %d bouts realizadas "
+        "(%d agendadas) e %d bout_fighters de luta realizada (%d de agendada)",
+        counts.fighters,
+        counts.events,
+        counts.bouts_completed,
+        counts.bouts_scheduled,
+        counts.bout_fighters_completed,
+        counts.bout_fighters_scheduled,
+    )
+    return counts
+
+
+def _count_bouts(session: Session, status: BoutStatus) -> int:
+    """Conta as lutas de um ``status``."""
+    return session.scalar(select(func.count()).select_from(Bout).where(Bout.status == status)) or 0
+
+
+def _count_bout_fighters(session: Session, status: BoutStatus) -> int:
+    """Conta os cantos pelo ``status`` da **luta** a que pertencem (exige o join).
+
+    O recorte vive em ``bouts``; contar ``bout_fighters`` sem o join devolveria o total mudo
+    que a separação de campos existe para eliminar.
+    """
+    return (
+        session.scalar(
+            select(func.count())
+            .select_from(BoutFighter)
+            .join(Bout, Bout.id == BoutFighter.bout_id)
+            .where(Bout.status == status)
+        )
+        or 0
+    )
 
 
 def _count_tables(session: Session) -> SeedCounts:
-    """Conta as linhas das quatro tabelas na ``Session`` atual."""
+    """Conta as linhas das quatro tabelas na ``Session`` atual, com o recorte por ``status``."""
     return SeedCounts(
         fighters=session.scalar(select(func.count()).select_from(Fighter)) or 0,
         events=session.scalar(select(func.count()).select_from(Event)) or 0,
-        bouts=session.scalar(select(func.count()).select_from(Bout)) or 0,
-        bout_fighters=session.scalar(select(func.count()).select_from(BoutFighter)) or 0,
+        bouts_completed=_count_bouts(session, BoutStatus.COMPLETED),
+        bouts_scheduled=_count_bouts(session, BoutStatus.SCHEDULED),
+        bout_fighters_completed=_count_bout_fighters(session, BoutStatus.COMPLETED),
+        bout_fighters_scheduled=_count_bout_fighters(session, BoutStatus.SCHEDULED),
     )
 
 

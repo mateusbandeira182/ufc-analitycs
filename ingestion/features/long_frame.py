@@ -22,7 +22,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod
+from apps.bouts.enums import BoutMethod, BoutStatus
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -108,6 +108,17 @@ def read_granular(session: Session) -> GranularFrames:
     Seleciona explicitamente as colunas necessárias à frame longa (nunca ``SELECT *``)
     e as rotula pela chave natural. Usa ``session.connection()`` -- a mesma conexão da
     transação -- para enxergar dados semeados e ainda não commitados (essencial no teste).
+
+    **Guarda única da pipeline de features** (M9, RF-07): o recorte ``status='completed'``
+    mora aqui, e só aqui. A query de ``bout_fighters`` **não** o repete de propósito -- o
+    merge de ``build_long_frame`` é ``how="inner"`` em ``bout_id``, então derrubar a luta já
+    derruba os dois cantos dela; uma segunda guarda esconderia qual das duas protege. A
+    segunda barreira, essa sim independente, é ``analysis.dataset``, que descarta linha de
+    alvo nulo.
+
+    ``apps.features.selectors.count_source_bouts`` tem de enxergar **este mesmo recorte**:
+    as duas respondem a mesma pergunta ("quais lutas alimentam as features"), e um ``COUNT``
+    mais largo marcaria o cache as-of como defasado para sempre.
     """
     con = session.connection()
     fighters = pd.read_sql_query(
@@ -137,7 +148,7 @@ def read_granular(session: Session) -> GranularFrames:
             Bout.weight_class,
             Bout.title_bout,
             Bout.scheduled_rounds,
-        ),
+        ).where(Bout.status == BoutStatus.COMPLETED),
         con,
     )
     bout_fighters = pd.read_sql_query(

@@ -9,11 +9,17 @@ previsto. As probabilidades já são neutralizadas de canto (média das duas ord
 luta. Diferença de contrato deliberada: no card, uma luta impredizível **não** derruba a
 resposta -- ela volta com probabilidades nulas e ``unavailable_reason`` preenchido, enquanto no
 matchup isolado a mesma situação é erro da requisição (422).
+
+Desde o M9 (SPEC 011) os dois carregam ``features_freshness``: o palpite vem do cache as-of, e
+quem lê o cache reporta se ele está defasado. No card o campo vive no **envelope**, não em cada
+luta (D-09) -- a defasagem é do cache, não de uma luta.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel
+
+from apps.features.schemas import FeaturesFreshnessOut
 
 
 class MatchupFighterOut(BaseModel):
@@ -35,6 +41,7 @@ class MatchupPredictionOut(BaseModel):
     prob_a_wins: float
     prob_b_wins: float
     predicted_winner_id: int
+    features_freshness: FeaturesFreshnessOut
 
 
 class CardBoutPredictionOut(BaseModel):
@@ -65,3 +72,4 @@ class EventPredictionOut(BaseModel):
     model_version: str
     n_features: int
     bouts: list[CardBoutPredictionOut]
+    features_freshness: FeaturesFreshnessOut

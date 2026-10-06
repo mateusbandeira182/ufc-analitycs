@@ -2,7 +2,7 @@
 
 Exercitam o router fino sobre o Postgres de teste transacional (fixture ``client``,
 com ``get_session`` sobreposto). Cobrem o contrato OpenAPI, o envelope de paginação,
-o filtro por nome, o detalhe com 404 e a natureza somente-leitura da API v1.
+a busca por nome ou apelido, o detalhe com 404 e a natureza somente-leitura da API v1.
 """
 
 from __future__ import annotations
@@ -20,9 +20,13 @@ from mma_analytics.app import create_app
 _MUTATING_VERBS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def _seed(db_session: Session, name: str) -> int:
-    """Persiste um fighter com o ``name`` dado e devolve o id gerado."""
-    fighter = FighterFactory.build(name=name)
+def _seed(db_session: Session, name: str, *, nickname: str | None = None) -> int:
+    """Persiste um fighter com o ``name``/``nickname`` dados e devolve o id gerado.
+
+    ``nickname`` é explícito (nulo por padrão) para que os testes de curinga controlem o
+    acervo: um apelido gerado ao acaso poderia conter o caractere sob prova.
+    """
+    fighter = FighterFactory.build(name=name, nickname=nickname)
     db_session.add(fighter)
     db_session.flush()
     return fighter.id
@@ -119,19 +123,71 @@ def test_list_fighters_retorna_envelope_page_com_source(
     assert "name_normalized" not in body["items"][0]
 
 
-def test_list_fighters_filtra_por_nome(client: TestClient, db_session: Session) -> None:
-    """``?name=`` filtra case-insensitive e o ``total`` reflete o filtro."""
+def test_list_fighters_busca_por_nome(client: TestClient, db_session: Session) -> None:
+    """``?q=`` filtra o nome case-insensitive e o ``total`` reflete o filtro."""
     _seed(db_session, "Alexander Volkanovski")
     _seed(db_session, "Alex Pereira")
     _seed(db_session, "Jon Jones")
 
-    body = client.get("/api/v1/fighters", params={"name": "alex"}).json()
+    body = client.get("/api/v1/fighters", params={"q": "alex"}).json()
 
     assert body["total"] == 2
     assert {item["name"] for item in body["items"]} == {
         "Alexander Volkanovski",
         "Alex Pereira",
     }
+
+
+def test_list_fighters_busca_pelo_apelido(client: TestClient, db_session: Session) -> None:
+    """CA-17: ``?q=Bones`` devolve Jon Jones, cujo nome não contém o termo buscado."""
+    _seed(db_session, "Jon Jones", nickname="Bones")
+    _seed(db_session, "Alex Pereira", nickname="Poatan")
+
+    body = client.get("/api/v1/fighters", params={"q": "Bones"}).json()
+
+    assert body["total"] == 1
+    (item,) = body["items"]
+    assert item["name"] == "Jon Jones"
+    assert item["nickname"] == "Bones"
+
+
+def test_list_fighters_curinga_vale_como_texto_literal(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-26a: ``?q=%`` num acervo sem ``%`` devolve zero itens -- não o acervo inteiro."""
+    _seed(db_session, "Jon Jones", nickname="Bones")
+    _seed(db_session, "Alex Pereira", nickname="Poatan")
+
+    body = client.get("/api/v1/fighters", params={"q": "%"}).json()
+
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+def test_list_fighters_ignora_o_parametro_name_aposentado(
+    client: TestClient, db_session: Session
+) -> None:
+    """D-02: ``name`` saiu do contrato sem alias, então ``?name=`` não filtra nada.
+
+    A quebra é deliberada: o FastAPI ignora query param desconhecido, e a SPA -- único
+    consumidor -- é reescrita nesta mesma SPEC.
+    """
+    _seed(db_session, "Jon Jones")
+    _seed(db_session, "Alex Pereira")
+
+    body = client.get("/api/v1/fighters", params={"name": "Jon"}).json()
+
+    assert body["total"] == 2
+    assert {item["name"] for item in body["items"]} == {"Jon Jones", "Alex Pereira"}
+
+
+def test_openapi_lista_de_fighters_expoe_q_e_nao_name(client: TestClient) -> None:
+    """O contrato publica ``q`` e aposenta ``name`` -- sem alias (D-02)."""
+    operacao = client.get("/openapi.json").json()["paths"]["/api/v1/fighters"]["get"]
+
+    nomes = {parametro["name"] for parametro in operacao["parameters"]}
+    assert "q" in nomes
+    assert "name" not in nomes
 
 
 def test_list_fighters_pagina_com_limit_e_offset(client: TestClient, db_session: Session) -> None:
@@ -338,6 +394,14 @@ def test_fighter_stats_retorna_agregado_on_demand(client: TestClient, db_session
             "share_clinch": 0.125,
             "share_ground": 0.125,
         },
+        # Diagnóstico do cache as-of (SPEC 011, D-09). Aqui o cache nunca foi materializado:
+        # o agregado não depende dele, então a resposta segue 200 e o campo reporta o estado.
+        "features_freshness": {
+            "materialized_at": None,
+            "n_bouts_source": 0,
+            "n_bouts_current": 2,
+            "stale": True,
+        },
     }
     # O agregado computado não expõe ``source`` (mistura origens -- decisão do plano).
     assert "source" not in body
@@ -453,8 +517,33 @@ def test_listagem_expoe_as_urls_de_imagem_pelo_mesmo_schema(
     db_session.add(fighter)
     db_session.flush()
 
-    body = client.get("/api/v1/fighters", params={"name": "Song Yadong"}).json()
+    body = client.get("/api/v1/fighters", params={"q": "Song Yadong"}).json()
 
     (item,) = body["items"]
     assert item["headshot_url"].endswith("d.png")
     assert item["body_image_url"] is None
+
+
+def test_fighter_stats_traz_o_diagnostico_de_defasagem(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-04: ``/fighters/{id}/stats`` devolve ``features_freshness`` com os quatro campos.
+
+    Terceiro (e último) endpoint que lê o cache as-of, por D-09. Aqui o diagnóstico vale
+    mesmo **sem** cache materializado: o agregado on demand não depende dele, então a
+    resposta segue 200 e ``materialized_at`` volta nulo (emenda DP-05 do Plano 011-01).
+    """
+    fighter_id = _seed_stats(db_session)
+
+    body = client.get(f"/api/v1/fighters/{fighter_id}/stats").json()
+
+    assert set(body["features_freshness"]) == {
+        "materialized_at",
+        "n_bouts_source",
+        "n_bouts_current",
+        "stale",
+    }
+    assert body["features_freshness"]["materialized_at"] is None
+    assert body["features_freshness"]["n_bouts_source"] == 0
+    assert body["features_freshness"]["n_bouts_current"] == 2
+    assert body["features_freshness"]["stale"] is True

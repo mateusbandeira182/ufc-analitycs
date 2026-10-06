@@ -122,6 +122,14 @@ describe("resolveResult", () => {
     ).toEqual({ kind: "draw" });
   });
 
+  it("classifica como agendada a luta sem método, e não como empate", () => {
+    // Luta agendada chega sem `winner_id` e sem `method`. Sem esta guarda ela
+    // cairia no ramo do empate — a tela afirmaria um desfecho que não existe.
+    expect(resolveResult(bout({ winner_id: null, method: null }))).toEqual({
+      kind: "scheduled",
+    });
+  });
+
   it("classifica como sem resultado quando o método é no contest", () => {
     expect(
       resolveResult(bout({ winner_id: null, method: "no_contest" })),

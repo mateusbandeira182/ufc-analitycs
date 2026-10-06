@@ -11,13 +11,16 @@ idempotente por chave natural e o tratamento de lutas cujo lutador/evento não r
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -439,3 +442,41 @@ def test_luta_com_lutador_ambiguo_e_pulada(db_session: Session) -> None:
     assert result.bouts_inserted == 0
     assert result.skipped == 1
     assert db_session.scalar(select(func.count()).select_from(Bout)) == 0
+
+
+@contextmanager
+def _kwargs_de_cada_bout_construido() -> Iterator[list[dict[str, Any]]]:
+    """Captura os ``kwargs`` de cada ``Bout(...)`` construído no bloco.
+
+    Escuta o evento ``init`` do SQLAlchemy porque é a única forma de distinguir "o seed
+    **passou** ``status``" de "o default do model agiu". As duas produzem a mesma linha
+    persistida, e um teste que olhasse só a linha continuaria verde se a linha do construtor
+    sumisse -- que é exatamente a regressão a evitar.
+    """
+    capturados: list[dict[str, Any]] = []
+
+    def _registrar(_target: Bout, _args: Any, kwargs: dict[str, Any]) -> None:
+        capturados.append(dict(kwargs))
+
+    event.listen(Bout, "init", _registrar)
+    try:
+        yield capturados
+    finally:
+        event.remove(Bout, "init", _registrar)
+
+
+def test_seed_grava_status_completed_explicitamente(db_session: Session) -> None:
+    """Ponto 4 da varredura (M9, RF-07): o seed **grava** ``completed``, não herda o default.
+
+    O seed do Kaggle é histórico congelado (ADR 0002) e nunca produz luta agendada. Explicitar
+    o valor evita que a semântica da carga inteira dependa de um default de model que uma
+    mudança futura pode mexer sem que nada aqui acuse.
+    """
+    _seed_support(db_session)
+
+    with _kwargs_de_cada_bout_construido() as construidos:
+        _load_from_fixture(db_session)
+
+    assert len(construidos) == _TOTAL_BOUTS
+    assert all(kwargs["status"] is BoutStatus.COMPLETED for kwargs in construidos)
+    assert set(db_session.scalars(select(Bout.status)).all()) == {BoutStatus.COMPLETED}

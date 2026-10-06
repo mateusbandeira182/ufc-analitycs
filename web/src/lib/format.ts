@@ -32,9 +32,14 @@ const METHOD_LABELS: Record<BoutMethod, string> = {
   no_contest: "Sem resultado",
 };
 
-/** Rótulo em pt-BR do método de encerramento da luta. */
-export function formatMethod(method: BoutMethod): string {
-  return METHOD_LABELS[method];
+/**
+ * Rótulo em pt-BR do método de encerramento da luta. `method` é nulável no
+ * contrato desde que `bouts` passou a conter luta agendada: ausência de método
+ * é ausência de desfecho, rotulada como tal — nem "Sem resultado" (que é o no
+ * contest, um desfecho de verdade), nem um traço mudo.
+ */
+export function formatMethod(method: BoutMethod | null): string {
+  return method === null ? "Agendada" : METHOD_LABELS[method];
 }
 
 /**

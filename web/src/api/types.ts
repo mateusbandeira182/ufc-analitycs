@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * List Fighters Endpoint
-         * @description Lista fighters paginados, com filtro opcional por nome.
+         * @description Lista fighters paginados, com busca opcional por nome ou apelido.
          */
         get: operations["list_fighters_endpoint_api_v1_fighters_get"];
         put?: never;
@@ -74,6 +74,11 @@ export interface paths {
         /**
          * Get Fighter Stats Endpoint
          * @description Estatísticas resumidas do lutador, computadas on demand; 404 quando não existe.
+         *
+         *     Carrega ``features_freshness`` (SPEC 011, RF-05/D-09): é a resposta que alimenta a "forma
+         *     atual" da página do lutador, uma das três que leem o cache as-of. O agregado em si **não**
+         *     depende do cache -- é computado on demand do granular --, então a resposta continua 200
+         *     mesmo com o cache nunca materializado; nesse caso ``materialized_at`` volta nulo.
          */
         get: operations["get_fighter_stats_endpoint_api_v1_fighters__fighter_id__stats_get"];
         put?: never;
@@ -193,6 +198,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/predict/event/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Predict Event Card Endpoint
+         * @description Palpite neutro de canto para todas as lutas do card de um evento.
+         *
+         *     Event inexistente -> 404; artefato de modelo ausente -> 503; evento sem lutas -> 200 com
+         *     ``bouts`` vazio. Uma luta impredizível (lutador sem histórico no granular, card mal
+         *     formado) **não** derruba o card: volta com probabilidades nulas e ``unavailable_reason``
+         *     preenchido, status 200 -- diferença deliberada em relação ao matchup isolado, onde a mesma
+         *     situação é 422 porque é erro da própria requisição.
+         *
+         *     Cada luta predita é registrada em ``bout_predictions`` com ``source="api"``, idempotente
+         *     por ``(bout_id, model_version)``. A idempotência é **observável**: repetir o request não
+         *     envelhece o registro histórico, porque ``record_prediction`` preserva ``predicted_at`` e
+         *     ``source`` da primeira gravação. É o que sustenta o verbo GET aqui apesar da escrita --
+         *     render repetido da tela não muda nada que alguém possa ler depois.
+         */
+        get: operations["predict_event_card_endpoint_api_v1_predict_event__event_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -221,7 +258,7 @@ export interface components {
             id: number;
             /** Winner Id */
             winner_id: number | null;
-            method: components["schemas"]["BoutMethod"];
+            method: components["schemas"]["BoutMethod"] | null;
             /** Round */
             round: number | null;
             /** Ending Time Seconds */
@@ -243,7 +280,7 @@ export interface components {
             event: components["schemas"]["BoutEventOut"];
             /** Winner Id */
             winner_id: number | null;
-            method: components["schemas"]["BoutMethod"];
+            method: components["schemas"]["BoutMethod"] | null;
             /** Round */
             round: number | null;
             /** Ending Time Seconds */
@@ -412,6 +449,28 @@ export interface components {
          */
         BoutMethod: "ko_tko" | "submission" | "decision" | "dq" | "no_contest";
         /**
+         * CardBoutPredictionOut
+         * @description Predição neutra de canto de uma luta do card, ou o motivo da ausência.
+         *
+         *     Quando a luta não pôde ser predita, as probabilidades e o vencedor previsto são ``null`` e
+         *     ``unavailable_reason`` explica o porquê -- a luta continua listada, para o consumidor ver o
+         *     card inteiro. Os cantos também são ``null`` quando a luta não tem os dois cadastrados.
+         */
+        CardBoutPredictionOut: {
+            /** Bout Id */
+            bout_id: number;
+            fighter_red: components["schemas"]["MatchupFighterOut"] | null;
+            fighter_blue: components["schemas"]["MatchupFighterOut"] | null;
+            /** Prob Red Wins */
+            prob_red_wins: number | null;
+            /** Prob Blue Wins */
+            prob_blue_wins: number | null;
+            /** Predicted Winner Id */
+            predicted_winner_id: number | null;
+            /** Unavailable Reason */
+            unavailable_reason: string | null;
+        };
+        /**
          * Corner
          * @description Canto do lutador na luta.
          * @enum {string}
@@ -458,6 +517,48 @@ export interface components {
             source: string;
         };
         /**
+         * EventPredictionOut
+         * @description Predição do card completo de um evento, com a identidade do modelo que a produziu.
+         *
+         *     ``model_version`` é o ``trained_at`` do artefato treinado -- a mesma versão gravada em
+         *     ``bout_predictions``, o que liga a resposta ao registro persistido.
+         */
+        EventPredictionOut: {
+            /** Event Id */
+            event_id: number;
+            /** Model Version */
+            model_version: string;
+            /** N Features */
+            n_features: number;
+            /** Bouts */
+            bouts: components["schemas"]["CardBoutPredictionOut"][];
+            features_freshness: components["schemas"]["FeaturesFreshnessOut"];
+        };
+        /**
+         * FeaturesFreshnessOut
+         * @description Diagnóstico de defasagem do cache as-of: um ``COUNT``, não um recomputo (RF-05).
+         *
+         *     ``stale`` é ``n_bouts_current != n_bouts_source`` -- lutas entraram no granular desde a
+         *     última materialização. A interface exibe o aviso **na seção que lê o dado defasado**
+         *     (RF-06/D-05); o componente compartilhado que o renderiza nasce na Sprint 06, com a
+         *     primeira consumidora real (D-10).
+         *
+         *     **Emenda DP-05 ao texto da SPEC**: ``materialized_at`` é ``datetime | None``, enquanto a
+         *     SPEC aprovada o escreve não-nulo. Com o cache nunca materializado não existe valor, e um
+         *     campo obrigatório forçaria os três endpoints a falhar exatamente no estado que este
+         *     diagnóstico existe para reportar (``n_bouts_source = 0``, ``stale = true``).
+         */
+        FeaturesFreshnessOut: {
+            /** Materialized At */
+            materialized_at: string | null;
+            /** N Bouts Source */
+            n_bouts_source: number;
+            /** N Bouts Current */
+            n_bouts_current: number;
+            /** Stale */
+            stale: boolean;
+        };
+        /**
          * FighterBoutOut
          * @description Uma luta do histórico do lutador, com as stats daquele lutador naquela luta.
          */
@@ -473,7 +574,7 @@ export interface components {
              * Format: date
              */
             event_date: string;
-            method: components["schemas"]["BoutMethod"];
+            method: components["schemas"]["BoutMethod"] | null;
             /** Round */
             round: number | null;
             /** Ending Time Seconds */
@@ -513,6 +614,10 @@ export interface components {
             stance: components["schemas"]["Stance"] | null;
             /** Weight Kg */
             weight_kg: number | null;
+            /** Headshot Url */
+            headshot_url: string | null;
+            /** Body Image Url */
+            body_image_url: string | null;
             /** Wins */
             wins: number;
             /** Losses */
@@ -548,6 +653,7 @@ export interface components {
                 [key: string]: number;
             };
             striking_profile: components["schemas"]["StrikingProfileOut"];
+            features_freshness: components["schemas"]["FeaturesFreshnessOut"];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -596,6 +702,7 @@ export interface components {
             prob_b_wins: number;
             /** Predicted Winner Id */
             predicted_winner_id: number;
+            features_freshness: components["schemas"]["FeaturesFreshnessOut"];
         };
         /** Page[EventOut] */
         Page_EventOut_: {
@@ -672,7 +779,8 @@ export interface operations {
     list_fighters_endpoint_api_v1_fighters_get: {
         parameters: {
             query?: {
-                name?: string | null;
+                /** @description Busca por nome ou apelido; o termo vale como texto literal. */
+                q?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -947,6 +1055,51 @@ export interface operations {
                 };
             };
             /** @description Lutador não encontrado */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Modelo preditivo indisponível: artefato treinado ausente */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    predict_event_card_endpoint_api_v1_predict_event__event_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPredictionOut"];
+                };
+            };
+            /** @description Event não encontrado */
             404: {
                 headers: {
                     [name: string]: unknown;

@@ -265,6 +265,10 @@ def _window_fighters_by_identifier(session: Session) -> dict[str, Fighter]:
 
     É a chave de casamento inteira desta slice. Quem não tem id não entra -- e cair para o nome
     reintroduziria a ambiguidade de homônimo que a Sprint 008-03 existe para eliminar (RF-07).
+
+    **Não filtra ``bouts.status``, e isso é decisão ativa** (M9, RF-07): o lutador escalado só
+    num card futuro é alvo legítimo de antropometria -- é dele que a tela de confronto por vir
+    precisa. Fixado por ``tests/ingestion/test_guarda_de_luta_agendada.py``.
     """
     statement = (
         select(Fighter)
@@ -279,7 +283,13 @@ def _window_fighters_by_identifier(session: Session) -> dict[str, Fighter]:
 
 
 def _count_window_fighters_without_identifier(session: Session) -> int:
-    """Lutadores da janela que a Slice 03 não conseguiu identificar -- teto da cobertura."""
+    """Lutadores da janela que a Slice 03 não conseguiu identificar -- teto da cobertura.
+
+    **Não filtra ``bouts.status``, e isso é decisão ativa** (M9, RF-07): o estreante de card
+    futuro conta aqui de propósito. Ele é o trabalho que falta, e escondê-lo do teto faria a
+    cobertura parecer completa enquanto o lutador da próxima luta segue sem identificador.
+    Fixado por ``tests/ingestion/test_guarda_de_luta_agendada.py``.
+    """
     statement = (
         select(Fighter.id)
         .join(BoutFighter, BoutFighter.fighter_id == Fighter.id)

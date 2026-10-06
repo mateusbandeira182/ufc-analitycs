@@ -2,21 +2,26 @@
 
 Peça de servir da fase 2. ``predict_card`` recebe N pares de ``fighter_id`` e devolve a
 probabilidade de cada canto vencer confrontos **hipotéticos** "as-of agora" (não lutas
-persistidas); ``predict_matchup`` é o caso de um par só, delegando ao lote. Reusa ao máximo a
-engenharia de features point-in-time do M4/M5
-(``ingestion.features.{long_frame,rolling,trajectory,matchup}``): em vez de reimplementar o
-cálculo as-of, injeta uma **luta sintética por par** (A no canto vermelho, B no azul) datada
-depois de todas as lutas reais e roda a mesma pipeline. Como cada feature usa ``shift(1)``
-(exclui a luta corrente), a linha sintética de cada lutador é calculada a partir de **todas** as
-suas lutas passadas 1..N -- exatamente o estado "agora". O diff A-B de cada linha sintética é
-montado no mesmo formato que ``matchup`` produz para o treino e alinhado às ``feature_names`` do
-modelo.
+persistidas); ``predict_matchup`` é o caso de um par só, delegando ao lote.
 
-**Um lutador por lote.** As N lutas sintéticas entram numa única passada da pipeline (um card de
-13 lutas custa uma execução, não 13), o que só é correto porque cada lutador aparece no máximo
-uma vez: duas sintéticas do mesmo lutador fariam a segunda consumir a primeira no ``shift(1)``
--- e a primeira tem box-score todo nulo, envenenando as janelas. ``predict_card`` recusa o lote
-nesse caso em vez de devolver features corrompidas em silêncio.
+**O caminho de produção lê o cache as-of** (SPEC 011, Slice 01). Até o M8, cada chamada
+reconstruía a pipeline point-in-time inteira sobre todo o granular -- e a neutralização de
+canto a chamava duas vezes, o que custava os ~67s que a RF-04 existe para eliminar. Agora
+``predict_card`` faz um ``SELECT`` em ``fighter_asof_features`` (duas linhas por par),
+monta a matriz de confronto do payload, deriva a feature do PAR do ``style_history`` e alinha
+a ``feature_names``. A neutralização de canto **permanece** onde está (camada de API): com o
+cache ela custa microssegundos, e é decisão de correção, não de desempenho.
+
+O cache é construído por ``ingestion.features.asof``, que injeta uma luta sintética **por
+lutador** e roda a mesma cadeia as-of. ``_asof_matchup_rows`` -- a reconstrução ao vivo, que
+injeta uma sintética **por par** -- continua no módulo como **implementação de referência**:
+é contra ela que a paridade da RF-03 é medida em ``tests/features/test_asof_paridade.py``.
+Não é código morto; é a fonte da verdade do teste que impede o cache de divergir em silêncio.
+
+**Um lutador por lote.** A restrição de um único par por lutador permanece: ela é espelhada em
+``apps.predictions.services._repeated_fighter_ids`` e sustenta o contrato do card. Com o cache
+ela deixou de ser tecnicamente necessária no caminho quente, mas continua sendo o contrato --
+e ``_asof_matchup_rows``, que ainda depende do ``shift(1)``, continua precisando dela.
 
 Convenção fixa A = red, B = blue (ADR 0001): o modelo prevê ``P(winner_corner == red)``, que
 aqui é ``P(A vence)``. O modelo cru é sensível ao canto (aprendeu a vantagem do vermelho); a
@@ -26,9 +31,11 @@ features não-backfilladas (round-a-round) são herdados da pipeline; o
 ``HistGradientBoostingClassifier`` trata ``NaN`` nativamente. Nada é escrito no banco (leitura
 pura sobre o granular).
 
-**Degradação declarada do serving com as features da SPEC 009 (M8), CA-16.** ``_asof_matchup_rows``
-reconstrói a cadeia as-of à mão e chama ``pivot_corners``/``add_differentials`` direto, sem o
-orquestrador ``matchup.build_matchup_matrix``. Consequência, explícita e testada:
+**Degradação declarada do serving com as features da SPEC 009 (M8), CA-16.** A cadeia as-of --
+tanto a de referência (``_asof_matchup_rows``) quanto a materializada (``asof.enrich_asof``) --
+chama ``pivot_corners``/``add_differentials`` direto, sem o orquestrador
+``matchup.build_matchup_matrix``. Consequência, explícita e testada (e preservada de propósito
+pela SPEC 011: materializar a mais mudaria em silêncio o vetor que o modelo come):
 
 - as features **bout-level de contexto** (``weight_class_lbs``, ``is_womens_division``,
   ``division_finish_rate_prior``, ``is_title_bout``, ``scheduled_rounds``,
@@ -56,7 +63,7 @@ import logging
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -64,19 +71,28 @@ from sqlalchemy.orm import Session
 
 from analysis.model import ARTIFACTS_DIR, LoadedModel, load_artifact
 from apps.bouts.enums import BoutMethod, Corner
-from ingestion.features.long_frame import LONG_FRAME_COLUMNS, build_long_frame, read_granular
+from apps.features.models import FighterAsOfFeatures
+from apps.features.selectors import read_asof_features
+from ingestion.features.long_frame import LONG_FRAME_COLUMNS
 from ingestion.features.matchup import (
     COL_BOUT_ID,
     COL_CORNER,
     COL_RESULT,
+    SUFFIX_A,
+    SUFFIX_B,
     add_differentials,
     numeric_feature_bases,
     pivot_corners,
 )
 from ingestion.features.rolling import (
     COL_FIGHTER_ID,
+    GRAPPLING_AXIS_R3,
+    SIMILAR_STYLE_WIN_RATE_PRIOR,
+    STYLE_HISTORY_COLUMNS,
+    VOLUME_AXIS_R3,
     add_recent_form_features,
     add_round_dynamics_features,
+    similar_style_prior_for_opponent,
 )
 from ingestion.features.trajectory import (
     COL_EVENT_DATE,
@@ -202,19 +218,6 @@ def _require_one_bout_per_fighter(pairs: Sequence[tuple[int, int]]) -> None:
         )
 
 
-def _fighters_with_past_bouts(long: pd.DataFrame, as_of: date) -> set[int]:
-    """Lutadores com ao menos uma luta **anterior** a ``as_of`` no granular.
-
-    Estar no granular não basta: uma luta já cadastrada mas ainda não realizada (o card que se
-    quer prever) não produz feature as-of nenhuma -- todo o box-score dela é nulo e o
-    ``shift(1)`` a descarta da própria linha. Sem esse recorte, um estreante escalado no card
-    passaria no teste de histórico pela própria luta que se está tentando prever, e o modelo
-    devolveria um palpite fabricado sobre um vetor inteiramente ``NaN``.
-    """
-    passadas = long[pd.to_datetime(long[COL_EVENT_DATE]) < pd.Timestamp(as_of)]
-    return {int(fighter_id) for fighter_id in passadas[COL_FIGHTER_ID].unique()}
-
-
 def _asof_matchup_rows(
     session: Session,
     long: pd.DataFrame,
@@ -223,6 +226,12 @@ def _asof_matchup_rows(
     as_of: date,
 ) -> pd.DataFrame:
     """Constrói as linhas bout-level (``*_a``/``*_b``/``*_diff``) dos pares, as-of agora.
+
+    **Implementação de referência, não caminho de produção** (SPEC 011, Slice 01). Desde o M9 o
+    serving lê ``fighter_asof_features`` via ``_cached_matchup_rows``; esta função permanece
+    como a fonte da verdade contra a qual a paridade da RF-03 é medida
+    (``tests/features/test_asof_paridade.py``). Remover-na cegaria o teste que impede o cache
+    de divergir do que o modelo espera.
 
     Uma única execução da cadeia de features para os N pares: injeta uma luta sintética por par
     (identificada pelo ``bout_id`` sentinela correspondente) na frame longa já lida, roda a
@@ -249,6 +258,52 @@ def _asof_matchup_rows(
     only_synthetic = combined[combined[COL_BOUT_ID].isin(list(bout_ids))]
     pivoted = pivot_corners(only_synthetic)
     return add_differentials(pivoted, numeric_feature_bases(pivoted))
+
+
+def _style_axis(row: FighterAsOfFeatures, column: str) -> float | None:
+    """Eixo de estilo as-of do lutador, lido do payload cacheado (ausência vira ``None``)."""
+    value = row.features.get(column)
+    return None if value is None else float(value)
+
+
+def _cached_matchup_rows(
+    cached: dict[int, FighterAsOfFeatures],
+    pairs: Sequence[tuple[int, int]],
+    bout_ids: Sequence[int],
+) -> pd.DataFrame:
+    """Matriz de confronto (``*_a``/``*_b``/``*_diff``) montada de 2 linhas do cache por par.
+
+    Caminho de produção desde a Slice 01 da SPEC 011: substitui a reconstrução da pipeline
+    as-of por uma leitura. As bases vêm das **chaves do payload** -- a ordem delas não é
+    contrato (o ``jsonb`` do Postgres não preserva ordem de inserção), e nem precisa ser:
+    ``_align_features`` reindexa por ``feature_names``. Os diferenciais reusam
+    ``add_differentials``/``numeric_feature_bases``, as mesmas funções do treino.
+
+    ``similar_style_win_rate_prior`` é calculada **aqui**, e não lida do payload: é feature do
+    PAR (D-15 da SPEC 011). O lado A usa o ``style_history`` de A contra os eixos as-of de B,
+    e vice-versa -- a fórmula continua sendo a de ``rolling``, nunca reimplementada.
+    """
+    records: list[dict[str, object]] = []
+    for (fighter_a_id, fighter_b_id), bout_id in zip(pairs, bout_ids, strict=True):
+        record: dict[str, object] = {COL_BOUT_ID: bout_id}
+        a, b = cached[fighter_a_id], cached[fighter_b_id]
+        for suffix, lado, adversario in ((SUFFIX_A, a, b), (SUFFIX_B, b, a)):
+            for base, value in lado.features.items():
+                record[f"{base}{suffix}"] = value
+            record[f"{SIMILAR_STYLE_WIN_RATE_PRIOR}{suffix}"] = similar_style_prior_for_opponent(
+                pd.DataFrame(lado.style_history, columns=STYLE_HISTORY_COLUMNS),
+                _style_axis(adversario, GRAPPLING_AXIS_R3),
+                _style_axis(adversario, VOLUME_AXIS_R3),
+            )
+        records.append(record)
+
+    frame = pd.DataFrame(records)
+    # O payload atravessa o JSONB como ``object`` (valores nativos e ``None`` misturados);
+    # converter aqui é o que faz ``numeric_feature_bases`` reconhecer as bases e emitir os
+    # ``*_diff``. Sem isso a degradação seria silenciosa: diferencial nenhum, nenhum erro.
+    feature_columns = [column for column in frame.columns if column != COL_BOUT_ID]
+    frame[feature_columns] = frame[feature_columns].apply(pd.to_numeric)
+    return add_differentials(frame, numeric_feature_bases(frame))
 
 
 def _align_features(matchup_row: pd.DataFrame, feature_names: list[str]) -> pd.DataFrame:
@@ -284,15 +339,19 @@ def predict_card(
 ) -> CardPrediction:
     """Prediz N confrontos hipotéticos "as-of agora" numa única passada da pipeline.
 
-    Lê o granular uma vez e injeta uma luta sintética por par (A = red, B = blue), rodando a
-    mesma cadeia de features point-in-time de uma predição isolada -- as probabilidades são
+    Lê ``fighter_asof_features`` uma vez (um ``SELECT`` pelos ids do lote) e monta a matriz de
+    confronto do payload cacheado -- sem reconstruir a pipeline. As probabilidades são
     idênticas às de N chamadas individuais, porque as features de um lutador dependem só do
-    histórico dele. Pares com lutador sem histórico não são injetados: voltam com
-    ``prob_a_wins`` nulo e os ids em ``missing_history_ids``, sem impedir a predição dos demais.
+    histórico dele. Lutador **sem linha no cache** volta com ``prob_a_wins`` nulo e o id em
+    ``missing_history_ids``, sem impedir a predição dos demais.
 
-    Levanta ``ValueError`` se um ``fighter_id`` aparece em mais de um par (o ``shift(1)`` por
-    lutador exige uma única luta sintética por lutador no lote) e ``FileNotFoundError`` se não
-    há artefato treinado.
+    Cache **nunca materializado** deixa todo par indisponível, o que é indistinguível de "todo
+    mundo é estreante" só pela predição: quem separa as duas causas é o ``features_freshness``
+    da mesma resposta (``n_bouts_source = 0``, ``stale = true``).
+
+    Levanta ``ValueError`` se um ``fighter_id`` aparece em mais de um par (contrato do card,
+    espelhado em ``apps.predictions.services``) e ``FileNotFoundError`` se não há artefato
+    treinado.
     """
     loaded: LoadedModel = load_artifact(directory)
     _require_one_bout_per_fighter(pairs)
@@ -301,12 +360,9 @@ def predict_card(
     if not pairs:
         return CardPrediction(model_version=loaded.trained_at, n_features=n_features, matchups=[])
 
-    as_of = datetime.now(UTC).date()
-    long = build_long_frame(read_granular(session))
-    com_historico = _fighters_with_past_bouts(long, as_of)
+    cached = read_asof_features(session, [fighter_id for pair in pairs for fighter_id in pair])
     faltantes = [
-        tuple(fighter_id for fighter_id in pair if fighter_id not in com_historico)
-        for pair in pairs
+        tuple(fighter_id for fighter_id in pair if fighter_id not in cached) for pair in pairs
     ]
     # Só os pares elegíveis são injetados; o bout_id sentinela de cada um é a posição dele na
     # injeção, e é por ele (não pela ordem de saída do pivô) que a probabilidade é lida depois.
@@ -317,12 +373,10 @@ def predict_card(
 
     prob_por_bout: dict[int, float] = {}
     if elegiveis:
-        matchup_rows = _asof_matchup_rows(
-            session,
-            long,
+        matchup_rows = _cached_matchup_rows(
+            cached,
             [pairs[indice] for indice in elegiveis],
             [bout_id_por_par[indice] for indice in elegiveis],
-            as_of,
         )
         prob_por_bout = _prob_a_wins_by_bout(loaded, matchup_rows)
 

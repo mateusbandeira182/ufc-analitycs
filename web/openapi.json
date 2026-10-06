@@ -11,11 +11,11 @@
           "fighters"
         ],
         "summary": "List Fighters Endpoint",
-        "description": "Lista fighters paginados, com filtro opcional por nome.",
+        "description": "Lista fighters paginados, com busca opcional por nome ou apelido.",
         "operationId": "list_fighters_endpoint_api_v1_fighters_get",
         "parameters": [
           {
-            "name": "name",
+            "name": "q",
             "in": "query",
             "required": false,
             "schema": {
@@ -27,8 +27,10 @@
                   "type": "null"
                 }
               ],
-              "title": "Name"
-            }
+              "description": "Busca por nome ou apelido; o termo vale como texto literal.",
+              "title": "Q"
+            },
+            "description": "Busca por nome ou apelido; o termo vale como texto literal."
           },
           {
             "name": "limit",
@@ -174,7 +176,7 @@
           "fighters"
         ],
         "summary": "Get Fighter Stats Endpoint",
-        "description": "Estat\u00edsticas resumidas do lutador, computadas on demand; 404 quando n\u00e3o existe.",
+        "description": "Estat\u00edsticas resumidas do lutador, computadas on demand; 404 quando n\u00e3o existe.\n\nCarrega ``features_freshness`` (SPEC 011, RF-05/D-09): \u00e9 a resposta que alimenta a \"forma\natual\" da p\u00e1gina do lutador, uma das tr\u00eas que leem o cache as-of. O agregado em si **n\u00e3o**\ndepende do cache -- \u00e9 computado on demand do granular --, ent\u00e3o a resposta continua 200\nmesmo com o cache nunca materializado; nesse caso ``materialized_at`` volta nulo.",
         "operationId": "get_fighter_stats_endpoint_api_v1_fighters__fighter_id__stats_get",
         "parameters": [
           {
@@ -471,6 +473,55 @@
           }
         }
       }
+    },
+    "/api/v1/predict/event/{event_id}": {
+      "get": {
+        "tags": [
+          "predictions"
+        ],
+        "summary": "Predict Event Card Endpoint",
+        "description": "Palpite neutro de canto para todas as lutas do card de um evento.\n\nEvent inexistente -> 404; artefato de modelo ausente -> 503; evento sem lutas -> 200 com\n``bouts`` vazio. Uma luta imprediz\u00edvel (lutador sem hist\u00f3rico no granular, card mal\nformado) **n\u00e3o** derruba o card: volta com probabilidades nulas e ``unavailable_reason``\npreenchido, status 200 -- diferen\u00e7a deliberada em rela\u00e7\u00e3o ao matchup isolado, onde a mesma\nsitua\u00e7\u00e3o \u00e9 422 porque \u00e9 erro da pr\u00f3pria requisi\u00e7\u00e3o.\n\nCada luta predita \u00e9 registrada em ``bout_predictions`` com ``source=\"api\"``, idempotente\npor ``(bout_id, model_version)``. A idempot\u00eancia \u00e9 **observ\u00e1vel**: repetir o request n\u00e3o\nenvelhece o registro hist\u00f3rico, porque ``record_prediction`` preserva ``predicted_at`` e\n``source`` da primeira grava\u00e7\u00e3o. \u00c9 o que sustenta o verbo GET aqui apesar da escrita --\nrender repetido da tela n\u00e3o muda nada que algu\u00e9m possa ler depois.",
+        "operationId": "predict_event_card_endpoint_api_v1_predict_event__event_id__get",
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPredictionOut"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Event n\u00e3o encontrado"
+          },
+          "503": {
+            "description": "Modelo preditivo indispon\u00edvel: artefato treinado ausente"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -516,7 +567,14 @@
             "title": "Winner Id"
           },
           "method": {
-            "$ref": "#/components/schemas/BoutMethod"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoutMethod"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "round": {
             "anyOf": [
@@ -598,7 +656,14 @@
             "title": "Winner Id"
           },
           "method": {
-            "$ref": "#/components/schemas/BoutMethod"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoutMethod"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "round": {
             "anyOf": [
@@ -1342,6 +1407,90 @@
         "title": "BoutMethod",
         "description": "M\u00e9todo de encerramento da luta.\n\nEmpate \u00e9 representado por ``winner_id`` nulo com o ``method`` que o produziu\n(tipicamente ``DECISION``); no contest usa ``NO_CONTEST``. N\u00e3o h\u00e1 valor\n``DRAW`` -- o empate mora na nulabilidade do vencedor, n\u00e3o no m\u00e9todo."
       },
+      "CardBoutPredictionOut": {
+        "properties": {
+          "bout_id": {
+            "type": "integer",
+            "title": "Bout Id"
+          },
+          "fighter_red": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatchupFighterOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fighter_blue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatchupFighterOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prob_red_wins": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prob Red Wins"
+          },
+          "prob_blue_wins": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prob Blue Wins"
+          },
+          "predicted_winner_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Winner Id"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bout_id",
+          "fighter_red",
+          "fighter_blue",
+          "prob_red_wins",
+          "prob_blue_wins",
+          "predicted_winner_id",
+          "unavailable_reason"
+        ],
+        "title": "CardBoutPredictionOut",
+        "description": "Predi\u00e7\u00e3o neutra de canto de uma luta do card, ou o motivo da aus\u00eancia.\n\nQuando a luta n\u00e3o p\u00f4de ser predita, as probabilidades e o vencedor previsto s\u00e3o ``null`` e\n``unavailable_reason`` explica o porqu\u00ea -- a luta continua listada, para o consumidor ver o\ncard inteiro. Os cantos tamb\u00e9m s\u00e3o ``null`` quando a luta n\u00e3o tem os dois cadastrados."
+      },
       "Corner": {
         "type": "string",
         "enum": [
@@ -1443,6 +1592,79 @@
         "title": "EventOut",
         "description": "Representa\u00e7\u00e3o p\u00fablica de um event."
       },
+      "EventPredictionOut": {
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "title": "Event Id"
+          },
+          "model_version": {
+            "type": "string",
+            "title": "Model Version"
+          },
+          "n_features": {
+            "type": "integer",
+            "title": "N Features"
+          },
+          "bouts": {
+            "items": {
+              "$ref": "#/components/schemas/CardBoutPredictionOut"
+            },
+            "type": "array",
+            "title": "Bouts"
+          },
+          "features_freshness": {
+            "$ref": "#/components/schemas/FeaturesFreshnessOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_id",
+          "model_version",
+          "n_features",
+          "bouts",
+          "features_freshness"
+        ],
+        "title": "EventPredictionOut",
+        "description": "Predi\u00e7\u00e3o do card completo de um evento, com a identidade do modelo que a produziu.\n\n``model_version`` \u00e9 o ``trained_at`` do artefato treinado -- a mesma vers\u00e3o gravada em\n``bout_predictions``, o que liga a resposta ao registro persistido."
+      },
+      "FeaturesFreshnessOut": {
+        "properties": {
+          "materialized_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized At"
+          },
+          "n_bouts_source": {
+            "type": "integer",
+            "title": "N Bouts Source"
+          },
+          "n_bouts_current": {
+            "type": "integer",
+            "title": "N Bouts Current"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale"
+          }
+        },
+        "type": "object",
+        "required": [
+          "materialized_at",
+          "n_bouts_source",
+          "n_bouts_current",
+          "stale"
+        ],
+        "title": "FeaturesFreshnessOut",
+        "description": "Diagn\u00f3stico de defasagem do cache as-of: um ``COUNT``, n\u00e3o um recomputo (RF-05).\n\n``stale`` \u00e9 ``n_bouts_current != n_bouts_source`` -- lutas entraram no granular desde a\n\u00faltima materializa\u00e7\u00e3o. A interface exibe o aviso **na se\u00e7\u00e3o que l\u00ea o dado defasado**\n(RF-06/D-05); o componente compartilhado que o renderiza nasce na Sprint 06, com a\nprimeira consumidora real (D-10).\n\n**Emenda DP-05 ao texto da SPEC**: ``materialized_at`` \u00e9 ``datetime | None``, enquanto a\nSPEC aprovada o escreve n\u00e3o-nulo. Com o cache nunca materializado n\u00e3o existe valor, e um\ncampo obrigat\u00f3rio for\u00e7aria os tr\u00eas endpoints a falhar exatamente no estado que este\ndiagn\u00f3stico existe para reportar (``n_bouts_source = 0``, ``stale = true``)."
+      },
       "FighterBoutOut": {
         "properties": {
           "bout_id": {
@@ -1463,7 +1685,14 @@
             "title": "Event Date"
           },
           "method": {
-            "$ref": "#/components/schemas/BoutMethod"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoutMethod"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "round": {
             "anyOf": [
@@ -1616,6 +1845,28 @@
             ],
             "title": "Weight Kg"
           },
+          "headshot_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headshot Url"
+          },
+          "body_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Image Url"
+          },
           "wins": {
             "type": "integer",
             "title": "Wins"
@@ -1643,6 +1894,8 @@
           "reach_cm",
           "stance",
           "weight_kg",
+          "headshot_url",
+          "body_image_url",
           "wins",
           "losses",
           "draws",
@@ -1703,6 +1956,9 @@
           },
           "striking_profile": {
             "$ref": "#/components/schemas/StrikingProfileOut"
+          },
+          "features_freshness": {
+            "$ref": "#/components/schemas/FeaturesFreshnessOut"
           }
         },
         "type": "object",
@@ -1713,7 +1969,8 @@
           "avg_takedowns_landed",
           "avg_control_time_seconds",
           "wins_by_method",
-          "striking_profile"
+          "striking_profile",
+          "features_freshness"
         ],
         "title": "FighterStatsOut",
         "description": "Estat\u00edsticas resumidas do lutador, computadas on demand (Slice 06).\n\nN\u00e3o inclui ``source``: RF-09 se aplica a schemas de item; o agregado \u00e9\ncomputado e mistura origens (kaggle/cito), n\u00e3o \u00e9 um registro \u00fanico (decis\u00e3o\ndo plano 003-06). M\u00e9dias ``None`` quando n\u00e3o h\u00e1 valor a agregar.\n``striking_profile`` traz os shares de golpe por alvo/posi\u00e7\u00e3o, agregados on\ndemand a partir dos splits granulares do M5."
@@ -1796,6 +2053,9 @@
           "predicted_winner_id": {
             "type": "integer",
             "title": "Predicted Winner Id"
+          },
+          "features_freshness": {
+            "$ref": "#/components/schemas/FeaturesFreshnessOut"
           }
         },
         "type": "object",
@@ -1804,7 +2064,8 @@
           "fighter_b",
           "prob_a_wins",
           "prob_b_wins",
-          "predicted_winner_id"
+          "predicted_winner_id",
+          "features_freshness"
         ],
         "title": "MatchupPredictionOut",
         "description": "Palpite neutro de canto para um confronto hipot\u00e9tico A vs B.\n\n``prob_a_wins`` e ``prob_b_wins`` s\u00e3o complementares (somam 1) e j\u00e1 neutralizadas de\ncanto; ``predicted_winner_id`` \u00e9 o ``fighter_id`` de maior probabilidade neutra."

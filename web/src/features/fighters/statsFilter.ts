@@ -94,7 +94,9 @@ export function deriveFighterStats(
 
   const winsByMethod: Record<string, number> = {};
   for (const bout of selected) {
-    if (bout.won) {
+    // Luta sem método é luta sem desfecho: não é vitória por método nenhum.
+    // Sem a guarda, o `null` viraria a chave `"null"` no agregado.
+    if (bout.won && bout.method !== null) {
       winsByMethod[bout.method] = (winsByMethod[bout.method] ?? 0) + 1;
     }
   }

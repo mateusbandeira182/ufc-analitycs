@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 
 from apps.bouts.enums import BoutMethod
 from apps.bouts.schemas import BoutFighterStatsOut
+from apps.features.schemas import FeaturesFreshnessOut
 from apps.fighters.enums import Stance
 
 
@@ -58,7 +59,8 @@ class FighterBoutOut(BaseModel):
     event_id: int
     event_name: str
     event_date: date
-    method: BoutMethod
+    # Nulo na luta agendada: ela ainda não tem desfecho (M9, RF-07).
+    method: BoutMethod | None
     round: int | None
     ending_time_seconds: int | None
     won: bool  # ``winner_id == fighter_id`` consultado (empate/no contest -> False)
@@ -99,3 +101,6 @@ class FighterStatsOut(BaseModel):
     avg_control_time_seconds: float | None
     wins_by_method: dict[str, int]
     striking_profile: StrikingProfileOut
+    # Diagnóstico do cache as-of (SPEC 011, D-09): esta é a resposta que alimenta a "forma
+    # atual" da página do lutador, e por isso é uma das três que leem o cache.
+    features_freshness: FeaturesFreshnessOut

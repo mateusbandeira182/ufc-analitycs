@@ -51,7 +51,7 @@ export function FighterSelector({
 
   const term = useDebouncedValue(text.trim(), 250);
   // Autocomplete pede só as primeiras correspondências — página curta, sem offset.
-  const query = useFighters({ name: term, limit: 8, offset: 0 });
+  const query = useFighters({ q: term, limit: 8, offset: 0 });
   const options: FighterOut[] =
     term.length >= 1 ? (query.data?.items ?? []) : [];
   const showList = open && options.length > 0;

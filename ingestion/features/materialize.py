@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 # de qual pipeline veio. É reconstrutível a partir do granular a qualquer momento.
 SOURCE = "feature-engineering"
 
+# Comando que reconstrói ``bout_features`` (grão LUTA). Nomeado como constante desde a SPEC
+# 011: com dois estágios de materialização, a mensagem de defasagem precisa dizer qual dos
+# dois rodar, e ``"--stage materialize"`` é PREFIXO de ``"--stage materialize-asof"`` -- a
+# ambiguidade não acusa sozinha. Irmã de ``asof.MATERIALIZE_ASOF_COMMAND``.
+MATERIALIZE_COMMAND = "python -m ingestion.features build --stage materialize"
+
 # Alvo do matchup (``"R"``/``"B"``) -> enum ``Corner`` (``red``/``blue``) do banco.
 _TARGET_TO_CORNER: dict[str, Corner] = {"R": Corner.RED, "B": Corner.BLUE}
 
@@ -57,13 +63,17 @@ def _is_missing(value: object) -> bool:
     return isinstance(value, float) and math.isnan(value)
 
 
-def _to_json_value(value: object) -> FeatureValue:
+def to_json_value(value: object) -> FeatureValue:
     """Converte um valor de feature do DataFrame para tipo JSON nativo na borda.
 
     ``NaN``/``NA``/``None`` -> ``None`` (nulo explícito, sem sentinela); ``str`` preservado;
     ``float`` (inclui ``numpy.float64``) e ``int`` nativos preservados; inteiros numpy
     (``numpy.int64``, que não subclassa ``int``) convertidos para ``int``. Um tipo
     inesperado falha visível em vez de vazar objeto não serializável para o JSONB.
+
+    Pública desde a Slice 01 da SPEC 011: a conversão na borda JSON passou a ter dois
+    consumidores (o cache por luta daqui e o cache as-of de ``ingestion.features.asof``) e
+    precisa continuar num lugar só -- duas cópias divergiriam na primeira correção.
     """
     if _is_missing(value):
         return None
@@ -113,7 +123,7 @@ def materialize_features(session: Session, matrix: MatchupMatrix, source: str = 
     records: list[dict[str, object]] = []
     for row in frame.to_dict(orient="records"):
         features: FeaturePayload = {
-            column: _to_json_value(row[column]) for column in matrix.feature_columns
+            column: to_json_value(row[column]) for column in matrix.feature_columns
         }
         records.append(
             {

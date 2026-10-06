@@ -49,7 +49,7 @@ from urllib.parse import unquote
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import Corner
+from apps.bouts.enums import BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -78,6 +78,7 @@ from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
 from ingestion.cito.matching import is_ufc_catalog_item
 from ingestion.entity_resolution import AmbiguousFighterMatchError, match_fighter_id_by_age
 from ingestion.incremental import (
+    BoutCore,
     TableDelta,
     is_known_method_token,
     load_existing_fighters,
@@ -809,6 +810,45 @@ def _reject_unknown_methods(item: CitoCatalogItem, bouts: Sequence[CitoBout]) ->
         )
 
 
+def _complete_scheduled_bout(
+    session: Session,
+    bout_id: int,
+    red_fighter_id: int,
+    blue_fighter_id: int,
+    core: BoutCore,
+) -> bool:
+    """Grava o desfecho numa luta AGENDADA e a promove a ``completed``; diz se promoveu.
+
+    É a transição que faltava a partir do M9: a Slice 04 escreve a luta **antes** de ela
+    acontecer, e ``upsert_bout`` -- correto para o M1, onde toda luta persistida já tinha
+    desfecho -- devolve o id existente e sai. Sem este passo a luta ficaria congelada com
+    ``method`` nulo para sempre, invisível às features e ao histórico do lutador.
+
+    **No-op em luta já realizada**: o desfecho é do seed, e trocar a fonte da verdade do
+    resultado em silêncio corromperia o rótulo que o modelo treina -- mesma regra que
+    ``fill_bout_context`` aplica a ``method``/``winner_id``.
+
+    ``source`` da linha **não** muda: ``source`` é a origem da LINHA (quem a criou), não de
+    cada campo. A procedência do enriquecimento fica rastreável pelas tabelas que ele popula.
+    """
+    bout = session.get(Bout, bout_id)
+    if bout is None or bout.status is not BoutStatus.SCHEDULED:
+        return False
+
+    # Canto vencedor -> ``fighter_id`` (ausente em empate/no contest, e ``.get`` já devolve
+    # ``None`` nesse caso). Local de propósito: ``incremental`` e ``seed_bouts`` mantêm cada
+    # um a sua tradução privada, e promover uma delas a API pública é refatoração de módulo
+    # compartilhado do M1, fora do escopo desta slice.
+    por_canto: dict[Corner | None, int] = {Corner.RED: red_fighter_id, Corner.BLUE: blue_fighter_id}
+    bout.winner_id = por_canto.get(core["winner_corner"])
+    bout.method = core["method"]
+    bout.round = core["round"]
+    bout.ending_time_seconds = core["ending_time_seconds"]
+    bout.status = BoutStatus.COMPLETED
+    logger.info("Luta %d promovida de agendada a realizada com o desfecho da Cito", bout_id)
+    return True
+
+
 def ingest_gap_event(
     session: Session,
     item: CitoCatalogItem,
@@ -873,12 +913,18 @@ def ingest_gap_event(
             bout, corner_origin = assign_corners(bout, blocks_by_id[bout.bout_id], sort_keys)
             corner_origins[corner_origin] += 1
             red, blue = bout.corners
+            core = map_bout_core(bout)
             bout_db_id = upsert_bout(
                 session,
                 event.id,
                 fighter_ids[red.slug],
                 fighter_ids[blue.slug],
-                map_bout_core(bout),
+                core,
+            )
+            # Transição agendada -> realizada (M9, RF-07). Reusa o ``core`` e os ids já
+            # resolvidos acima; no-op em luta que já veio realizada.
+            _complete_scheduled_bout(
+                session, bout_db_id, fighter_ids[red.slug], fighter_ids[blue.slug], core
             )
             if bout_db_id in known_bout_ids:
                 bouts_reused += 1
