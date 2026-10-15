@@ -7,15 +7,25 @@ a busca por nome ou apelido, o detalhe com 404 e a natureza somente-leitura da A
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
+from apps.features.models import FeaturePayload, FighterAsOfFeatures
+from apps.features.selectors import CURRENT_FORM_FEATURES
 from apps.fighters.tests.factories import FighterFactory
+from ingestion.features.asof import build_asof_materialization, materialize_asof_features
 from mma_analytics.app import create_app
+from tests.analysis.test_predict import _seed_history as _seed_asof_history
+
+# ``as_of`` fixo da materialização nos testes de FORMA ATUAL: o histórico sintético de
+# ``tests.analysis.test_predict`` termina em 2019-2020, e fixar a data mantém o recorte
+# "luta anterior" determinístico, sem depender do relógio. Mesmo valor de
+# ``apps/features/tests/test_selectors.py``.
+_AS_OF = date(2026, 1, 1)
 
 _MUTATING_VERBS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -394,6 +404,10 @@ def test_fighter_stats_retorna_agregado_on_demand(client: TestClient, db_session
             "share_clinch": 0.125,
             "share_ground": 0.125,
         },
+        # Bloco as-of da seção FORMA ATUAL (SPEC 011, RF-15), nulo porque o cache nunca foi
+        # materializado -- ausência declarada, nunca treze zeros. A asserção é de **corpo
+        # inteiro** de propósito: campo novo no contrato quebra aqui, em vez de entrar calado.
+        "current_form": None,
         # Diagnóstico do cache as-of (SPEC 011, D-09). Aqui o cache nunca foi materializado:
         # o agregado não depende dele, então a resposta segue 200 e o campo reporta o estado.
         "features_freshness": {
@@ -547,3 +561,113 @@ def test_fighter_stats_traz_o_diagnostico_de_defasagem(
     assert body["features_freshness"]["n_bouts_source"] == 0
     assert body["features_freshness"]["n_bouts_current"] == 2
     assert body["features_freshness"]["stale"] is True
+
+
+def _materializar_asof(db_session: Session) -> dict[str, int]:
+    """Semeia o histórico sintético, materializa o cache as-of e devolve nome -> id.
+
+    Reusa a pipeline **real** (``ingestion.features.asof``) em vez de inserir linhas à mão:
+    é o que faz o teste de API provar que os treze nomes projetados existem no payload que a
+    produção grava, e não apenas num payload que o próprio teste inventou.
+
+    O nome vem aliasado no import porque este módulo já tem um ``_seed_history`` próprio, com
+    outro propósito (duas lutas para o teste de histórico, sem passar pela pipeline).
+    """
+    ids = _seed_asof_history(db_session)
+    materialize_asof_features(db_session, build_asof_materialization(db_session, _AS_OF))
+    return ids
+
+
+def test_fighter_stats_traz_current_form_ao_lado_do_diagnostico(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-01: ``/stats`` devolve ``current_form`` com os treze campos as-of (RF-15).
+
+    O bloco é **próprio** na resposta, nunca campos soltos misturados ao agregado de
+    carreira: CARREIRA e FORMA ATUAL respondem perguntas diferentes (tudo contra as três
+    últimas lutas), e misturá-las é o defeito que a RF-24 existe para evitar.
+    """
+    ids = _materializar_asof(db_session)
+
+    resposta = client.get(f"/api/v1/fighters/{ids['Fighter Alpha']}/stats")
+
+    assert resposta.status_code == 200
+    body = resposta.json()
+    assert set(body["current_form"]) == set(CURRENT_FORM_FEATURES)
+    # Lido da MESMA tabela que alimenta a predição -- os dois contam a mesma história.
+    assert body["features_freshness"]["materialized_at"] is not None
+    assert body["features_freshness"]["stale"] is False
+    # Os valores chegam como número, não como string do JSONB.
+    assert isinstance(body["current_form"]["career_minutes_before"], float)
+
+
+def test_fighter_stats_sem_linha_as_of_responde_200_com_current_form_nulo(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-02: lutador sem linha no cache responde **200** com ``current_form: null``.
+
+    Nunca 404 (o agregado de carreira não depende do cache) e nunca um vetor de zeros: o
+    estreante não tem forma recente a mostrar, e zero em golpe significativo seria uma
+    afirmação sobre ele. Aqui o cache está **em dia** -- a ausência é do lutador, não do
+    cache, e é por isso que o caso difere do CA-03.
+    """
+    _materializar_asof(db_session)
+    estreante_id = _seed(db_session, "Ilia Topuria")
+
+    resposta = client.get(f"/api/v1/fighters/{estreante_id}/stats")
+
+    assert resposta.status_code == 200
+    body = resposta.json()
+    assert body["current_form"] is None
+    assert body["features_freshness"]["materialized_at"] is not None
+
+
+def test_fighter_stats_com_cache_nunca_materializado(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-03: cache nunca materializado -- ``current_form`` nulo e o diagnóstico explica.
+
+    As duas ausências se distinguem na mesma resposta: ``current_form: null`` com
+    ``materialized_at: null`` e ``stale: true`` é "ninguém materializou o cache"; com
+    ``materialized_at`` preenchido seria "este lutador não tem histórico". Honra a emenda
+    DP-05 (``materialized_at`` nulável).
+    """
+    fighter_id = _seed_stats(db_session)
+
+    body = client.get(f"/api/v1/fighters/{fighter_id}/stats").json()
+
+    assert body["current_form"] is None
+    assert body["features_freshness"]["materialized_at"] is None
+    assert body["features_freshness"]["n_bouts_source"] == 0
+    assert body["features_freshness"]["stale"] is True
+
+
+def test_fighter_stats_feature_nula_chega_ao_json_como_null(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-04: valor nulo no payload sai ``null`` no JSON, jamais ``0``.
+
+    A asserção é ``is None`` de propósito: ``assert not body[...]`` passaria com ``0`` e
+    afirmaria exatamente o contrário do que este teste existe para provar. O zero gravado
+    convive no mesmo payload para que a distinção seja medida, não presumida.
+    """
+    fighter_id = _seed_stats(db_session)
+    payload: FeaturePayload = dict.fromkeys(CURRENT_FORM_FEATURES, 1.5)
+    payload["control_time_avg_r3"] = None
+    payload["submission_losses_prior"] = 0
+    db_session.add(
+        FighterAsOfFeatures(
+            fighter_id=fighter_id,
+            features=payload,
+            style_history=[],
+            n_bouts_source=2,
+            source="test",
+            materialized_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    body = client.get(f"/api/v1/fighters/{fighter_id}/stats").json()
+
+    assert body["current_form"]["control_time_avg_r3"] is None
+    assert body["current_form"]["submission_losses_prior"] == 0.0

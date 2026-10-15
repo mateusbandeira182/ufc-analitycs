@@ -4,7 +4,9 @@ import {
   finishSegments,
   formatAvgControlTime,
   formatAverage,
+  formatCount,
   formatShare,
+  formatTrend,
 } from "@/features/fighters/statsFormat";
 import { DASH } from "@/lib/format";
 
@@ -88,5 +90,46 @@ describe("finishSegments", () => {
 
   it("retorna lista vazia quando não há vitórias", () => {
     expect(finishSegments({})).toEqual([]);
+  });
+});
+
+describe("formatTrend", () => {
+  it("assina a tendência positiva para que se leia como comparação", () => {
+    expect(formatTrend(0.74)).toBe("+0,7");
+    expect(formatTrend(12)).toBe("+12,0");
+  });
+
+  it("mantém o sinal da tendência negativa", () => {
+    // Negativo não é erro nem "pior": em golpes absorvidos, é melhor. A tela
+    // não traduz o sinal em juízo (DP-10) — só o mostra.
+    expect(formatTrend(-0.32)).toBe("-0,3");
+  });
+
+  it("trata zero como medição legítima, não como ausência", () => {
+    // A janela de três lutas coincidindo com a carreira inteira dá zero exato:
+    // é uma afirmação sobre o lutador, e tem de aparecer como número.
+    expect(formatTrend(0)).toBe("0,0");
+    expect(formatTrend(-0)).toBe("0,0");
+  });
+
+  it("traduz ausência em traço, nunca em zero", () => {
+    expect(formatTrend(null)).toBe(DASH);
+  });
+});
+
+describe("formatCount", () => {
+  it("formata contagem como inteiro, sem casa decimal", () => {
+    // `ko_losses_prior` chega como float do payload JSONB: 1.0 é uma derrota,
+    // e "1,0 derrota" leria como média.
+    expect(formatCount(1)).toBe("1");
+    expect(formatCount(12)).toBe("12");
+  });
+
+  it("preserva o zero: ter histórico e nunca ter perdido assim é medição", () => {
+    expect(formatCount(0)).toBe("0");
+  });
+
+  it("traduz ausência em traço", () => {
+    expect(formatCount(null)).toBe(DASH);
   });
 });

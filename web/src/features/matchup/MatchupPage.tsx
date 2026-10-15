@@ -144,9 +144,23 @@ function ErrorPanel({ error }: { error: unknown }) {
  * Resultado do palpite: o vencedor previsto em destaque e as duas barras de
  * probabilidade complementares. A barra do vencedor é realçada. As probabilidades
  * são saneadas (nunca NaN/Infinity) antes de virar texto ou largura.
+ *
+ * Ausência de probabilidade é um **estado**, não um zero: `prob_a_wins` nulo quer
+ * dizer "o modelo não tem o que dizer", e `clampProbability(null)` renderizaria
+ * "0%" — uma afirmação sobre a luta que ninguém mediu. O 422 deixou de cobrir o
+ * estreante (D-04): quem decide agora é o corpo da resposta, não o status HTTP.
  */
 function PredictionCard({ prediction }: { prediction: MatchupPredictionOut }) {
   const { fighter_a, fighter_b, prob_a_wins, prob_b_wins } = prediction;
+
+  if (
+    prediction.unavailable_code !== null ||
+    prob_a_wins === null ||
+    prob_b_wins === null
+  ) {
+    return <UnavailablePrediction reason={prediction.unavailable_reason} />;
+  }
+
   const winnerIsA = prediction.predicted_winner_id === fighter_a.id;
   const winnerName = winnerIsA ? fighter_a.name : fighter_b.name;
 
@@ -179,6 +193,25 @@ function PredictionCard({ prediction }: { prediction: MatchupPredictionOut }) {
         />
       </dl>
     </div>
+  );
+}
+
+/**
+ * Palpite que o modelo não produziu, com o motivo em prosa que o backend mandou.
+ * A prosa vem pronta do `unavailable_reason` (traz os ids embutidos); a tela não
+ * a reescreve nem a parseia — o que ela decide é mostrado pelo
+ * `unavailable_code`. A tela rica de explicabilidade é da Slice 08.
+ */
+function UnavailablePrediction({ reason }: { reason: string | null }) {
+  return (
+    <StatusPanel
+      icon={<AlertTriangle className="size-6 text-primary" />}
+      title="Sem palpite para este confronto"
+      description={
+        reason ??
+        "O modelo não produziu uma probabilidade para este confronto. Tente outro par de atletas."
+      }
+    />
   );
 }
 

@@ -86,6 +86,7 @@ describe("HeadToHeadPage — comparação e confrontos", () => {
           fighter_a_id: Number(query.get("a")),
           fighter_b_id: Number(query.get("b")),
           bouts: [],
+          common_opponents: [],
         };
         return HttpResponse.json(body);
       }),

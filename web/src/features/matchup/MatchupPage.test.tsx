@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
+import type { MatchupPredictionOut } from "@/api/schema";
 import { MatchupPage } from "@/features/matchup/MatchupPage";
+import { FRESH_FEATURES } from "@/mocks/fighters";
 import { server } from "@/mocks/server";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
@@ -133,5 +135,49 @@ describe("MatchupPage — carregamento e erros", () => {
     expect(
       await screen.findByText(/não foi possível gerar o palpite/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("MatchupPage — previsão indisponível", () => {
+  it("mostra o motivo e não exibe 0% quando o estreante responde 200 sem probabilidade", async () => {
+    /*
+      Desde a Sprint 05 (D-04) o estreante não é mais 422: o endpoint responde 200
+      com as três probabilidades nulas e o motivo em `unavailable_reason` +
+      `unavailable_code`. A asserção negativa de "0%" é obrigatória —
+      `clampProbability` mapeia valor não finito para 0, então sem ela a tela
+      afirmaria uma medição que o modelo não fez.
+    */
+    server.use(
+      http.get("*/api/v1/predict/matchup", () => {
+        const body: MatchupPredictionOut = {
+          fighter_a: { id: 1, name: "Jon Jones" },
+          fighter_b: { id: 2, name: "Alexander Volkanovski" },
+          prob_a_wins: null,
+          prob_b_wins: null,
+          predicted_winner_id: null,
+          unavailable_reason:
+            "Sem histórico no acervo para o lutador 2 — o modelo não tem o que medir.",
+          unavailable_code: "missing_history",
+          blocks: [],
+          attributes: [],
+          features_freshness: FRESH_FEATURES,
+        };
+        return HttpResponse.json(body);
+      }),
+    );
+    const user = userEvent.setup();
+    renderMatchup();
+
+    await pickFighter(user, /lutador a/i, "jon", /jon jones/i);
+    await pickFighter(user, /lutador b/i, "volk", /alexander volkanovski/i);
+    await user.click(screen.getByRole("button", { name: /prever/i }));
+
+    expect(
+      await screen.findByText(/sem histórico no acervo/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: /vencedor previsto/i }),
+    ).not.toBeInTheDocument();
   });
 });

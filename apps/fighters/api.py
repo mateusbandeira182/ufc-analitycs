@@ -13,8 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from apps.bouts.api import bout_fighter_stats_out
-from apps.features.schemas import FeaturesFreshnessOut
-from apps.features.selectors import get_features_freshness
+from apps.features.schemas import CurrentFormOut, FeaturesFreshnessOut
+from apps.features.selectors import get_features_freshness, read_current_form
 from apps.fighters.schemas import (
     FighterBoutOut,
     FighterOpponentOut,
@@ -107,10 +107,17 @@ def get_fighter_stats_endpoint(
     atual" da página do lutador, uma das três que leem o cache as-of. O agregado em si **não**
     depende do cache -- é computado on demand do granular --, então a resposta continua 200
     mesmo com o cache nunca materializado; nesse caso ``materialized_at`` volta nulo.
+
+    ``current_form`` (Slice 06, RF-15) é o bloco as-of lido de ``fighter_asof_features`` -- a
+    mesma tabela que alimenta a predição. Vem **nulo**, com 200, quando o lutador não tem
+    linha no cache: ausência declarada, nunca um vetor de zeros, porque zero em golpe
+    significativo é uma afirmação sobre o lutador. Quem explica o motivo da ausência
+    (estreante ou cache nunca materializado) é o ``features_freshness`` da mesma resposta.
     """
     stats = get_fighter_stats(session, fighter_id)
     if stats is None:
         raise HTTPException(status_code=404, detail="Fighter não encontrado")
+    current_form = read_current_form(session, fighter_id)
     return FighterStatsOut(
         fighter_id=stats.fighter_id,
         bouts_counted=stats.bouts_counted,
@@ -125,6 +132,9 @@ def get_fighter_stats_endpoint(
             share_distance=stats.striking_profile.share_distance,
             share_clinch=stats.striking_profile.share_clinch,
             share_ground=stats.striking_profile.share_ground,
+        ),
+        current_form=(
+            CurrentFormOut.model_validate(current_form) if current_form is not None else None
         ),
         features_freshness=FeaturesFreshnessOut.model_validate(get_features_freshness(session)),
     )

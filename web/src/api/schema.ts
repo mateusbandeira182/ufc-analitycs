@@ -28,3 +28,5 @@ export type MatchupPredictionOut =
 export type MatchupFighterOut = components["schemas"]["MatchupFighterOut"];
 export type FeaturesFreshnessOut =
   components["schemas"]["FeaturesFreshnessOut"];
+export type UnavailableCode = components["schemas"]["UnavailableCode"];
+export type CurrentFormOut = components["schemas"]["CurrentFormOut"];

@@ -143,13 +143,18 @@ export const handlers = [
       fighter_a_id: a,
       fighter_b_id: b,
       bouts: headToHeadBouts(a, b),
+      // Seção de adversários em comum (RF-16): vazia por padrão; os testes que a
+      // exercitam sobrescrevem o handler com o próprio corpo.
+      common_opponents: [],
     };
     return HttpResponse.json(body);
   }),
 
   /*
     Palpite neutro de canto do modelo preditivo, espelhando as regras do router:
-    fighter_a == fighter_b -> 422; lutador inexistente -> 404. No caminho feliz a
+    fighter_a == fighter_b -> 422; lutador inexistente -> 404. Estreante NÃO é mais
+    422 (D-04): responde 200 com probabilidades nulas e `unavailable_code`, e quem
+    exercita esse caminho sobrescreve o handler. No caminho feliz a
     probabilidade é derivada de forma determinística das vitórias das fixtures
     (proporção de cartel), para as asserções dos testes; as duas somam 1 e o
     vencedor previsto é o de maior probabilidade.
@@ -179,6 +184,13 @@ export const handlers = [
       prob_a_wins: probA,
       prob_b_wins: 1 - probA,
       predicted_winner_id: probA >= 0.5 ? fighterA.id : fighterB.id,
+      // Caminho feliz: nada indisponível. A explicabilidade (blocos de ablação e
+      // atributos as-of dos dois lados) é a tela da Slice 08 — aqui as listas
+      // ficam vazias, que é o que o contrato chama de "não foi produzido".
+      unavailable_reason: null,
+      unavailable_code: null,
+      blocks: [],
+      attributes: [],
       features_freshness: FRESH_FEATURES,
     };
     return HttpResponse.json(body);

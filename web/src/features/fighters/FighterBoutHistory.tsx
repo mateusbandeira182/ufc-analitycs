@@ -15,8 +15,14 @@ interface FighterBoutHistoryProps {
 }
 
 /**
- * Histórico de lutas do lutador. Consome o server-state via `useFighterBouts` e
- * renderiza as lutas na ordem cronológica recebida do backend (sem reordenar).
+ * Histórico de lutas do lutador, em tabela. Consome o server-state via
+ * `useFighterBouts` e renderiza as lutas na ordem cronológica recebida do
+ * backend (sem reordenar).
+ *
+ * Tabela e não lista porque cada linha tem **três** destinos — a luta, o
+ * adversário e o evento — e o leitor precisa saber qual é qual. Numa lista, os
+ * três links disputavam a mesma linha de texto, e era por isso que o nome do
+ * evento levava à luta e não existia caminho nenhum para o evento.
  */
 export function FighterBoutHistory({ fighterId }: FighterBoutHistoryProps) {
   const { data, isPending, isError } = useFighterBouts(fighterId);
@@ -52,68 +58,98 @@ export function FighterBoutHistory({ fighterId }: FighterBoutHistoryProps) {
   }
 
   return (
-    <ul aria-label="Histórico de lutas" className="grid gap-2">
-      {data.map((bout) => (
-        <li key={bout.bout_id}>
-          <BoutRow bout={bout} />
-        </li>
-      ))}
-    </ul>
+    <div className="overflow-x-auto rounded-lg border border-border bg-card">
+      <table
+        aria-label="Histórico de lutas"
+        className="w-full border-collapse text-left text-sm"
+      >
+        <thead>
+          <tr className="border-b border-border">
+            <ColumnHeader>Data</ColumnHeader>
+            <ColumnHeader>Evento</ColumnHeader>
+            <ColumnHeader>Adversário</ColumnHeader>
+            <ColumnHeader>Resultado</ColumnHeader>
+            <ColumnHeader>Método</ColumnHeader>
+            <ColumnHeader>
+              <span className="sr-only">Luta</span>
+            </ColumnHeader>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((bout) => (
+            <BoutRow key={bout.bout_id} bout={bout} />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
+function ColumnHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <th
+      scope="col"
+      className="px-4 py-3 text-[0.65rem] font-medium uppercase tracking-widest text-muted-foreground"
+    >
+      {children}
+    </th>
+  );
+}
+
+const LINK_CLASS =
+  "rounded-sm hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 function BoutRow({ bout }: { bout: FighterBoutOut }) {
   const result = formatResult(bout);
-  const won = bout.won;
 
   return (
-    <div className="relative flex items-center gap-4 overflow-hidden rounded-lg border border-border bg-card p-4 pl-5">
-      {/* Vitória ganha o ouro do cinturão; derrota e sem-resultado ficam neutros. */}
-      <span
-        aria-hidden="true"
-        className={
-          won
-            ? "absolute inset-y-0 left-0 w-1 bg-belt-gold"
-            : "absolute inset-y-0 left-0 w-1 bg-border"
-        }
-      />
-      <div className="min-w-0 flex-1">
-        {/* A rota /bouts/:id é destino da Slice 04; o link já é válido aqui. */}
-        <Link
-          to={`/bouts/${String(bout.bout_id)}`}
-          className="truncate font-display text-base font-semibold uppercase tracking-wide hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
+    <tr className="border-b border-border/60 last:border-b-0">
+      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs tabular-nums text-muted-foreground">
+        {formatIsoDate(bout.event_date)}
+      </td>
+      <td className="px-4 py-3 font-display font-semibold uppercase tracking-wide">
+        <Link to={`/events/${String(bout.event_id)}`} className={LINK_CLASS}>
           {bout.event_name}
         </Link>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          {formatIsoDate(bout.event_date)} · vs{" "}
-          {bout.opponent ? (
-            <Link
-              to={`/fighters/${String(bout.opponent.fighter_id)}`}
-              className="text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {bout.opponent.name}
-            </Link>
-          ) : (
-            <span>Adversário desconhecido</span>
-          )}
-        </p>
-      </div>
-      <div className="shrink-0 text-right">
-        <span
-          className={
-            won
-              ? "font-display text-sm font-bold uppercase tracking-wide text-belt-gold"
-              : "font-display text-sm font-bold uppercase tracking-wide text-muted-foreground"
-          }
+      </td>
+      <td className="px-4 py-3">
+        {bout.opponent ? (
+          <Link
+            to={`/fighters/${String(bout.opponent.fighter_id)}`}
+            className={LINK_CLASS}
+          >
+            {bout.opponent.name}
+          </Link>
+        ) : (
+          <span className="text-muted-foreground">Adversário desconhecido</span>
+        )}
+      </td>
+      <td
+        className={
+          // Vitória ganha o ouro do cinturão; a palavra carrega a informação, a
+          // cor só a reforça.
+          bout.won
+            ? "whitespace-nowrap px-4 py-3 font-display font-bold uppercase tracking-wide text-belt-gold"
+            : "whitespace-nowrap px-4 py-3 font-display font-bold uppercase tracking-wide text-muted-foreground"
+        }
+      >
+        {result}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
+        {/* `method` nulo é luta sem desfecho: o backend já filtra as agendadas
+            (Slice 02), então esta guarda é defesa em profundidade — sem ela, uma
+            regressão no filtro exibiria "Derrota" numa luta que não aconteceu. */}
+        {formatMethod(bout.method)} ·{" "}
+        {formatEndingTime(bout.round, bout.ending_time_seconds)}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-right">
+        <Link
+          to={`/bouts/${String(bout.bout_id)}`}
+          className={`text-xs uppercase tracking-widest text-muted-foreground ${LINK_CLASS}`}
         >
-          {result}
-        </span>
-        <span className="block text-[0.65rem] uppercase tracking-widest text-muted-foreground">
-          {formatMethod(bout.method)} ·{" "}
-          {formatEndingTime(bout.round, bout.ending_time_seconds)}
-        </span>
-      </div>
-    </div>
+          Ver luta
+        </Link>
+      </td>
+    </tr>
   );
 }
