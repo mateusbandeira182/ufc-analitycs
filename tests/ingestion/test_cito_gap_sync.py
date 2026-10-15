@@ -47,7 +47,7 @@ from ingestion.cito.gap_sync import (
     corner_sort_keys,
     ingest_gap_event,
     main,
-    map_stats_to_bouts,
+    map_bout_blocks,
     resolve_gap_fighters,
     run_gap_sync,
     select_gap_events,
@@ -268,14 +268,14 @@ def _real_stats() -> CitoEventStats:
     return _fixture_client().fetch_event_stats(_PAYLOAD_REAL)
 
 
-def test_map_stats_to_bouts_orders_corners_deterministically_by_slug() -> None:
+def test_map_bout_blocks_orders_corners_deterministically_by_slug() -> None:
     """O par sai em ordem estável por slug, **ignorando** o rótulo ``corner`` do payload.
 
     A ordenação aqui é só posicionamento até os ``fighter_id`` existirem -- o canto de verdade
     é atribuído por ``assign_deterministic_corners``. Usar o rótulo da Cito seria trazer o
     desfecho disfarçado de canto (ver a trava de vazamento mais abaixo).
     """
-    bouts = map_stats_to_bouts(_real_stats())
+    bouts = map_bout_blocks(_real_stats().bouts)
 
     principal = bouts[0]
     assert principal.bout_id == "fb77b08a90b92d5b"
@@ -285,7 +285,7 @@ def test_map_stats_to_bouts_orders_corners_deterministically_by_slug() -> None:
 
 def test_assign_deterministic_corners_puts_the_smallest_normalized_name_in_red() -> None:
     """A atribuição é uma função pura da chave de ordenação -- e não toca o vencedor."""
-    (principal,) = map_stats_to_bouts(_real_stats())[:1]
+    (principal,) = map_bout_blocks(_real_stats().bouts)[:1]
     invertido = assign_deterministic_corners(
         principal, {"anthony-hernandez": ("zz", 1), "gregory-rodrigues": ("aa", 2)}
     )
@@ -316,9 +316,9 @@ def test_corner_sort_keys_uses_the_normalized_name_with_the_id_as_tiebreak() -> 
     assert chaves["aaron-pico"] < chaves["bruno-silva"]  # o id maior não decide
 
 
-def test_map_stats_to_bouts_maps_result_fields() -> None:
+def test_map_bout_blocks_maps_result_fields() -> None:
     """Método, round, tempo, categoria e vencedor vêm do card, prontos para ``map_bout_core``."""
-    principal = map_stats_to_bouts(_real_stats())[0]
+    principal = map_bout_blocks(_real_stats().bouts)[0]
 
     assert principal.method == "Decision - Unanimous"
     assert principal.finish_round == 5
@@ -327,7 +327,7 @@ def test_map_stats_to_bouts_maps_result_fields() -> None:
     assert principal.winner_slug == "gregory-rodrigues"
 
 
-def test_map_stats_to_bouts_keeps_absent_result_as_none() -> None:
+def test_map_bout_blocks_keeps_absent_result_as_none() -> None:
     """Campo ausente no card degrada para ``None`` -- nunca zero nem sentinela."""
     bloco = CitoBoutBlock.model_validate(
         {
@@ -340,7 +340,7 @@ def test_map_stats_to_bouts_keeps_absent_result_as_none() -> None:
     )
     stats = _stats_com_bouts([bloco])
 
-    (bout,) = map_stats_to_bouts(stats)
+    (bout,) = map_bout_blocks(stats.bouts)
 
     assert bout.method is None
     assert bout.finish_round is None
@@ -349,7 +349,7 @@ def test_map_stats_to_bouts_keeps_absent_result_as_none() -> None:
     assert bout.winner_slug is None
 
 
-def test_map_stats_to_bouts_skips_cancelled_and_incomplete_cards() -> None:
+def test_map_bout_blocks_skips_cancelled_and_incomplete_cards() -> None:
     """Luta cancelada ou sem os dois cantos é descartada -- nunca se inventa um adversário."""
     cancelada = CitoBoutBlock.model_validate(
         {
@@ -365,7 +365,7 @@ def test_map_stats_to_bouts_skips_cancelled_and_incomplete_cards() -> None:
         {"id": "sozinha", "fighters": [{"fighterSlug": "a-fighter", "corner": "red"}]}
     )
 
-    assert map_stats_to_bouts(_stats_com_bouts([cancelada, sem_adversario])) == []
+    assert map_bout_blocks(_stats_com_bouts([cancelada, sem_adversario]).bouts) == []
 
 
 def test_corner_profile_to_fighter_reads_identity_and_record_from_payload() -> None:
@@ -999,7 +999,7 @@ def test_map_bout_core_understands_both_method_spellings(token: str, esperado: B
     'SUB', 'CNC'). Sem os curtos, uma decisão unânime viraria ``NO_CONTEST`` -- o rótulo que o
     modelo treina, gravado errado e em silêncio.
     """
-    (bout,) = map_stats_to_bouts(_stats_com_bouts([_bloco_com_metodo(token)]))
+    (bout,) = map_bout_blocks(_stats_com_bouts([_bloco_com_metodo(token)]).bouts)
 
     assert map_bout_core(bout)["method"] is esperado
 
@@ -1356,7 +1356,7 @@ _CHAVES_ALFA_ZETA = {"alfa-fighter": ("alfa fighter", 1), "zeta-fighter": ("zeta
 def _atribui(alfa: str | None, zeta: str | None) -> tuple[CitoBout, CornerOrigin]:
     """Roda ``assign_corners`` sobre a luta sintética com as artes informadas."""
     bloco = _bloco_com_arte(alfa, zeta)
-    (bout,) = map_stats_to_bouts(_stats_com_bouts([bloco]))
+    (bout,) = map_bout_blocks(_stats_com_bouts([bloco]).bouts)
     return assign_corners(bout, bloco, _CHAVES_ALFA_ZETA)
 
 

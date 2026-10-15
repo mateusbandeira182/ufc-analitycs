@@ -279,16 +279,23 @@ def _corners_by_side(bout: CitoBoutBlock) -> tuple[CitoBoutFighterRef, CitoBoutF
     return primeiro, segundo
 
 
-def map_stats_to_bouts(stats: CitoEventStats) -> list[CitoBout]:
-    """Traduz o bloco ``bouts`` do payload de stats nos ``CitoBout`` do M1 (função pura).
+def map_bout_blocks(blocks: Sequence[CitoBoutBlock]) -> list[CitoBout]:
+    """Traduz blocos ``bouts`` do payload nos ``CitoBout`` do M1 (função pura).
 
     ``corners[0]`` é o vermelho e ``corners[1]`` o azul -- a convenção do DTO do M1, que
     ``map_bout_core`` e ``upsert_bout`` assumem. Campo de resultado ausente permanece ``None``
     (``map_bout_core`` degrada método nulo para ``NO_CONTEST``); luta cancelada ou sem os dois
     cantos é descartada com aviso, nunca completada por chute.
+
+    O parâmetro é a **sequência de blocos**, não o ``CitoEventStats`` inteiro, porque o card do
+    catálogo com ``includeBouts`` tem exactamente a mesma forma (``CitoCatalogItem.bouts``
+    reusa ``CitoBoutBlock``, medido em 2026-09-01) -- e porque a regra "luta sem exatamente dois
+    cantos distintos é descartada" é **metade da RF-32**. Copiá-la para
+    ``ingestion.cito.sync_scheduled`` criaria duas implementações da mesma invariante em módulos
+    diferentes, que é a duplicação que mais machuca aqui.
     """
     bouts: list[CitoBout] = []
-    for bout in stats.bouts:
+    for bout in blocks:
         if bout.is_cancelled:
             logger.info("Luta %r cancelada no card; descartada da ingestão.", bout.id)
             continue
@@ -516,7 +523,7 @@ def map_stats_to_event(stats: CitoEventStats) -> CitoEvent:
         event_id=stats.event.id,
         name=stats.event.title,
         date=stats.event.event_date,
-        bouts=map_stats_to_bouts(stats),
+        bouts=map_bout_blocks(stats.bouts),
     )
 
 
@@ -556,17 +563,22 @@ def corner_profile_to_fighter(fighter: CitoBoutFighterRef) -> CitoFighter:
 
 
 def corner_fighters_by_slug(
-    bouts: Sequence[CitoBout], stats: CitoEventStats
+    bouts: Sequence[CitoBout], blocks: Sequence[CitoBoutBlock]
 ) -> dict[str, CitoFighter]:
     """Mapa ``slug -> CitoFighter`` de todos os cantos do card (um por lutador, sem repetir).
 
-    Percorre o bloco ``bouts`` do payload -- a única fonte do ``profile`` embutido -- e restringe
-    aos slugs das lutas que ``map_stats_to_bouts`` manteve: um canto de luta cancelada não vira
-    lutador novo. Primeira ocorrência vence (o mesmo lutador só aparece uma vez por card).
+    Percorre os blocos ``bouts`` do payload -- a única fonte do ``profile`` embutido -- e
+    restringe aos slugs das lutas que ``map_bout_blocks`` manteve: um canto de luta cancelada
+    não vira lutador novo. Primeira ocorrência vence (o mesmo lutador só aparece uma vez por
+    card).
+
+    O parâmetro é a sequência de blocos pelo mesmo motivo de ``map_bout_blocks``: o card do
+    catálogo com ``includeBouts`` tem a mesma forma, e é o ``profile`` embutido que permite
+    criar um lutador novo com **zero** chamadas de perfil.
     """
     wanted = {corner.slug for bout in bouts for corner in bout.corners}
     fighters: dict[str, CitoFighter] = {}
-    for bout in stats.bouts:
+    for bout in blocks:
         for fighter in bout.fighters:
             if fighter.fighter_slug in wanted and fighter.fighter_slug not in fighters:
                 fighters[fighter.fighter_slug] = corner_profile_to_fighter(fighter)
@@ -886,7 +898,7 @@ def ingest_gap_event(
         event = _persisted_event(session, cito_event)
         _stamp_cito_identifiers(event, item)
 
-        fighters_by_slug = corner_fighters_by_slug(cito_event.bouts, stats)
+        fighters_by_slug = corner_fighters_by_slug(cito_event.bouts, stats.bouts)
         try:
             fighter_ids, profile_calls = resolve_gap_fighters(
                 session, fighters_by_slug, client, today=today

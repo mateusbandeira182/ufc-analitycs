@@ -276,7 +276,13 @@ _NON_UFC_MARKERS = ("dwcs", "dana white", "contender series", "road to ufc")
 # as fontes quanto o caso em que o catálogo não expõe ``eventDate`` e a data cai para a UTC
 # (card noturno nos EUA vira o dia seguinte; fusos a leste deslocam no sentido oposto).
 # NÃO é heurística de slug: a data é dado das duas pontas.
-_EVENT_DATE_TOLERANCE = timedelta(days=1)
+#
+# Público desde o M9 (SPEC 011, Slice 04): ``ingestion.cito.sync_scheduled`` casa no **sentido
+# inverso** (o catálogo é a âncora, a base é o destino) e precisa da MESMA janela -- duas
+# constantes de um dia em módulos diferentes divergiriam em silêncio na primeira vez que uma
+# delas mudasse. Promovido como está, sem generalização, igual ao que aconteceu com
+# ``enforce_human_gate`` (Slice 03 do M6) e ``load_existing_fighters`` (Slice 06).
+EVENT_DATE_TOLERANCE = timedelta(days=1)
 
 
 class EventMatchError(Exception):
@@ -330,7 +336,7 @@ def resolve_event_match(event: Event, catalog: Sequence[CitoCatalogItem]) -> Eve
     item de catálogo (RF-04).
     """
     candidates = [
-        item for item in catalog if abs(item.local_date - event.date) <= _EVENT_DATE_TOLERANCE
+        item for item in catalog if abs(item.local_date - event.date) <= EVENT_DATE_TOLERANCE
     ]
     if not candidates:
         return None
