@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { BoutDetail } from "@/features/bouts/BoutDetail";
 import { EventPage } from "@/features/events/EventPage";
 import { server } from "@/mocks/server";
+import { contarColunas, gradeDeCantos } from "@/test/gridColumns";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
 function renderBoutPage(id: number | string) {
@@ -16,6 +17,23 @@ function renderBoutPage(id: number | string) {
 }
 
 describe("BoutDetail", () => {
+  /**
+   * Mesma invariante da Home e do card de evento. Aqui o divisor é o "vs" dentro
+   * do ternário do `.map()`, então a contagem de filhos depende de um
+   * condicional — e não de um número fixo. É a tela mais frágil das três.
+   */
+  it("declara tantas colunas quantos filhos na grade do confronto marcado", async () => {
+    renderBoutPage(90);
+
+    const marcado = await screen.findByRole("region", {
+      name: /confronto marcado/i,
+    });
+    const grade = gradeDeCantos(marcado);
+
+    expect(grade).not.toBeNull();
+    expect(contarColunas(grade!.className)).toBe(grade!.children.length);
+  });
+
   it("mostra o skeleton enquanto a luta carrega", () => {
     server.use(
       http.get("*/api/v1/bouts/:id", async () => {

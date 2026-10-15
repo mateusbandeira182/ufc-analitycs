@@ -14,6 +14,7 @@ import {
 } from "@/mocks/eventPrediction";
 import { EVENT_DETAIL_FIXTURES, eventDetailSemCantoAzul } from "@/mocks/events";
 import { server } from "@/mocks/server";
+import { contarColunas, gradeDeCantos } from "@/test/gridColumns";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
 function renderEventPage(id: number | string) {
@@ -33,6 +34,23 @@ function serveDetail(id: number) {
 }
 
 describe("EventPage — cabeçalho e navegação", () => {
+  /**
+   * A mesma invariante que a Home passou a guardar, aqui onde ela é **mais**
+   * frágil: o `EventBoutCard` fecha a contagem por um ternário dentro do `.map()`
+   * (`index > 0 ? <VersusDivider /> : null`), não por um número estático. Quem
+   * remover ou condicionar diferente aquele ternário põe um canto na coluna
+   * `auto` — e o jsdom não computa layout, então nada mais falharia.
+   */
+  it("declara tantas colunas quantos filhos na grade do card de luta", async () => {
+    renderEventPage(801);
+
+    const [primeira] = await screen.findAllByRole("listitem");
+    const grade = gradeDeCantos(primeira!);
+
+    expect(grade).not.toBeNull();
+    expect(contarColunas(grade!.className)).toBe(grade!.children.length);
+  });
+
   it("mostra o skeleton enquanto o evento carrega", () => {
     server.use(
       http.get("*/api/v1/events/:id", async () => {

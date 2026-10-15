@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { server } from "@/mocks/server";
 import { HomePage } from "@/routes/HomePage";
+import { contarColunas, gradeDeCantos } from "@/test/gridColumns";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
 function renderHome() {
@@ -33,16 +34,6 @@ function renderHomeInLayout() {
     ],
     initialEntries: ["/"],
   });
-}
-
-/** Colunas de um template Tailwind: `grid-cols-2` ou `grid-cols-[1fr_auto_1fr]`. */
-function contarColunas(className: string): number {
-  const template = /grid-cols-\[([^\]]+)\]/.exec(className)?.[1];
-  if (template !== undefined) {
-    return template.split("_").length;
-  }
-  const quantas = /grid-cols-(\d+)/.exec(className)?.[1];
-  return quantas === undefined ? 0 : Number(quantas);
 }
 
 describe("HomePage — card do último evento", () => {
@@ -92,7 +83,7 @@ describe("HomePage — card do último evento", () => {
     const principal = await screen.findByRole("region", {
       name: /luta principal/i,
     });
-    const grade = principal.querySelector<HTMLElement>("[class*='grid-cols-']");
+    const grade = gradeDeCantos(principal);
 
     expect(grade).not.toBeNull();
     expect(contarColunas(grade!.className)).toBe(grade!.children.length);
