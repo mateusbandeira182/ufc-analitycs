@@ -104,9 +104,41 @@ export interface paths {
         };
         /**
          * List Events Endpoint
-         * @description Lista events paginados, mais recentes primeiro.
+         * @description Lista events paginados; sem ``when``, mais recentes primeiro.
+         *
+         *     ``when=past|upcoming`` particiona o acervo (a partição deriva do ``status`` da luta,
+         *     nunca da data sozinha) e o ``total`` passa a refletir o conjunto filtrado. O tipo é
+         *     ``Literal``, não ``str``: sem ele o FastAPI **ignoraria** um valor inválido como
+         *     ``when=futuro`` e devolveria o acervo inteiro com 200 -- um defeito que se parece com
+         *     sucesso. Com o ``Literal``, a resposta é 422.
          */
         get: operations["list_events_endpoint_api_v1_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Latest Event Endpoint
+         * @description Detalha o último event **realizado**; 404 quando o acervo não tem nenhum.
+         *
+         *     Declarada **antes** de ``/{event_id}`` de propósito: na ordem inversa o FastAPI casaria
+         *     ``event_id="latest"`` e devolveria 422.
+         *
+         *     404 (e não 200 com corpo nulo) porque um corpo nulo tornaria o tipo anulável em todo
+         *     consumidor do contrato por causa de um estado de acervo vazio.
+         */
+        get: operations["get_latest_event_endpoint_api_v1_events_latest_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -124,7 +156,7 @@ export interface paths {
         };
         /**
          * Get Event Endpoint
-         * @description Detalha um event pelo id com o card de bouts; 404 quando não existe.
+         * @description Detalha um event pelo id com o card, a contagem por método e os destaques; 404 se não.
          */
         get: operations["get_event_endpoint_api_v1_events__event_id__get"];
         put?: never;
@@ -253,11 +285,11 @@ export interface components {
     schemas: {
         /**
          * BoutCardFighterOut
-         * @description Um participante da luta no card do event: identidade e canto.
+         * @description Um participante da luta no card do event: identidade, canto e retrato.
          *
-         *     Só identidade (id, nome, canto) -- o box-score granular vive no detalhe da
-         *     luta. A SPA cruza ``fighter_id`` com ``BoutCardOut.winner_id`` para destacar o
-         *     vencedor.
+         *     Só identidade (id, nome, canto, retrato) -- o box-score granular vive no
+         *     detalhe da luta. A SPA cruza ``fighter_id`` com ``BoutCardOut.winner_id`` para
+         *     destacar o vencedor.
          */
         BoutCardFighterOut: {
             /** Fighter Id */
@@ -265,6 +297,8 @@ export interface components {
             /** Name */
             name: string;
             corner: components["schemas"]["Corner"];
+            /** Headshot Url */
+            headshot_url: string | null;
         };
         /**
          * BoutCardOut
@@ -284,6 +318,11 @@ export interface components {
             weight_class: string | null;
             /** Source */
             source: string;
+            status: components["schemas"]["BoutStatus"];
+            /** Card Section */
+            card_section: string | null;
+            /** Bout Order */
+            bout_order: number | null;
             /** Fighters */
             fighters: components["schemas"]["BoutCardFighterOut"][];
         };
@@ -456,6 +495,19 @@ export interface components {
             source: string;
         };
         /**
+         * BoutHighlightOut
+         * @description Destaque de volume (golpes significativos conectados ou quedas) por lutador-por-luta.
+         *
+         *     ``value: 0`` é medição, não ausência: ausência de base faz o destaque inteiro ser nulo.
+         */
+        BoutHighlightOut: {
+            /** Bout Id */
+            bout_id: number;
+            fighter: components["schemas"]["MatchupFighterOut"];
+            /** Value */
+            value: number;
+        };
+        /**
          * BoutMethod
          * @description Método de encerramento da luta.
          *
@@ -465,6 +517,17 @@ export interface components {
          * @enum {string}
          */
         BoutMethod: "ko_tko" | "submission" | "decision" | "dq" | "no_contest";
+        /**
+         * BoutStatus
+         * @description A luta já aconteceu, ou está apenas agendada?
+         *
+         *     Existe porque ``bouts`` passou a comportar luta **sem** resultado (card por vir, M9):
+         *     sem esta coluna, a pipeline de features e o histórico do lutador tratariam uma luta que
+         *     ainda não ocorreu como se fosse passado. ``COMPLETED`` é o default do model -- é ele que
+         *     preserva a semântica de toda escrita que existia antes da coluna.
+         * @enum {string}
+         */
+        BoutStatus: "completed" | "scheduled";
         /**
          * CardBoutPredictionOut
          * @description Predição neutra de canto de uma luta do card, ou o motivo da ausência.
@@ -589,7 +652,7 @@ export interface components {
         };
         /**
          * EventDetailOut
-         * @description Detalhe do event com os bouts do card.
+         * @description Detalhe do event com o card, a contagem por método e os destaques calculados.
          */
         EventDetailOut: {
             /** Id */
@@ -607,6 +670,18 @@ export interface components {
             source: string;
             /** Bouts */
             bouts: components["schemas"]["BoutCardOut"][];
+            summary: components["schemas"]["EventSummaryOut"] | null;
+            highlights: components["schemas"]["EventHighlightsOut"] | null;
+        };
+        /**
+         * EventHighlightsOut
+         * @description Os quatro destaques **calculados** do granular; cada um nulo quando não há base.
+         */
+        EventHighlightsOut: {
+            fastest_finish: components["schemas"]["FinishHighlightOut"] | null;
+            most_sig_strikes: components["schemas"]["BoutHighlightOut"] | null;
+            most_takedowns: components["schemas"]["BoutHighlightOut"] | null;
+            biggest_upset: components["schemas"]["UpsetHighlightOut"] | null;
         };
         /**
          * EventOut
@@ -644,6 +719,34 @@ export interface components {
             /** Bouts */
             bouts: components["schemas"]["CardBoutPredictionOut"][];
             features_freshness: components["schemas"]["FeaturesFreshnessOut"];
+        };
+        /**
+         * EventSummaryOut
+         * @description Contagem por método das lutas **realizadas** do card; ``n_bouts`` é o denominador.
+         *
+         *     A interface mostra ``n_bouts`` junto da contagem para que um card misto nunca se leia
+         *     como o card inteiro.
+         *
+         *     Os seis baldes somam ``n_bouts``. O balde ``dq`` é obrigatório: ``BoutMethod`` tem cinco
+         *     membros, e sem ele as lutas por desqualificação sairiam do resumo com a soma ficando
+         *     menor que o total **sem erro nenhum**. ``draws`` não vem de ``method`` -- ``BoutMethod``
+         *     não tem ``DRAW`` --, e sim de ``winner_id`` nulo.
+         */
+        EventSummaryOut: {
+            /** N Bouts */
+            n_bouts: number;
+            /** Ko Tko */
+            ko_tko: number;
+            /** Submissions */
+            submissions: number;
+            /** Decisions */
+            decisions: number;
+            /** Draws */
+            draws: number;
+            /** No Contests */
+            no_contests: number;
+            /** Dq */
+            dq: number;
         };
         /**
          * FeaturesFreshnessOut
@@ -766,6 +869,24 @@ export interface components {
             striking_profile: components["schemas"]["StrikingProfileOut"];
             current_form: components["schemas"]["CurrentFormOut"] | null;
             features_freshness: components["schemas"]["FeaturesFreshnessOut"];
+        };
+        /**
+         * FinishHighlightOut
+         * @description A finalização mais rápida do card.
+         *
+         *     ``ending_time_seconds`` é o tempo **dentro** do round, não o decorrido total, e não há
+         *     campo de total: convertê-lo exigiria assumir 300s por round, e 48 lutas de 1994-1999
+         *     passam disso no round 1. Por isso o par ``(round, ending_time_seconds)`` viaja junto.
+         */
+        FinishHighlightOut: {
+            /** Bout Id */
+            bout_id: number;
+            fighter: components["schemas"]["MatchupFighterOut"];
+            method: components["schemas"]["BoutMethod"];
+            /** Round */
+            round: number;
+            /** Ending Time Seconds */
+            ending_time_seconds: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -939,6 +1060,25 @@ export interface components {
          * @enum {string}
          */
         UnavailableCode: "missing_corners" | "repeated_fighter" | "missing_history";
+        /**
+         * UpsetHighlightOut
+         * @description A maior zebra do card, lida do registro persistido em ``bout_predictions`` (D-01).
+         *
+         *     ``prob_of_winner`` é a probabilidade que o modelo **da época** deu a quem venceu.
+         *     ``n_bouts_with_prediction`` de ``n_bouts`` é o denominador declarado, para a tela poder
+         *     dizer "entre as 9 de 13 lutas previstas".
+         */
+        UpsetHighlightOut: {
+            /** Bout Id */
+            bout_id: number;
+            winner: components["schemas"]["MatchupFighterOut"];
+            /** Prob Of Winner */
+            prob_of_winner: number;
+            /** N Bouts With Prediction */
+            n_bouts_with_prediction: number;
+            /** N Bouts */
+            n_bouts: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1091,6 +1231,7 @@ export interface operations {
     list_events_endpoint_api_v1_events_get: {
         parameters: {
             query?: {
+                when?: ("past" | "upcoming") | null;
                 limit?: number;
                 offset?: number;
             };
@@ -1116,6 +1257,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_latest_event_endpoint_api_v1_events_latest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventDetailOut"];
                 };
             };
         };

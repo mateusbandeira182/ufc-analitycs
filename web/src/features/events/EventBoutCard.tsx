@@ -3,6 +3,7 @@ import { Fragment } from "react";
 import { Link } from "react-router";
 
 import type { BoutCardFighterOut, BoutCardOut } from "@/api/schema";
+import { Avatar } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { formatEndingTime, formatMethod } from "@/lib/format";
 
@@ -77,31 +78,40 @@ function FighterCorner({
     fighter.corner === "red" ? "bg-corner-red" : "bg-corner-blue";
 
   return (
-    <div className="relative flex flex-col gap-1 p-4">
+    <div className="relative flex items-start gap-3 p-4">
       {/* Faixa do canto: vermelho ou azul, o vernáculo do octógono. */}
       <span
         aria-hidden="true"
         className={`absolute inset-x-0 top-0 h-1 ${cornerAccent}`}
       />
-      <span className="text-[0.6rem] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-        {fighter.corner === "red" ? "Canto vermelho" : "Canto azul"}
-      </span>
-      <Link
-        to={`/fighters/${String(fighter.fighter_id)}`}
-        aria-label={isWinner ? `${fighter.name}, vencedor` : undefined}
-        className="font-display text-base font-semibold uppercase tracking-wide hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {fighter.name}
-      </Link>
-      {isWinner ? (
-        <span
-          aria-hidden="true"
-          className="inline-flex w-fit items-center gap-1 rounded-sm bg-belt-gold/15 px-1.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-widest text-belt-gold"
-        >
-          <Trophy className="size-3" />
-          Vencedor
+      {/* Retrato no recorte do octógono; iniciais quando não há `headshot_url`,
+          que é o caso comum do acervo. */}
+      <Avatar
+        name={fighter.name}
+        src={fighter.headshot_url}
+        className="mt-0.5 size-10"
+      />
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="text-[0.6rem] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+          {fighter.corner === "red" ? "Canto vermelho" : "Canto azul"}
         </span>
-      ) : null}
+        <Link
+          to={`/fighters/${String(fighter.fighter_id)}`}
+          aria-label={isWinner ? `${fighter.name}, vencedor` : undefined}
+          className="font-display text-base font-semibold uppercase tracking-wide hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {fighter.name}
+        </Link>
+        {isWinner ? (
+          <span
+            aria-hidden="true"
+            className="inline-flex w-fit items-center gap-1 rounded-sm bg-belt-gold/15 px-1.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-widest text-belt-gold"
+          >
+            <Trophy className="size-3" />
+            Vencedor
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

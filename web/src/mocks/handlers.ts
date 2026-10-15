@@ -7,7 +7,13 @@ import type {
   PageFighterOut,
 } from "@/api/schema";
 import { BOUT_DETAIL_FIXTURES, BOUT_FIXTURES } from "@/mocks/bouts";
-import { EVENT_DETAIL_FIXTURES, EVENT_FIXTURES } from "@/mocks/events";
+import {
+  EVENT_DETAIL_FIXTURES,
+  EVENT_FIXTURES,
+  LATEST_EVENT_FIXTURE,
+  PAST_EVENT_FIXTURES,
+  UPCOMING_EVENT_FIXTURES,
+} from "@/mocks/events";
 import {
   FIGHTER_FIXTURES,
   FIGHTER_STATS_FIXTURES,
@@ -83,18 +89,41 @@ export const handlers = [
     return HttpResponse.json(stats);
   }),
 
-  // Lista de eventos: envelope Page[EventOut], mais recentes primeiro (o backend
-  // ordena) e paginado por `limit`/`offset`.
+  /*
+    Lista de eventos: envelope Page[EventOut] paginado por `limit`/`offset`.
+    `when=past|upcoming` particiona o acervo e o `total` reflete o conjunto
+    **filtrado**, como no backend — um `total` do acervo inteiro faria a
+    paginação de cada seção mentir enquanto os itens pareceriam certos.
+  */
   http.get("*/api/v1/events", ({ request }) => {
-    const { limit, offset } = readPageParams(new URL(request.url));
+    const url = new URL(request.url);
+    const { limit, offset } = readPageParams(url);
+    const when = url.searchParams.get("when");
+
+    const archive =
+      when === "past"
+        ? PAST_EVENT_FIXTURES
+        : when === "upcoming"
+          ? UPCOMING_EVENT_FIXTURES
+          : EVENT_FIXTURES;
+
     const body: PageEventOut = {
-      items: EVENT_FIXTURES.slice(offset, offset + limit),
-      total: EVENT_FIXTURES.length,
+      items: archive.slice(offset, offset + limit),
+      total: archive.length,
       limit,
       offset,
     };
     return HttpResponse.json(body);
   }),
+
+  /*
+    Último evento realizado. Declarado **antes** de `/events/:id` de propósito:
+    na ordem inversa o `:id` casaria o literal "latest" e o teste passaria
+    contra um mock que não reflete o servidor (onde o FastAPI devolveria 422).
+  */
+  http.get("*/api/v1/events/latest", () =>
+    HttpResponse.json(LATEST_EVENT_FIXTURE),
+  ),
 
   // Detalhe do evento com o card de lutas: 404 quando o id não existe no acervo.
   http.get("*/api/v1/events/:id", ({ params }) => {

@@ -1,12 +1,20 @@
 import type { ReactNode } from "react";
 
-import { AlertTriangle, CalendarDays, CalendarX, MapPin } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarClock,
+  CalendarDays,
+  CalendarX,
+  MapPin,
+} from "lucide-react";
 import { useParams } from "react-router";
 
 import { ApiError } from "@/api/client";
 import type { EventDetailOut } from "@/api/schema";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EventBoutCard } from "@/features/events/EventBoutCard";
+import { EventCardSections } from "@/features/events/EventCardSections";
+import { EventHighlightsBlock } from "@/features/events/EventHighlightsBlock";
+import { EventSummaryBlock } from "@/features/events/EventSummaryBlock";
 import { useEvent } from "@/features/events/useEvent";
 import { formatIsoDate } from "@/lib/format";
 
@@ -47,23 +55,48 @@ export function EventPage() {
     <section className="mx-auto w-full max-w-5xl px-4 py-10">
       <EventHeader event={data} />
 
-      <div className="mt-10">
-        <h2 className="mb-4 font-display text-xl font-bold uppercase tracking-wide">
-          Card de lutas
-        </h2>
-        {data.bouts.length === 0 ? (
-          <p role="status" className="text-sm text-muted-foreground">
-            Nenhuma luta registrada para este evento.
-          </p>
-        ) : (
-          <ul aria-label="Lutas do evento" className="grid gap-3">
-            {data.bouts.map((bout) => (
-              <EventBoutCard key={bout.id} bout={bout} />
-            ))}
-          </ul>
-        )}
-      </div>
+      {data.bouts.length === 0 ? (
+        <UnpublishedCardNotice />
+      ) : (
+        <div className="mt-10 grid gap-10">
+          {/* Resumo e destaques se omitem sozinhos quando chegam nulos: card
+              inteiro agendado não produz contagem, e zero não é a resposta. */}
+          <EventSummaryBlock summary={data.summary} />
+          <EventHighlightsBlock highlights={data.highlights} />
+
+          <div>
+            <h2 className="mb-5 font-display text-xl font-bold uppercase tracking-wide">
+              Card de lutas
+            </h2>
+            <EventCardSections bouts={data.bouts} />
+          </div>
+        </div>
+      )}
     </section>
+  );
+}
+
+/**
+ * Evento no acervo **sem nenhuma luta**. Uma mensagem única, sem ramificar pela
+ * data: com zero luta não existe `status` para consultar, e ramificar aqui
+ * abriria na página de evento a porta que a decisão de modo pelo `status`
+ * fechou. A frase é verdadeira nos dois casos — card futuro ainda não publicado
+ * e card passado ainda não ingerido.
+ */
+function UnpublishedCardNotice() {
+  return (
+    <div
+      role="status"
+      className="mt-10 flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-card/50 px-6 py-16 text-center"
+    >
+      <CalendarClock className="size-6 text-belt-gold" />
+      <p className="font-display text-lg font-semibold uppercase tracking-wide">
+        Card ainda não publicado
+      </p>
+      <p className="max-w-sm text-sm text-muted-foreground">
+        O evento está no acervo, mas nenhuma luta foi ingerida até agora.
+      </p>
+    </div>
   );
 }
 

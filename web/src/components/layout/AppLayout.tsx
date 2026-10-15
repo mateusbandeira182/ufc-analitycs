@@ -1,5 +1,7 @@
-import { NavLink, Outlet, Link } from "react-router";
+import { useState } from "react";
+import { NavLink, Outlet, Link, useNavigate } from "react-router";
 
+import { SearchInput } from "@/features/fighters/SearchInput";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -9,12 +11,30 @@ const NAV_ITEMS = [
   { to: "/matchup", label: "Prevê essa luta" },
 ];
 
-/** Casca da aplicação: cabeçalho de navegação + conteúdo da rota + rodapé. */
+/**
+ * Casca da aplicação: cabeçalho com navegação e **busca permanente** + conteúdo
+ * da rota + rodapé.
+ *
+ * A busca deixou de ser um momento do hero da Home e virou parte da casca: num
+ * acervo de 2.754 lutadores, procurar por nome é a ação mais frequente, e ela
+ * não pode exigir voltar à Home. Submeter leva a `/fighters?q=`, o parâmetro que
+ * casa nome **ou** apelido.
+ */
 export function AppLayout() {
+  const navigate = useNavigate();
+  const [term, setTerm] = useState("");
+
+  function goToFighters(value: string) {
+    const query = value.trim();
+    void navigate(
+      query ? `/fighters?q=${encodeURIComponent(query)}` : "/fighters",
+    );
+  }
+
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-3">
+        <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
           <Link
             to="/"
             className="flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -29,8 +49,22 @@ export function AppLayout() {
               MMA<span className="text-primary">·</span>Analytics
             </span>
           </Link>
+
+          <div className="order-last w-full sm:order-none sm:ml-auto sm:w-56">
+            <SearchInput
+              id="header-search"
+              label="Buscar lutador"
+              hideLabel
+              value={term}
+              onChange={setTerm}
+              onSubmit={goToFighters}
+              placeholder="Buscar lutador..."
+              inputClassName="h-9 text-sm"
+            />
+          </div>
+
           <nav aria-label="Principal">
-            <ul className="flex items-center gap-1">
+            <ul className="flex flex-wrap items-center gap-1">
               {NAV_ITEMS.map(({ to, label }) => (
                 <li key={to}>
                   <NavLink

@@ -1,4 +1,4 @@
-import type { components } from "@/api/types";
+import type { components, operations } from "@/api/types";
 
 /*
   Aliases de conveniência sobre os tipos GERADOS do OpenAPI do backend.
@@ -21,6 +21,24 @@ export type PageEventOut = components["schemas"]["Page_EventOut_"];
 export type EventDetailOut = components["schemas"]["EventDetailOut"];
 export type BoutCardOut = components["schemas"]["BoutCardOut"];
 export type BoutCardFighterOut = components["schemas"]["BoutCardFighterOut"];
+export type BoutStatus = components["schemas"]["BoutStatus"];
+export type EventSummaryOut = components["schemas"]["EventSummaryOut"];
+export type EventHighlightsOut = components["schemas"]["EventHighlightsOut"];
+export type FinishHighlightOut = components["schemas"]["FinishHighlightOut"];
+export type BoutHighlightOut = components["schemas"]["BoutHighlightOut"];
+export type UpsetHighlightOut = components["schemas"]["UpsetHighlightOut"];
+
+/**
+ * Partição da lista de eventos. O backend a declara como `Literal` no query
+ * param, não como schema nomeado, então o tipo é derivado da **operação** do
+ * contrato — redigitar `"past" | "upcoming"` à mão deixaria o cliente aceitando
+ * um valor que o FastAPI rejeita com 422 no dia em que a partição mudar.
+ */
+export type EventWhen = NonNullable<
+  NonNullable<
+    operations["list_events_endpoint_api_v1_events_get"]["parameters"]["query"]
+  >["when"]
+>;
 export type BoutDetailOut = components["schemas"]["BoutDetailOut"];
 export type HeadToHeadOut = components["schemas"]["HeadToHeadOut"];
 export type MatchupPredictionOut =
