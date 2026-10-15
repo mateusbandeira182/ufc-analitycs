@@ -13,7 +13,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout
 from apps.bouts.selectors import get_bout_by_id
 from apps.bouts.tests.factories import (
@@ -249,6 +249,94 @@ def test_get_bout_sem_rounds_expoe_lista_vazia(client: TestClient, db_session: S
     assert body["rounds"] == []
 
 
+def test_get_bout_realizada_expoe_status_completed_e_card_section(
+    client: TestClient, db_session: Session
+) -> None:
+    """Luta realizada expõe ``status: completed`` e o rótulo cru de seção do card.
+
+    A página da luta decide o modo pelo ``status`` (RF-31 / D-14), e o ``card_section`` é o
+    "contexto do card" que a CA-30 nomeia. Metade "não regredi" da CA-30: a luta realizada
+    continua inteira e agora se declara realizada, em vez de a tela inferir isso.
+    """
+    bout = _seed_bout(db_session)
+    bout.card_section = "Main Card"
+    db_session.flush()
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    assert body["status"] == BoutStatus.COMPLETED.value
+    assert body["card_section"] == "Main Card"
+    assert body["method"] == BoutMethod.KO_TKO.value
+
+
+def test_get_bout_agendada_expoe_status_scheduled_sem_desfecho(
+    client: TestClient, db_session: Session
+) -> None:
+    """Luta agendada responde 200 com ``status: scheduled`` e desfecho nulo, nunca 404.
+
+    Com ``bouts.status`` a rota passou a ser alcançável para luta que ainda não aconteceu
+    (CA-30). O ``status`` é o que a tela precisa: inferir o modo por ``method is None`` seria
+    proxy -- luta realizada de método desconhecido sairia rotulada "Agendada".
+    """
+    event = EventFactory.build(name="UFC 335", date=date(2026, 12, 12))
+    red = FighterFactory.build(name="Ilia Topuria")
+    blue = FighterFactory.build(name="Paddy Pimblett")
+    db_session.add_all([event, red, blue])
+    db_session.flush()
+    bout = BoutFactory.build(
+        event_id=event.id,
+        status=BoutStatus.SCHEDULED,
+        winner_id=None,
+        method=None,
+        round=None,
+        ending_time_seconds=None,
+        card_section="Main Card",
+        weight_class="Lightweight",
+    )
+    db_session.add(bout)
+    db_session.flush()
+    db_session.add_all(
+        [
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=red.id, corner=Corner.RED),
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=blue.id, corner=Corner.BLUE),
+        ]
+    )
+    db_session.flush()
+
+    resposta = client.get(f"/api/v1/bouts/{bout.id}")
+
+    assert resposta.status_code == 200
+    body = resposta.json()
+    assert body["status"] == BoutStatus.SCHEDULED.value
+    assert body["card_section"] == "Main Card"
+    assert body["method"] is None
+    assert body["winner_id"] is None
+    assert body["rounds"] == []
+    assert {canto["corner"] for canto in body["fighters"]} == {
+        Corner.RED.value,
+        Corner.BLUE.value,
+    }
+
+
+def test_get_bout_sem_contexto_de_card_expoe_card_section_nulo(
+    client: TestClient, db_session: Session
+) -> None:
+    """``card_section`` nulo é o caso comum do acervo.
+
+    ``fill_bout_context`` tem o ``bout_order`` como porteiro, então a maior parte das lutas
+    não tem seção de card nenhuma. O nulo é **declarado** aqui, e não herdado do padrão da
+    ``BoutFactory``: o estado sob prova é premissa do teste, não detalhe de uma factory
+    compartilhada por três apps.
+    """
+    bout = _seed_bout(db_session)
+    bout.card_section = None
+    db_session.flush()
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    assert body["card_section"] is None
+
+
 def test_get_bout_inexistente_retorna_404(client: TestClient) -> None:
     """Id inexistente responde 404."""
     resposta = client.get("/api/v1/bouts/999999")
@@ -415,3 +503,122 @@ def test_head_to_head_id_inexistente_retorna_404(client: TestClient, db_session:
     resposta = client.get("/api/v1/head-to-head", params={"a": f.id, "b": 999_999})
 
     assert resposta.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Adversários em comum no head-to-head (SPEC 011, Slice 05 -- RF-16 / CA-18)
+# ---------------------------------------------------------------------------
+
+
+def test_head_to_head_sem_confronto_direto_traz_adversarios_em_comum(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-18: dupla que nunca se enfrentou responde ``bouts: []`` **e** ``common_opponents`` cheio.
+
+    É exatamente a queixa de origem -- "a página não faz nada". Antes, qualquer dupla sem
+    confronto direto (o caso comum) recebia só a lista vazia; agora o cruzamento que existe de
+    fato, o adversário em comum, vem na mesma resposta.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    x = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    ax = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=x, winner=a
+    )
+    bx = _seed_confronto(
+        db_session, event_name="UFC 300", event_date=date(2024, 4, 13), red=x, blue=b, winner=b
+    )
+
+    resposta = client.get("/api/v1/head-to-head", params={"a": a.id, "b": b.id})
+
+    assert resposta.status_code == 200
+    body = resposta.json()
+    assert body["bouts"] == []
+    (comum,) = body["common_opponents"]
+    assert comum["opponent"] == {"id": x.id, "name": "Max Holloway"}
+    assert [luta["bout_id"] for luta in comum["bouts_a"]] == [ax.id]
+    assert [luta["bout_id"] for luta in comum["bouts_b"]] == [bx.id]
+    # O desfecho de cada lado contra o MESMO terceiro -- a razão de a seção existir.
+    assert comum["bouts_a"][0]["winner_id"] == a.id
+    assert comum["bouts_b"][0]["winner_id"] == b.id
+    assert comum["bouts_a"][0]["event_name"] == "UFC 245"
+    assert comum["bouts_a"][0]["method"] == BoutMethod.DECISION.value
+    assert set(comum["bouts_a"][0]) == {
+        "bout_id",
+        "event_id",
+        "event_name",
+        "event_date",
+        "winner_id",
+        "method",
+        "round",
+    }
+
+
+def test_head_to_head_sem_nada_em_comum_traz_common_opponents_vazio(
+    client: TestClient, db_session: Session
+) -> None:
+    """Dupla sem confronto direto e sem adversário em comum: 200 com as duas listas vazias.
+
+    Lista vazia, não 404: os dois recursos existem, o que está ausente é a relação entre eles.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    db_session.add_all([a, b])
+    db_session.flush()
+
+    body = client.get("/api/v1/head-to-head", params={"a": a.id, "b": b.id}).json()
+
+    assert body["bouts"] == []
+    assert body["common_opponents"] == []
+
+
+def test_head_to_head_com_confronto_direto_tambem_traz_os_comuns(
+    client: TestClient, db_session: Session
+) -> None:
+    """As duas seções convivem: confronto direto **e** adversário em comum na mesma resposta.
+
+    E o próprio par **não** aparece como adversário em comum -- senão a seção de cima
+    duplicaria a de baixo.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Max Holloway")
+    x = FighterFactory.build(name="Brian Ortega")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    direto = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=b, winner=a
+    )
+    _seed_confronto(
+        db_session, event_name="UFC 266", event_date=date(2021, 9, 25), red=a, blue=x, winner=a
+    )
+    _seed_confronto(
+        db_session, event_name="UFC 231", event_date=date(2018, 12, 8), red=b, blue=x, winner=b
+    )
+
+    body = client.get("/api/v1/head-to-head", params={"a": a.id, "b": b.id}).json()
+
+    assert [luta["id"] for luta in body["bouts"]] == [direto.id]
+    assert [comum["opponent"]["id"] for comum in body["common_opponents"]] == [x.id]
+
+
+def test_head_to_head_erros_inalterados_com_common_opponents(
+    client: TestClient, db_session: Session
+) -> None:
+    """Os contratos de erro não mudam: ``a == b`` -> 422 **antes** da existência; 404 depois.
+
+    O campo novo é adição ao envelope de sucesso; a ADR 0003 (validação no router, ``a == b``
+    checado antes de existir) segue valendo sem alteração.
+    """
+    f = FighterFactory.build(name="Alexander Volkanovski")
+    db_session.add(f)
+    db_session.flush()
+
+    def _status(a: int, b: int) -> int:
+        return int(client.get("/api/v1/head-to-head", params={"a": a, "b": b}).status_code)
+
+    # Dois ids iguais E inexistentes ainda respondem 422, não 404.
+    assert _status(999_999, 999_999) == 422
+    assert _status(f.id, f.id) == 422
+    assert _status(f.id, 999_999) == 404

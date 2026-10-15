@@ -74,9 +74,12 @@ from ingestion.features.division import (
 
 logger = logging.getLogger(__name__)
 
-# Convenção do octógono: canto A = red, canto B = blue.
-_SUFFIX_A = "_a"
-_SUFFIX_B = "_b"
+# Convenção do octógono: canto A = red, canto B = blue (ADR 0001). Públicos desde a SPEC 011:
+# ``analysis.predict`` monta a matriz de confronto a partir do cache as-of e precisa dos MESMOS
+# sufixos -- duplicar as duas strings faria a divergência aparecer só como coluna faltando no
+# ``reindex``, sem erro nenhum.
+SUFFIX_A = "_a"
+SUFFIX_B = "_b"
 _SUFFIX_DIFF = "_diff"
 
 # Colunas-chave da frame longa consumidas por esta slice (contrato estável Slice 01).
@@ -99,11 +102,11 @@ _RESULT_WIN = "win"
 _RESULT_LOSS = "loss"
 
 # ``result_a``/``result_b`` após o pivô (o alvo é lido do canto vermelho, A).
-_COL_RESULT_A = f"{COL_RESULT}{_SUFFIX_A}"
+_COL_RESULT_A = f"{COL_RESULT}{SUFFIX_A}"
 # Data e método após o pivô. Os dois cantos carregam o mesmo valor por construção (vêm da
 # mesma linha de ``bouts``); ler o canto A é convenção, não escolha entre valores.
-_COL_EVENT_DATE_A = f"event_date{_SUFFIX_A}"
-_COL_METHOD_A = f"method{_SUFFIX_A}"
+_COL_EVENT_DATE_A = f"event_date{SUFFIX_A}"
+_COL_METHOD_A = f"method{SUFFIX_A}"
 
 # Bases que NÃO são features preditivas as-of e por isso ficam fora dos diferenciais
 # e de ``feature_columns``. Fonte única do conhecimento sobre o que é ruído/leakage.
@@ -245,7 +248,7 @@ def pivot_corners(long: pd.DataFrame) -> pd.DataFrame:
     """
     red = long[long[COL_CORNER] == Corner.RED].drop(columns=[COL_CORNER])
     blue = long[long[COL_CORNER] == Corner.BLUE].drop(columns=[COL_CORNER])
-    return red.merge(blue, on=COL_BOUT_ID, suffixes=(_SUFFIX_A, _SUFFIX_B), validate="one_to_one")
+    return red.merge(blue, on=COL_BOUT_ID, suffixes=(SUFFIX_A, SUFFIX_B), validate="one_to_one")
 
 
 def collapse_bout_context_columns(matrix: pd.DataFrame) -> pd.DataFrame:
@@ -263,8 +266,8 @@ def collapse_bout_context_columns(matrix: pd.DataFrame) -> pd.DataFrame:
     """
     matrix = matrix.copy()
     for base in sorted(_BOUT_CONTEXT_BASES):
-        column_a = f"{base}{_SUFFIX_A}"
-        column_b = f"{base}{_SUFFIX_B}"
+        column_a = f"{base}{SUFFIX_A}"
+        column_b = f"{base}{SUFFIX_B}"
         if column_b not in matrix.columns:
             raise KeyError(column_b)
         matrix[base] = matrix[column_a]
@@ -281,17 +284,38 @@ def numeric_feature_bases(matrix: pd.DataFrame) -> list[str]:
     """
     bases: list[str] = []
     for column in matrix.columns:
-        if not column.endswith(_SUFFIX_A):
+        if not column.endswith(SUFFIX_A):
             continue
-        base = column[: -len(_SUFFIX_A)]
+        base = column[: -len(SUFFIX_A)]
         if base in _NON_FEATURE_BASES:
             continue
-        column_b = f"{base}{_SUFFIX_B}"
+        column_b = f"{base}{SUFFIX_B}"
         if column_b not in matrix.columns:
             continue
         if is_numeric_dtype(matrix[column]) and is_numeric_dtype(matrix[column_b]):
             bases.append(base)
     return bases
+
+
+def asof_feature_columns(long: pd.DataFrame) -> list[str]:
+    """Colunas numéricas da frame longa enriquecida que viram feature as-of por lutador.
+
+    Mesma exclusão de ``numeric_feature_bases`` (identidade, contexto de evento, desfecho da
+    própria luta e contexto de luta), aplicada **antes** do pivô -- na frame longa o nome da
+    coluna já *é* a base, sem sufixo de canto. Fonte única do conjunto de bases: é o que
+    garante que o vetor cacheado por lutador (``fighter_asof_features``, SPEC 011) e o
+    produzido pelo pivô ao vivo tenham exatamente as mesmas bases (RF-03). Duas listas do
+    mesmo fato divergiriam na próxima slice, e a divergência seria silenciosa.
+
+    Só numérico entra: ``stance`` (string) e ``corner`` (enum) ficam de fora pelo mesmo
+    critério que ``analysis.dataset._numeric_feature_columns`` aplica ao treino. A ordem de
+    descoberta (ordem das colunas) é preservada -- determinística.
+    """
+    return [
+        str(column)
+        for column in long.columns
+        if column not in _NON_FEATURE_BASES and is_numeric_dtype(long[column])
+    ]
 
 
 def add_differentials(matrix: pd.DataFrame, bases: list[str]) -> pd.DataFrame:
@@ -302,9 +326,7 @@ def add_differentials(matrix: pd.DataFrame, bases: list[str]) -> pd.DataFrame:
     """
     matrix = matrix.copy()
     for base in bases:
-        matrix[f"{base}{_SUFFIX_DIFF}"] = (
-            matrix[f"{base}{_SUFFIX_A}"] - matrix[f"{base}{_SUFFIX_B}"]
-        )
+        matrix[f"{base}{_SUFFIX_DIFF}"] = matrix[f"{base}{SUFFIX_A}"] - matrix[f"{base}{SUFFIX_B}"]
     return matrix
 
 
@@ -339,7 +361,7 @@ def add_format_features(matrix: pd.DataFrame) -> pd.DataFrame:
     cujo formato ninguém registrou (RF-03).
 
     ``scheduled_rounds`` é convertida **no lugar**: a feature é o mesmo número da coluna crua,
-    só que em ``float64`` (o dtype que atravessa ``materialize._to_json_value`` mapeando
+    só que em ``float64`` (o dtype que atravessa ``materialize.to_json_value`` mapeando
     ausência para ``null`` no JSONB). ``errors="raise"`` faz um valor inesperado falhar
     visível em vez de virar ``NaN`` em silêncio e esvaziar a feature.
 
@@ -379,8 +401,8 @@ def add_stance_matchup_features(matrix: pd.DataFrame) -> pd.DataFrame:
     Requer a frame já pivotada e o par ``stance_a``/``stance_b``, que existe porque a frame
     longa passou por ``trajectory.add_physical_attributes``. A frame de entrada não é mutada.
     """
-    stance_a = matrix[f"{COL_STANCE}{_SUFFIX_A}"]
-    stance_b = matrix[f"{COL_STANCE}{_SUFFIX_B}"]
+    stance_a = matrix[f"{COL_STANCE}{SUFFIX_A}"]
+    stance_b = matrix[f"{COL_STANCE}{SUFFIX_B}"]
     known = stance_a.isin(_KNOWN_STANCES) & stance_b.isin(_KNOWN_STANCES)
     open_stance = ((stance_a == Stance.ORTHODOX) & (stance_b == Stance.SOUTHPAW)) | (
         (stance_a == Stance.SOUTHPAW) & (stance_b == Stance.ORTHODOX)
@@ -409,9 +431,9 @@ def add_style_distance_feature(matrix: pd.DataFrame) -> pd.DataFrame:
     não é mutada.
     """
     delta_grappling = (
-        matrix[f"{COL_GRAPPLING_AXIS}{_SUFFIX_A}"] - matrix[f"{COL_GRAPPLING_AXIS}{_SUFFIX_B}"]
+        matrix[f"{COL_GRAPPLING_AXIS}{SUFFIX_A}"] - matrix[f"{COL_GRAPPLING_AXIS}{SUFFIX_B}"]
     )
-    delta_volume = matrix[f"{COL_VOLUME_AXIS}{_SUFFIX_A}"] - matrix[f"{COL_VOLUME_AXIS}{_SUFFIX_B}"]
+    delta_volume = matrix[f"{COL_VOLUME_AXIS}{SUFFIX_A}"] - matrix[f"{COL_VOLUME_AXIS}{SUFFIX_B}"]
     distancia = (delta_grappling**2 + delta_volume**2) ** 0.5
     return matrix.assign(**{STYLE_DISTANCE: distancia.astype("float64")})
 
@@ -458,7 +480,7 @@ def _feature_columns(matrix: pd.DataFrame) -> list[str]:
 
 def _base_of(column: str) -> str:
     """Remove o sufixo de canto/diferencial (``_a``/``_b``/``_diff``) para obter a base."""
-    for suffix in (_SUFFIX_DIFF, _SUFFIX_A, _SUFFIX_B):
+    for suffix in (_SUFFIX_DIFF, SUFFIX_A, SUFFIX_B):
         if column.endswith(suffix):
             return column[: -len(suffix)]
     return column

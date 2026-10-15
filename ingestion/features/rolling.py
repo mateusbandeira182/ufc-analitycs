@@ -299,6 +299,19 @@ _OPPONENT_BOX_SCORE_COLUMNS: list[str] = [
 # baratos: nenhum recálculo, só leitura da linha do adversário.
 _OPPONENT_ASOF_COLUMNS: list[str] = [WIN_RATE_PRIOR, GRAPPLING_AXIS_R3, VOLUME_AXIS_R3]
 
+# Colunas do histórico de estilos enfrentados (insumo cacheável do bloco D3 -- SPEC 011,
+# D-15). Uma entrada por luta passada: os dois eixos as-of do ADVERSÁRIO daquela luta e o
+# desfecho do lutador. Nomeadas aqui, e não no módulo do cache, porque quem as produz é
+# ``opponent_asof_style_history`` -- o consumidor as importa, jamais as redigita.
+OPPONENT_GRAPPLING_AXIS_R3 = f"opponent_{GRAPPLING_AXIS_R3}"
+OPPONENT_VOLUME_AXIS_R3 = f"opponent_{VOLUME_AXIS_R3}"
+STYLE_HISTORY_WON = "won"
+STYLE_HISTORY_COLUMNS: list[str] = [
+    OPPONENT_GRAPPLING_AXIS_R3,
+    OPPONENT_VOLUME_AXIS_R3,
+    STYLE_HISTORY_WON,
+]
+
 
 def _prior_expanding_mean(values: pd.Series, group: pd.Series) -> pd.Series:
     """Média acumulada das lutas anteriores por grupo: ``shift(1).expanding().mean()``.
@@ -770,6 +783,72 @@ def _add_opponent_history_features(frame: pd.DataFrame) -> None:
         fighter,
     )
     frame[OPPONENT_WIN_RATE_PRIOR_AVG] = _prior_expanding_mean(opponent[WIN_RATE_PRIOR], fighter)
+
+
+def opponent_asof_style_history(frame: pd.DataFrame) -> pd.DataFrame:
+    """Por linha: os dois eixos de estilo as-of do ADVERSÁRIO daquela luta e o desfecho.
+
+    Colunas devolvidas (``STYLE_HISTORY_COLUMNS``): ``opponent_grappling_axis_r3``,
+    ``opponent_volume_axis_r3`` e ``won`` (``1.0``/``0.0``/``NaN`` em no contest e empate),
+    alinhadas ao índice de entrada. É exatamente o insumo que
+    ``_add_opponent_history_features`` consome para o bloco D3; emitido aqui para poder ser
+    **cacheado por lutador** (D-15 da SPEC 011) -- a feature em si é do PAR e não cabe no
+    vetor por lutador, mas o histórico de estilos enfrentados cabe.
+
+    Reusa ``_opponent_stats``, para que a regra de pareamento (casar por ``bout_id``,
+    descartar o próprio lutador, avisar sobre dado sujo, realinhar ao índice) continue
+    vivendo num lugar só. **Pré-condição**: a frame já passou por
+    ``add_recent_form_features`` -- os eixos as-of nascem lá.
+    """
+    opponent = _opponent_stats(frame, _OPPONENT_ASOF_COLUMNS)
+    return pd.DataFrame(
+        {
+            OPPONENT_GRAPPLING_AXIS_R3: opponent[GRAPPLING_AXIS_R3],
+            OPPONENT_VOLUME_AXIS_R3: opponent[VOLUME_AXIS_R3],
+            STYLE_HISTORY_WON: frame[COL_RESULT].map(_WON_BY_RESULT),
+        },
+        index=frame.index,
+    )
+
+
+def similar_style_prior_for_opponent(
+    history: pd.DataFrame,
+    opponent_grappling: float | None,
+    opponent_volume: float | None,
+) -> float | None:
+    """``similar_style_win_rate_prior`` de um confronto hipotético, a partir do histórico.
+
+    Acrescenta ao histórico cacheado (``STYLE_HISTORY_COLUMNS``, uma entrada por luta passada)
+    uma linha sintética cujos eixos são os do adversário de hoje, delega a
+    ``_similar_style_weighted_prior`` e devolve o valor da última linha. A fórmula **não** é
+    reimplementada aqui: o prefixo estrito (``np.tril(..., k=-1)``) é justamente o que mantém
+    a linha sintética fora do próprio cálculo, e duplicá-la reabriria o risco de vazamento que
+    a SPEC 009 fechou.
+
+    Devolve ``None`` -- nunca ``0.0`` -- quando não há luta anterior elegível (histórico vazio,
+    só no contest, ou adversário sem eixos as-of): denominador zero é ausência de base para
+    opinar, não derrota em todas.
+    """
+    synthetic = pd.DataFrame(
+        [
+            {
+                OPPONENT_GRAPPLING_AXIS_R3: opponent_grappling,
+                OPPONENT_VOLUME_AXIS_R3: opponent_volume,
+                STYLE_HISTORY_WON: None,
+            }
+        ]
+    )
+    combined = pd.concat([history[STYLE_HISTORY_COLUMNS], synthetic], ignore_index=True)
+    # Um único lutador: o grupo é constante, e o prefixo estrito faz o resto.
+    group = pd.Series(0, index=combined.index)
+    values = _similar_style_weighted_prior(
+        pd.to_numeric(combined[STYLE_HISTORY_WON]),
+        pd.to_numeric(combined[OPPONENT_GRAPPLING_AXIS_R3]),
+        pd.to_numeric(combined[OPPONENT_VOLUME_AXIS_R3]),
+        group,
+    )
+    prior = values.iloc[-1]
+    return None if pd.isna(prior) else float(prior)
 
 
 def add_recent_form_features(frame: pd.DataFrame) -> pd.DataFrame:

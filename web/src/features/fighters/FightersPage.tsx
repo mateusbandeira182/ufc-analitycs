@@ -1,30 +1,31 @@
 import { Link, useSearchParams } from "react-router";
 
-import { FighterList } from "@/features/fighters/FighterList";
+import { FightersTable } from "@/features/fighters/FightersTable";
 import { SearchInput } from "@/features/fighters/SearchInput";
 import { useFighters } from "@/features/fighters/useFighters";
 import { Pagination } from "@/components/ui/pagination";
 import { getPageInfo, parsePaginationParams } from "@/lib/pagination";
 
 /**
- * Rota `/fighters`: a URL é a fonte da verdade — `?name=` (termo de busca) e
- * `?limit=`/`?offset=` (paginação) tornam a listagem compartilhável. Orquestra o
- * hook e delega os estados à lista; mudar a busca reseta para a primeira página.
+ * Rota `/fighters`: a URL é a fonte da verdade — `?q=` (termo de busca, que casa
+ * nome ou apelido) e `?limit=`/`?offset=` (paginação) tornam a listagem
+ * compartilhável. Orquestra o hook e delega os estados à tabela; mudar a busca
+ * reseta para a primeira página.
  */
 export function FightersPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const name = searchParams.get("name") ?? "";
+  const q = searchParams.get("q") ?? "";
   const { limit, offset } = parsePaginationParams(searchParams);
-  const query = useFighters({ name, limit, offset });
+  const query = useFighters({ q, limit, offset });
 
   function handleSearchChange(value: string) {
     setSearchParams(
       (previous) => {
         const next = new URLSearchParams(previous);
         if (value) {
-          next.set("name", value);
+          next.set("q", value);
         } else {
-          next.delete("name");
+          next.delete("q");
         }
         // Um novo termo recomeça a paginação — o offset antigo não faz sentido.
         next.delete("offset");
@@ -47,7 +48,8 @@ export function FightersPage() {
           Lutadores
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Busque pelo nome e explore o cartel de cada atleta do acervo.
+          Busque pelo nome ou pelo apelido e explore o cartel de cada atleta do
+          acervo.
         </p>
       </header>
 
@@ -55,9 +57,9 @@ export function FightersPage() {
         <SearchInput
           id="fighters-search"
           label="Buscar lutador"
-          value={name}
+          value={q}
           onChange={handleSearchChange}
-          placeholder="Digite o nome do lutador..."
+          placeholder="Nome ou apelido do lutador..."
         />
       </div>
 
@@ -71,7 +73,7 @@ export function FightersPage() {
         <OutOfRangeNotice />
       ) : (
         <>
-          <FighterList
+          <FightersTable
             fighters={data?.items ?? []}
             isPending={query.isPending}
             isError={query.isError}

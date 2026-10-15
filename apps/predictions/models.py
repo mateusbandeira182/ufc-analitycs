@@ -28,6 +28,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from mma_analytics.db import Base
 
+# Vocabulário da coluna ``source``: predição servida por request e predição do loop
+# walk-forward. Vive no model (e não no service) porque é a coluna que o define, e porque
+# ``apps.events.selectors`` precisa filtrar por ela sem importar o service -- que já importa
+# ``list_event_bouts`` de events (o caminho inverso fecharia um ciclo).
+SOURCE_API = "api"
+SOURCE_WALK_FORWARD = "walk_forward"
+
 
 class BoutPrediction(Base):
     """Uma predição por (luta, versão do modelo). O acerto **não** é coluna.

@@ -18,6 +18,13 @@ describe("formatMethod", () => {
     expect(formatMethod("dq")).toBe("Desqualificação");
     expect(formatMethod("no_contest")).toBe("Sem resultado");
   });
+
+  it("rotula a luta agendada quando o método ainda não existe", () => {
+    // `method` nulável significa luta sem desfecho (`status='scheduled'`).
+    // Ausência de método não é "Sem resultado" (que é o no contest, um desfecho
+    // de verdade) nem um traço mudo: é uma luta que ainda não aconteceu.
+    expect(formatMethod(null)).toBe("Agendada");
+  });
 });
 
 describe("formatResult", () => {
@@ -33,6 +40,12 @@ describe("formatResult", () => {
 
   it("retorna Derrota quando não venceu e houve resultado", () => {
     expect(formatResult({ won: false, method: "decision" })).toBe("Derrota");
+  });
+
+  it("retorna Agendada quando a luta ainda não tem desfecho", () => {
+    // `won=false` numa luta agendada é ausência de vitória, não derrota — o
+    // backend deriva `won` de `winner_id`, que a luta sem desfecho não tem.
+    expect(formatResult({ won: false, method: null })).toBe("Agendada");
   });
 });
 

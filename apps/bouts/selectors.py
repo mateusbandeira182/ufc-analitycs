@@ -14,13 +14,15 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from apps.bouts.enums import Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
+from apps.fighters.models import Fighter
 
 
 @dataclass(frozen=True)
@@ -153,7 +155,11 @@ def get_head_to_head(session: Session, a_id: int, b_id: int) -> list[BoutDetail]
         .join(bf_a, bf_a.bout_id == Bout.id)
         .join(bf_b, bf_b.bout_id == Bout.id)
         .join(Event, Event.id == Bout.event_id)
-        .where(bf_a.fighter_id == a_id, bf_b.fighter_id == b_id)
+        .where(
+            bf_a.fighter_id == a_id,
+            bf_b.fighter_id == b_id,
+            Bout.status == BoutStatus.COMPLETED,
+        )
         .order_by(Event.date.asc(), Bout.id.asc())
     )
     rows = session.execute(stmt).tuples().all()
@@ -201,3 +207,137 @@ def _rounds_for_corners_batch(
             for linha in rounds_por_canto.get(bf.id, [])
         ]
     return resultado
+
+
+@dataclass(frozen=True)
+class CommonOpponentBout:
+    """Uma luta contra o adversário em comum, pelo desfecho -- sem box-score.
+
+    ``winner_id`` nulo é empate ou no contest, a convenção que ``apps.bouts.enums`` documenta
+    e que o resto da API já segue. Deliberadamente **não** reusa o ``won: bool`` de
+    ``FighterBoutOut``: ali empate colapsa em ``False``, e nesta seção -- onde os dois
+    lutadores são comparados contra o MESMO terceiro -- "perdeu para X" e "empatou com X" não
+    podem virar a mesma afirmação.
+
+    Sem stats granulares de propósito: a pergunta da seção é "como cada um se saiu contra X",
+    não o box-score de cada luta. Quem quer o detalhe clica na luta (``GET /bouts/{id}``).
+    """
+
+    bout_id: int
+    event_id: int
+    event_name: str
+    event_date: date
+    winner_id: int | None
+    method: BoutMethod | None
+    round: int | None
+
+
+@dataclass(frozen=True)
+class CommonOpponent:
+    """Um adversário que os dois lutadores enfrentaram, com o desfecho de cada lado."""
+
+    opponent_id: int
+    opponent_name: str
+    # O lutador pode ter enfrentado o mesmo adversário mais de uma vez: o adversário não
+    # duplica (é a chave da entrada), as lutas somam.
+    bouts_a: list[CommonOpponentBout]
+    bouts_b: list[CommonOpponentBout]
+
+
+def _bouts_by_opponent(
+    session: Session, fighter_id: int
+) -> dict[int, list[tuple[CommonOpponentBout, str]]]:
+    """Lutas ``completed`` do lutador agrupadas por adversário, cronológicas, em UMA query.
+
+    Dois aliases sobre o mesmo ``bout_id`` (o ganho direto do schema long, ADR 0001): um fixa
+    o lutador, o outro é o adversário -- sem ``OR`` nos dois cantos. O nome do adversário vem
+    resolvido no join, então quem chama não faz N+1 para exibi-lo.
+    """
+    eu = aliased(BoutFighter)
+    adversario = aliased(BoutFighter)
+    stmt = (
+        select(
+            adversario.fighter_id,
+            Fighter.name,
+            Bout.id,
+            Bout.event_id,
+            Event.name,
+            Event.date,
+            Bout.winner_id,
+            Bout.method,
+            Bout.round,
+        )
+        .join(eu, eu.bout_id == Bout.id)
+        .join(adversario, adversario.bout_id == Bout.id)
+        .join(Event, Event.id == Bout.event_id)
+        .join(Fighter, Fighter.id == adversario.fighter_id)
+        .where(
+            eu.fighter_id == fighter_id,
+            adversario.fighter_id != fighter_id,
+            Bout.status == BoutStatus.COMPLETED,
+        )
+        .order_by(Event.date.asc(), Bout.id.asc())
+    )
+    por_adversario: dict[int, list[tuple[CommonOpponentBout, str]]] = defaultdict(list)
+    for linha in session.execute(stmt).tuples().all():
+        (
+            opponent_id,
+            opponent_name,
+            bout_id,
+            event_id,
+            event_name,
+            event_date,
+            winner_id,
+            method,
+            bout_round,
+        ) = linha
+        por_adversario[opponent_id].append(
+            (
+                CommonOpponentBout(
+                    bout_id=bout_id,
+                    event_id=event_id,
+                    event_name=event_name,
+                    event_date=event_date,
+                    winner_id=winner_id,
+                    method=method,
+                    round=bout_round,
+                ),
+                opponent_name,
+            )
+        )
+    return por_adversario
+
+
+def get_common_opponents(session: Session, a_id: int, b_id: int) -> list[CommonOpponent]:
+    """Adversários que os DOIS lutadores enfrentaram, com o desfecho de cada lado (RF-16).
+
+    Duas queries (uma por lado), interseção em memória -- sem N+1. Hoje o head-to-head só
+    devolve confronto direto, logo responde lista vazia para qualquer dupla que nunca se
+    enfrentou: o caso comum, e a razão de a página "não fazer nada".
+
+    Filtra ``status='completed'``: luta agendada não tem desfecho, e deixá-la entrar faria um
+    adversário **futuro** aparecer como histórico -- com ``winner_id`` nulo, que a tela leria
+    como empate ou derrota numa luta que não aconteceu. É o modo de falha que a varredura de
+    ``bout_fighters`` desta SPEC existe para fechar; luta agendada chega à tela pelo card do
+    evento, não por aqui.
+
+    O próprio par é excluído do conjunto de adversários: sem isso, o confronto **direto** entre
+    A e B voltaria aqui como "adversário em comum", duplicando a seção ao lado.
+
+    Ordem determinística: entradas por nome do adversário ascendente, lutas de cada lado em
+    ordem cronológica. Não valida existência dos lutadores (responsabilidade do router).
+    """
+    de_a = _bouts_by_opponent(session, a_id)
+    de_b = _bouts_by_opponent(session, b_id)
+    em_comum = (set(de_a) & set(de_b)) - {a_id, b_id}
+    entradas = [
+        CommonOpponent(
+            opponent_id=opponent_id,
+            # O nome vem resolvido no join dos dois lados; qualquer linha serve.
+            opponent_name=de_a[opponent_id][0][1],
+            bouts_a=[luta for luta, _ in de_a[opponent_id]],
+            bouts_b=[luta for luta, _ in de_b[opponent_id]],
+        )
+        for opponent_id in em_comum
+    ]
+    return sorted(entradas, key=lambda entrada: (entrada.opponent_name, entrada.opponent_id))

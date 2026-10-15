@@ -3,6 +3,7 @@ import type {
   BoutFighterStatsOut,
   FighterBoutOut,
 } from "@/api/schema";
+import { AWAITING_SYNC_EVENT_DATE } from "@/mocks/events";
 import { NULL_STRIKE_SPLITS } from "@/mocks/strikeSplits";
 
 /*
@@ -154,6 +155,8 @@ const PEREIRA_HILL: BoutDetailOut = {
   round: 2,
   ending_time_seconds: 225,
   weight_class: "Light Heavyweight",
+  status: "completed",
+  card_section: "Main Card",
   title_bout: true,
   scheduled_rounds: 5,
   referee: "Marc Goddard",
@@ -199,6 +202,8 @@ const OLIVEIRA_TSARUKYAN: BoutDetailOut = {
   round: null,
   ending_time_seconds: null,
   weight_class: null,
+  status: "completed",
+  card_section: null,
   title_bout: false,
   scheduled_rounds: 3,
   referee: null,
@@ -244,6 +249,8 @@ const HOLLOWAY_POIRIER: BoutDetailOut = {
   round: 5,
   ending_time_seconds: 300,
   weight_class: "Lightweight",
+  status: "completed",
+  card_section: "Prelims",
   title_bout: false,
   scheduled_rounds: 5,
   referee: "Herb Dean",
@@ -271,9 +278,139 @@ const HOLLOWAY_POIRIER: BoutDetailOut = {
   ],
 };
 
+/*
+  Canto de luta **agendada**: box-score inteiramente nulo, porque não há luta de
+  onde tirar número. A página não renderiza a tabela com esses nulos — zero em
+  golpe significativo é afirmação sobre a luta, e traço também é resposta a outra
+  pergunta ("decisão sem tempo registrado"), não a esta.
+*/
+function scheduledCornerStats(
+  fighterId: number,
+  name: string,
+  corner: "red" | "blue",
+): BoutFighterStatsOut {
+  return {
+    fighter_id: fighterId,
+    name,
+    corner,
+    knockdowns: null,
+    sig_strikes_landed: null,
+    sig_strikes_attempted: null,
+    takedowns_landed: null,
+    takedowns_attempted: null,
+    submission_attempts: null,
+    control_time_seconds: null,
+    ...NULL_STRIKE_SPLITS,
+    source: "cito",
+  };
+}
+
+/*
+  Luta agendada do `UFC 332` (bout id 90, o mesmo do card do evento): data do
+  evento já passada e a luta ainda `scheduled`, porque o `gap_sync` é manual.
+  Contexto de card **sem seção** — o caso que o `bout_order` como porteiro de
+  `fill_bout_context` produz no acervo antigo —, mas com divisão, formato e luta
+  de título.
+*/
+const MUHAMMAD_RAKHMONOV: BoutDetailOut = {
+  id: 90,
+  event: {
+    id: 801,
+    name: "UFC 332",
+    date: AWAITING_SYNC_EVENT_DATE,
+    location: "Las Vegas, USA",
+    source: "cito",
+  },
+  winner_id: null,
+  method: null,
+  round: null,
+  ending_time_seconds: null,
+  weight_class: "Welterweight",
+  status: "scheduled",
+  card_section: null,
+  title_bout: true,
+  scheduled_rounds: 5,
+  referee: null,
+  rounds: [],
+  source: "cito",
+  fighters: [
+    scheduledCornerStats(700, "Belal Muhammad", "red"),
+    scheduledCornerStats(800, "Shavkat Rakhmonov", "blue"),
+  ],
+};
+
+/*
+  Luta agendada do `UFC 334` (bout id 821), com o contexto de card **completo**:
+  o PASSO-00 mediu `card_section` e `bout_order` em 100% das 89 lutas agendadas
+  do banco, então contexto preenchido é o caso dominante e o nulo (bout 90) é o
+  secundário.
+*/
+const OLIVEIRA_TSARUKYAN_AGENDADA: BoutDetailOut = {
+  id: 821,
+  event: {
+    id: 812,
+    name: "UFC 334",
+    date: AWAITING_SYNC_EVENT_DATE,
+    location: "Abu Dhabi, UAE",
+    source: "cito",
+  },
+  winner_id: null,
+  method: null,
+  round: null,
+  ending_time_seconds: null,
+  weight_class: "Lightweight",
+  status: "scheduled",
+  card_section: "Main Card",
+  title_bout: false,
+  scheduled_rounds: 3,
+  referee: null,
+  rounds: [],
+  source: "cito",
+  fighters: [
+    scheduledCornerStats(300, "Charles Oliveira", "red"),
+    scheduledCornerStats(400, "Arman Tsarukyan", "blue"),
+  ],
+};
+
+/*
+  Luta agendada **sem nenhum contexto de card e com um canto só** (bout id 823).
+  Os dois estados existem no acervo e aparecem juntos: é a mesma luta mal
+  cadastrada que faz o endpoint de previsão responder `missing_corners`.
+
+  Na tela: nenhum bloco de contexto (um quadro vazio rotulado "Contexto do card"
+  prometeria dado que não existe) e nenhum link para `/confronto`, que exige dois
+  lutadores — link quebrado é pior que a ausência dele.
+*/
+const AGENDADA_SEM_CONTEXTO: BoutDetailOut = {
+  id: 823,
+  event: {
+    id: 812,
+    name: "UFC 334",
+    date: AWAITING_SYNC_EVENT_DATE,
+    location: "Abu Dhabi, UAE",
+    source: "cito",
+  },
+  winner_id: null,
+  method: null,
+  round: null,
+  ending_time_seconds: null,
+  weight_class: null,
+  status: "scheduled",
+  card_section: null,
+  title_bout: null,
+  scheduled_rounds: null,
+  referee: null,
+  rounds: [],
+  source: "cito",
+  fighters: [scheduledCornerStats(900, "Caio Borralho", "red")],
+};
+
 /** Detalhe por id da luta; ausente no mapa significa 404. */
 export const BOUT_DETAIL_FIXTURES: Record<number, BoutDetailOut> = {
   7: PEREIRA_HILL,
   8: OLIVEIRA_TSARUKYAN,
   9: HOLLOWAY_POIRIER,
+  90: MUHAMMAD_RAKHMONOV,
+  821: OLIVEIRA_TSARUKYAN_AGENDADA,
+  823: AGENDADA_SEM_CONTEXTO,
 };

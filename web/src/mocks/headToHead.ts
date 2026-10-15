@@ -1,4 +1,9 @@
-import type { BoutDetailOut, BoutFighterStatsOut } from "@/api/schema";
+import type {
+  BoutDetailOut,
+  BoutFighterStatsOut,
+  CommonOpponentOut,
+} from "@/api/schema";
+import { JONES_ADESANYA_COMMON } from "@/mocks/matchup";
 import { NULL_STRIKE_SPLITS } from "@/mocks/strikeSplits";
 
 /*
@@ -51,6 +56,11 @@ const JONES_VS_VOLKANOVSKI: BoutDetailOut[] = [
     round: 2,
     ending_time_seconds: 84,
     weight_class: "Light Heavyweight",
+    // `HeadToHeadOut.bouts` reusa `BoutDetailOut` e a secao filtra `completed`:
+    // aqui o `status` sai sempre assim. `card_section` nulo porque o
+    // enriquecimento de contexto da Cito nao alcanca evento de 2016.
+    status: "completed",
+    card_section: null,
     title_bout: false,
     scheduled_rounds: 3,
     referee: "Herb Dean",
@@ -83,4 +93,19 @@ const DIRECT_BOUTS: Record<string, BoutDetailOut[]> = {
 /** Confrontos diretos do par; lista vazia quando os dois nunca se enfrentaram. */
 export function headToHeadBouts(a: number, b: number): BoutDetailOut[] {
   return DIRECT_BOUTS[pairKey(a, b)] ?? [];
+}
+
+/*
+  Adversários em comum por par (RF-16). O par (1, 2) fica ausente de propósito:
+  eles se enfrentaram, e o próprio par nunca aparece nesta seção. É o par (1, 3),
+  que nunca se enfrentou, que tem adversário em comum — o caso que faz a página
+  servir para a dupla sem confronto direto.
+*/
+const COMMON_OPPONENTS: Record<string, CommonOpponentOut[]> = {
+  [pairKey(1, 3)]: JONES_ADESANYA_COMMON,
+};
+
+/** Adversários em comum do par; lista vazia quando não há nenhum. */
+export function commonOpponents(a: number, b: number): CommonOpponentOut[] {
+  return COMMON_OPPONENTS[pairKey(a, b)] ?? [];
 }

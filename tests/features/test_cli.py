@@ -19,7 +19,10 @@ from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 from apps.fighters.models import Fighter
-from ingestion.features.cli import _enriched_long_frame, run_build
+from ingestion.features.asof import MATERIALIZE_ASOF_COMMAND
+from ingestion.features.cli import _enriched_long_frame, main, run_build, run_check, run_materialize
+from ingestion.features.freshness import StaleFeatureCacheError
+from ingestion.features.materialize import MATERIALIZE_COMMAND
 from ingestion.features.rolling import (
     RECENT_FORM_FEATURES,
     ROUND1_SIG_STRIKE_SHARE_R3,
@@ -27,6 +30,28 @@ from ingestion.features.rolling import (
     WIN_RATE_PRIOR,
 )
 from ingestion.normalize import normalize_name
+
+
+class _SessionFalsa:
+    """``Session`` de fachada para o ``main``: registra a intenção de ``commit``.
+
+    O ``main`` abre ``SessionLocal()`` num ``with`` e commita no sucesso dos estágios de
+    escrita. Commitar de verdade aqui quebraria o isolamento da suíte (o rollback do teardown
+    é o que devolve o banco limpo), e o que o teste precisa afirmar é exatamente **que o
+    commit acontece** -- por isso a fachada registra em vez de executar.
+    """
+
+    def __init__(self, chamadas: list[str]) -> None:
+        self._chamadas = chamadas
+
+    def __enter__(self) -> _SessionFalsa:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def commit(self) -> None:
+        self._chamadas.append("commit")
 
 
 def _seed_one_bout(db_session: Session) -> None:
@@ -291,3 +316,68 @@ def test_enriched_long_frame_inclui_perfil_de_striking_e_dinamica_por_round(
 def _fighter_a_id(session: Session) -> int:
     """Id do ``Fighter A`` semeado por ``_seed_two_bouts_same_fighter``."""
     return int(session.execute(select(Fighter.id).where(Fighter.name == "Fighter A")).scalar_one())
+
+
+# ---------------------------------------------------------------------------
+# Estágio ``materialize-asof`` e a desambiguação das mensagens (SPEC 011, Slice 01)
+# ---------------------------------------------------------------------------
+
+
+def test_main_despacha_materialize_asof_e_commita(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CA-01: ``build --stage materialize-asof`` roda a materialização as-of e **commita**.
+
+    Mesmo contrato do estágio ``materialize`` (grão luta): os estágios de leitura não commitam,
+    os de escrita sim -- é o que torna a idempotência observável reexecutando o comando.
+    """
+    chamadas: list[str] = []
+    monkeypatch.setattr("ingestion.features.cli.SessionLocal", lambda: _SessionFalsa(chamadas))
+
+    def _registrar(_session: object, **_kwargs: object) -> int:
+        chamadas.append("materialize-asof")
+        return 0
+
+    monkeypatch.setattr("ingestion.features.cli.run_materialize_asof", _registrar)
+
+    main(["build", "--stage", "materialize-asof"])
+
+    assert chamadas == ["materialize-asof", "commit"]
+
+
+def test_run_build_nao_aceita_o_estagio_de_escrita_as_of(db_session: Session) -> None:
+    """``run_build`` é o despacho dos estágios de LEITURA -- o de escrita não entra por ali.
+
+    Mesma fronteira que ``materialize`` já respeita: quem escreve tem função própria, chamada
+    pelo ``main``, para que nenhum estágio read-only possa persistir por engano.
+    """
+    with pytest.raises(ValueError, match="Estágio desconhecido"):
+        run_build(db_session, stage="materialize-asof")
+
+
+def test_o_aviso_de_bout_features_nomeia_o_estagio_certo(db_session: Session) -> None:
+    """CA-P1: o aviso do cache **por luta** manda rodar ``--stage materialize``, não o as-of.
+
+    A armadilha é de substring: ``"--stage materialize"`` é **prefixo** de
+    ``"--stage materialize-asof"``, então uma asserção ingênua (``in``) passaria com a mensagem
+    errada. A asserção negativa é obrigatória -- sem ela, a RF-06 acabaria mandando o usuário
+    reconstruir o cache errado, e o defasado continuaria defasado.
+    """
+    _seed_one_bout(db_session)
+    run_materialize(db_session)
+    _seed_two_bouts_same_fighter(db_session)
+
+    with pytest.raises(StaleFeatureCacheError) as excinfo:
+        run_check(db_session)
+
+    mensagem = str(excinfo.value)
+    # Nomeia o cache pelo grão, não só pela tabela: com dois caches as-of no projeto, "o cache
+    # está defasado" deixou de ser diagnóstico.
+    assert "bout_features (cache por luta)" in mensagem
+    assert MATERIALIZE_COMMAND in mensagem
+    assert "materialize-asof" not in mensagem
+
+
+def test_as_duas_constantes_de_comando_sao_distintas() -> None:
+    """CA-P1: cada cache nomeia o próprio estágio, e os dois comandos não se confundem."""
+    assert MATERIALIZE_COMMAND.endswith("--stage materialize")
+    assert MATERIALIZE_ASOF_COMMAND.endswith("--stage materialize-asof")
+    assert MATERIALIZE_COMMAND != MATERIALIZE_ASOF_COMMAND

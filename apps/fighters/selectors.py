@@ -3,7 +3,9 @@
 Recebe a ``Session`` por injeção e devolve models do domínio. ``list_fighters``
 retorna a página de linhas e o total do conjunto filtrado; a ordenação por
 ``name`` é obrigatória para o ``limit``/``offset`` paginar de forma determinística
-no Postgres. O filtro por nome é ``ILIKE '%name%'`` (case-insensitive substring).
+no Postgres. A busca é ``ILIKE '%q%'`` (case-insensitive substring) sobre o nome
+**ou** o apelido, com o curinga do ``LIKE`` escapado -- o termo digitado vale como
+texto literal (RF-29).
 
 ``get_fighter_history`` monta a série temporal do lutador com join explícito
 (``bout_fighters`` -> ``bouts`` -> ``events``). Cada linha traz as stats granulares
@@ -18,29 +20,49 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from apps.bouts.enums import BoutMethod
+from apps.bouts.enums import BoutMethod, BoutStatus
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
 
+_LIKE_ESCAPE = "\\"
+
+
+def _like_pattern(term: str) -> str:
+    """Converte o termo digitado em padrão ``LIKE`` de substring, com curinga escapado.
+
+    A ordem dos ``replace`` é obrigatória: a barra invertida **primeiro**. Escapá-la
+    depois de ``%``/``_`` escaparia de novo as barras que esses dois acabaram de inserir.
+    """
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
 
 def list_fighters(
-    session: Session, *, name: str | None, limit: int, offset: int
+    session: Session, *, q: str | None, limit: int, offset: int
 ) -> tuple[list[Fighter], int]:
-    """Devolve ``(linhas, total)`` de fighters, opcionalmente filtrados por nome.
+    """Devolve ``(linhas, total)`` de fighters, buscados por nome **ou** apelido.
 
     ``total`` é a contagem do conjunto após o filtro (não da página), para o
-    envelope de paginação. Um ``name`` vazio ou ausente não filtra.
+    envelope de paginação. Um ``q`` vazio ou ausente não filtra.
+
+    ``q`` vale como texto literal: ``%`` e ``_`` digitados não funcionam como curinga
+    (RF-29). O padrão escapado é montado **uma vez** e usado nos dois ``ilike`` -- montá-lo
+    duas vezes é justamente o defeito que deixaria um dos campos sem escape.
     """
     stmt = select(Fighter)
     count_stmt = select(func.count()).select_from(Fighter)
-    if name:
-        name_filter = Fighter.name.ilike(f"%{name}%")
-        stmt = stmt.where(name_filter)
-        count_stmt = count_stmt.where(name_filter)
+    if q:
+        pattern = _like_pattern(q)
+        term_filter = or_(
+            Fighter.name.ilike(pattern, escape=_LIKE_ESCAPE),
+            Fighter.nickname.ilike(pattern, escape=_LIKE_ESCAPE),
+        )
+        stmt = stmt.where(term_filter)
+        count_stmt = count_stmt.where(term_filter)
 
     total = session.scalar(count_stmt) or 0
     rows = session.scalars(stmt.order_by(Fighter.name).limit(limit).offset(offset)).all()
@@ -100,12 +122,16 @@ def get_fighter_history(session: Session, fighter_id: int) -> list[FighterBoutRo
     stats granulares daquele lutador naquela luta e o adversário (outro canto),
     ambos com a identidade do lutador eager-loaded. Lutador sem lutas devolve
     lista vazia (o not-found é decidido no router).
+
+    O recorte é **luta realizada** (M9, RF-07): histórico é passado, e a luta já marcada
+    chega à tela pelo card do evento futuro. Sem o filtro, o cartel exibido somaria uma luta
+    que ainda não aconteceu, com desfecho nulo.
     """
     stmt = (
         select(BoutFighter, Bout, Event)
         .join(Bout, BoutFighter.bout_id == Bout.id)
         .join(Event, Bout.event_id == Event.id)
-        .where(BoutFighter.fighter_id == fighter_id)
+        .where(BoutFighter.fighter_id == fighter_id, Bout.status == BoutStatus.COMPLETED)
         .options(selectinload(BoutFighter.fighter))
         .order_by(Event.date.asc(), Bout.id.asc())
     )
@@ -183,6 +209,16 @@ def get_fighter_stats(session: Session, fighter_id: int) -> FighterStats | None:
     (``bouts_counted == 0``, médias ``None``, ``wins_by_method`` vazio). No
     Postgres ``func.avg`` retorna ``Decimal | None`` e ignora NULL -- a fronteira
     converte para ``float | None``.
+
+    O agregado junta ``bouts`` e filtra **luta realizada** (M9, RF-07), e a armadilha aqui
+    vale registro: sem o filtro, o erro seria **silencioso**. Como ``func.avg`` ignora
+    ``NULL`` e o canto de uma luta agendada tem stats nulas, as médias permaneceriam
+    corretas enquanto ``bouts_counted`` e o denominador do ``striking_profile`` inflariam --
+    a contagem mente, a média não.
+
+    A query de ``wins_by_method`` **não** precisa do filtro: ela casa por
+    ``Bout.winner_id == fighter_id``, e luta agendada tem vencedor nulo. Filtrar de novo ali
+    esconderia qual das duas guardas protege.
     """
     if get_fighter_by_id(session, fighter_id) is None:
         return None
@@ -199,7 +235,10 @@ def get_fighter_stats(session: Session, fighter_id: int) -> FighterStats | None:
             func.sum(BoutFighter.distance_landed),
             func.sum(BoutFighter.clinch_landed),
             func.sum(BoutFighter.ground_landed),
-        ).where(BoutFighter.fighter_id == fighter_id)
+        )
+        .select_from(BoutFighter)
+        .join(Bout, Bout.id == BoutFighter.bout_id)
+        .where(BoutFighter.fighter_id == fighter_id, Bout.status == BoutStatus.COMPLETED)
     ).one()
 
     share_head, share_body, share_leg = _group_shares((aggregate[4], aggregate[5], aggregate[6]))

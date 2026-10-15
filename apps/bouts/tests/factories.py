@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from polyfactory.factories.sqlalchemy_factory import SQLAlchemyFactory
 
-from apps.bouts.enums import BoutMethod
+from apps.bouts.enums import BoutMethod, BoutStatus
 from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 
@@ -39,7 +39,19 @@ class BoutFactory(SQLAlchemyFactory[Bout]):
 
     ``winner_id`` fica nulo por padrão (empate/no contest ou vencedor não semeado),
     evitando a FK de ``fighters`` quando o teste só se importa com o card; passe o
-    id real quando o vencedor importar. ``method`` assume decisão por padrão.
+    id real quando o vencedor importar. ``method`` assume decisão por padrão e ``status``
+    assume ``completed`` -- os dois fixados de propósito, porque ambas as colunas são enum
+    (e ``method`` virou nullable no M9), e o sorteio do polyfactory tornaria a suíte
+    não-determinística.
+
+    ``card_section`` e ``bout_order`` ficam **nulos** pela mesma razão, e não por serem enum:
+    o ``SQLAlchemyFactory`` sorteia valor para qualquer coluna, inclusive ``str | None`` e
+    ``int | None``. Os dois sorteios custavam vermelho de diagnóstico caro -- uma seção de card
+    aleatória faz um teste de contrato passar isolado e falhar na suíte, e um ``bout_order``
+    aleatório embaralha a ordem de ``list_event_bouts`` (``bout_order asc nulls_last, id asc``),
+    deixando qualquer asserção de ordem do card à mercê do sorteio. Nulos, os dois refletem o
+    caso comum do acervo (contexto de card só cobre evento recente) e a ordem cai no ``id asc``,
+    que é a de inserção -- determinística. O teste que precisa de contexto o declara.
     """
 
     __model__ = Bout
@@ -53,6 +65,24 @@ class BoutFactory(SQLAlchemyFactory[Bout]):
     @classmethod
     def method(cls) -> BoutMethod:
         return BoutMethod.DECISION
+
+    @classmethod
+    def status(cls) -> BoutStatus:
+        """Realizada por padrão; o teste de luta agendada sobrescreve explicitamente.
+
+        Fixar não é opcional: o ``SQLAlchemyFactory`` sorteia valor para coluna de enum, e
+        um ``scheduled`` aleatório faria testes de histórico e de features falharem de forma
+        intermitente -- o tipo de vermelho que custa horas para diagnosticar.
+        """
+        return BoutStatus.COMPLETED
+
+    @classmethod
+    def card_section(cls) -> None:
+        return None
+
+    @classmethod
+    def bout_order(cls) -> None:
+        return None
 
     @classmethod
     def source(cls) -> str:

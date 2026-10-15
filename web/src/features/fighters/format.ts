@@ -29,13 +29,20 @@ export function formatStance(stance: Stance | null): string {
  * pelo backend; empate e no contest chegam como `won=false`. A linha só
  * distingue "Sem resultado" (no contest); o cartel V/D/E do topo é a fonte
  * autoritativa do retrospecto — a linha não infere empate (o dado não vem).
+ *
+ * Luta agendada (`method` nulo) chega igualmente com `won=false`, porque o
+ * backend deriva `won` de um `winner_id` que ela não tem. Sem a guarda, a
+ * ausência de vitória seria exibida como derrota.
  */
 export function formatResult(bout: {
   won: boolean;
-  method: BoutMethod;
+  method: BoutMethod | null;
 }): string {
   if (bout.won) {
     return "Vitória";
+  }
+  if (bout.method === null) {
+    return "Agendada";
   }
   return bout.method === "no_contest" ? "Sem resultado" : "Derrota";
 }

@@ -65,6 +65,7 @@ from typing import cast
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from apps.bouts.enums import BoutStatus
 from apps.bouts.models import Bout, BoutFighter, BoutFighterRound
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -257,6 +258,12 @@ def load_persisted_lines(session: Session, event: Event) -> list[tuple[GranularL
     Devolve ``(linha, source_da_linha)`` -- o ``source`` acompanha porque as duas tabelas têm
     linhagens diferentes no mesmo evento e a medição precisa reportá-las em separado. Evento
     fora da janela levanta. **Leitura pura**: nenhuma escrita, nenhum ``flush``.
+
+    As duas projeções filtram **luta realizada** (M9, RF-07). A trava do módulo
+    (``event.date < OFFICIAL_WINDOW_START``) não basta: ela **só protege o passado**, e o
+    caminho ``--event-slug`` alcança evento agendado, que tem ``cito_slug`` como qualquer
+    outro. Sem o filtro, os cantos de uma luta por vir entrariam na medição com todos os
+    campos nulos e seriam reportados como divergência contra a fonte oficial.
     """
     if event.date < OFFICIAL_WINDOW_START:
         raise EventOutsideWindowError(
@@ -268,7 +275,7 @@ def load_persisted_lines(session: Session, event: Event) -> list[tuple[GranularL
         select(BoutFighter, Fighter.name)
         .join(Bout, Bout.id == BoutFighter.bout_id)
         .join(Fighter, Fighter.id == BoutFighter.fighter_id)
-        .where(Bout.event_id == event.id)
+        .where(Bout.event_id == event.id, Bout.status == BoutStatus.COMPLETED)
     ).all()
 
     lines: list[tuple[GranularLine, str]] = [
@@ -281,7 +288,7 @@ def load_persisted_lines(session: Session, event: Event) -> list[tuple[GranularL
         .join(BoutFighter, BoutFighter.id == BoutFighterRound.bout_fighter_id)
         .join(Bout, Bout.id == BoutFighter.bout_id)
         .join(Fighter, Fighter.id == BoutFighter.fighter_id)
-        .where(Bout.event_id == event.id)
+        .where(Bout.event_id == event.id, Bout.status == BoutStatus.COMPLETED)
     ).all()
 
     lines.extend(

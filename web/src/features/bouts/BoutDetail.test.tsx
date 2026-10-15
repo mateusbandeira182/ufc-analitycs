@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { BoutDetail } from "@/features/bouts/BoutDetail";
 import { EventPage } from "@/features/events/EventPage";
 import { server } from "@/mocks/server";
+import { contarColunas, gradeDeCantos } from "@/test/gridColumns";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
 function renderBoutPage(id: number | string) {
@@ -16,6 +17,23 @@ function renderBoutPage(id: number | string) {
 }
 
 describe("BoutDetail", () => {
+  /**
+   * Mesma invariante da Home e do card de evento. Aqui o divisor é o "vs" dentro
+   * do ternário do `.map()`, então a contagem de filhos depende de um
+   * condicional — e não de um número fixo. É a tela mais frágil das três.
+   */
+  it("declara tantas colunas quantos filhos na grade do confronto marcado", async () => {
+    renderBoutPage(90);
+
+    const marcado = await screen.findByRole("region", {
+      name: /confronto marcado/i,
+    });
+    const grade = gradeDeCantos(marcado);
+
+    expect(grade).not.toBeNull();
+    expect(contarColunas(grade!.className)).toBe(grade!.children.length);
+  });
+
   it("mostra o skeleton enquanto a luta carrega", () => {
     server.use(
       http.get("*/api/v1/bouts/:id", async () => {
@@ -173,5 +191,184 @@ describe("BoutDetail", () => {
     expect(
       await screen.findByRole("table", { name: /estatísticas por lutador/i }),
     ).toBeInTheDocument();
+  });
+});
+
+/*
+  `/bouts/:id` de luta agendada (CA-30). Com `bouts.status` no acervo, esta rota
+  passou a ser alcançável para uma luta que ainda não aconteceu — e ela não pode
+  responder com erro, tela vazia nem zeros. Zero em golpe significativo é uma
+  afirmação sobre a luta; ausência de luta não é zero, e o traço também não é
+  resposta: ele responde "decisão sem tempo registrado", outra pergunta.
+*/
+describe("BoutDetail — luta agendada", () => {
+  it("avisa que a luta ainda não aconteceu, no lugar do resultado", async () => {
+    renderBoutPage(90);
+
+    expect(await screen.findByText(/ainda não aconteceu/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: /resultado da luta/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("não renderiza a tabela de box-score", async () => {
+    renderBoutPage(90);
+
+    await screen.findByText(/ainda não aconteceu/i);
+
+    // `BoutStats` com stats nulas renderizaria uma tabela inteira de traços,
+    // que é a mesma mentira que o zero.
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/estatísticas por lutador/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("não mostra zero, traço de estatística nem rótulo de vencedor", async () => {
+    renderBoutPage(90);
+
+    await screen.findByText(/ainda não aconteceu/i);
+
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.queryByText("0:00")).not.toBeInTheDocument();
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^vencedor$/i)).not.toBeInTheDocument();
+    // Nenhum canto recebe nome acessível de vencedor.
+    expect(
+      screen.getByRole("link", { name: /belal muhammad/i }),
+    ).not.toHaveAccessibleName(/vencedor/i);
+  });
+
+  it("mostra o confronto com os dois cantos linkando para o lutador", async () => {
+    renderBoutPage(90);
+
+    await screen.findByText(/ainda não aconteceu/i);
+
+    expect(
+      screen.getByRole("link", { name: /belal muhammad/i }),
+    ).toHaveAttribute("href", "/fighters/700");
+    expect(
+      screen.getByRole("link", { name: /shavkat rakhmonov/i }),
+    ).toHaveAttribute("href", "/fighters/800");
+    expect(screen.getByText(/canto vermelho/i)).toBeInTheDocument();
+    expect(screen.getByText(/canto azul/i)).toBeInTheDocument();
+  });
+
+  it("leva ao confronto por `fighter_id`, nunca por nome", async () => {
+    renderBoutPage(90);
+
+    await screen.findByText(/ainda não aconteceu/i);
+
+    expect(screen.getByRole("link", { name: /por que/i })).toHaveAttribute(
+      "href",
+      "/confronto?a=700&b=800",
+    );
+  });
+
+  it("mostra o contexto do card que existe, e omite o que não veio", async () => {
+    // Bout 90: sem `card_section` (o `bout_order` é porteiro de
+    // `fill_bout_context`), com divisão, formato e luta de título.
+    renderBoutPage(90);
+
+    const contexto = await screen.findByRole("group", {
+      name: /contexto do card/i,
+    });
+    expect(within(contexto).getByText(/welterweight/i)).toBeInTheDocument();
+    expect(within(contexto).getByText(/5 rounds/i)).toBeInTheDocument();
+    expect(within(contexto).getByText(/luta de título/i)).toBeInTheDocument();
+    // Seção ausente não vira traço mudo: o termo simplesmente não aparece.
+    expect(
+      within(contexto).queryByText(/seção do card/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("mostra a seção do card quando o payload a traz", async () => {
+    renderBoutPage(821);
+
+    const contexto = await screen.findByRole("group", {
+      name: /contexto do card/i,
+    });
+    expect(within(contexto).getByText(/seção do card/i)).toBeInTheDocument();
+    expect(within(contexto).getByText("Main Card")).toBeInTheDocument();
+    expect(within(contexto).getByText(/lightweight/i)).toBeInTheDocument();
+    expect(within(contexto).getByText(/3 rounds/i)).toBeInTheDocument();
+    // Não é luta de título: o rótulo não aparece afirmando o contrário.
+    expect(
+      within(contexto).queryByText(/luta de título/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("mantém o link para o evento", async () => {
+    renderBoutPage(90);
+
+    const eventLink = await screen.findByRole("link", { name: /ufc 332/i });
+    expect(eventLink).toHaveAttribute("href", "/events/801");
+  });
+
+  it("navega do card de evento futuro para a página da luta agendada", async () => {
+    const user = userEvent.setup();
+    const { router } = renderWithProviders(<EventPage />, {
+      routes: [
+        { path: "/events/:id", element: <EventPage /> },
+        { path: "/bouts/:id", element: <BoutDetail /> },
+      ],
+      initialEntries: ["/events/801"],
+    });
+
+    const bout = await screen.findByRole("listitem", {
+      name: /belal muhammad vs shavkat rakhmonov/i,
+    });
+    await user.click(within(bout).getByRole("link", { name: /ver luta/i }));
+
+    expect(router.state.location.pathname).toBe("/bouts/90");
+    expect(await screen.findByText(/ainda não aconteceu/i)).toBeInTheDocument();
+  });
+});
+
+describe("BoutDetail — a luta realizada não regrediu", () => {
+  it("segue com o box-score completo e o grupo de resultado", async () => {
+    // A metade "não regredi" da CA-30: o ramo `completed` é o de sempre.
+    renderBoutPage(7);
+
+    expect(
+      await screen.findByRole("table", { name: /estatísticas por lutador/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("group", { name: /resultado da luta/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ainda não aconteceu/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: /contexto do card/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("BoutDetail — luta agendada sem contexto e sem os dois cantos", () => {
+  it("omite o bloco de contexto quando nenhum campo veio", async () => {
+    renderBoutPage(823);
+
+    await screen.findByText(/ainda não aconteceu/i);
+
+    // Um quadro vazio rotulado "Contexto do card" prometeria dado que não
+    // existe. Ausência se declara pela ausência do bloco, não por traços.
+    expect(
+      screen.queryByRole("group", { name: /contexto do card/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
+  it("omite o link do confronto quando falta um dos cantos", async () => {
+    renderBoutPage(823);
+
+    await screen.findByText(/ainda não aconteceu/i);
+
+    // `/confronto` exige dois lutadores: o canto presente segue linkando para o
+    // lutador, mas não há par para comparar.
+    expect(
+      screen.queryByRole("link", { name: /por que/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /caio borralho/i }),
+    ).toHaveAttribute("href", "/fighters/900");
   });
 });

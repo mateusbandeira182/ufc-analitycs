@@ -84,10 +84,15 @@ def test_bouts_card_section_guarda_o_rotulo_cru_da_cito() -> None:
 
 
 def test_bouts_preserva_colunas_e_nulidade_existentes() -> None:
-    """A migration do contexto de card é aditiva: nada pré-existente em ``bouts`` muda (CA-06)."""
+    """A migration do contexto de card é aditiva: nada pré-existente em ``bouts`` muda (CA-06).
+
+    ``method`` saiu desta lista no M9 (SPEC 011, RF-07): ele passou a **nullable** de
+    propósito, porque ``bouts`` hoje comporta luta agendada, que não tem desfecho. A nulidade
+    de ``method`` é afirmada em ``tests/test_schema_m9.py``, onde a decisão mora -- deixá-la
+    aqui faria este arquivo do M6 reprovar uma mudança posterior que ele não governa.
+    """
     colunas = _tabela("bouts").columns
     assert colunas["event_id"].nullable is False
-    assert colunas["method"].nullable is False
     assert colunas["source"].nullable is False
     assert colunas["winner_id"].nullable is True
     assert colunas["weight_class"].nullable is True

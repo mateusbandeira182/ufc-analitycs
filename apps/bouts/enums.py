@@ -20,6 +20,19 @@ class BoutMethod(StrEnum):
     NO_CONTEST = "no_contest"
 
 
+class BoutStatus(StrEnum):
+    """A luta já aconteceu, ou está apenas agendada?
+
+    Existe porque ``bouts`` passou a comportar luta **sem** resultado (card por vir, M9):
+    sem esta coluna, a pipeline de features e o histórico do lutador tratariam uma luta que
+    ainda não ocorreu como se fosse passado. ``COMPLETED`` é o default do model -- é ele que
+    preserva a semântica de toda escrita que existia antes da coluna.
+    """
+
+    COMPLETED = "completed"
+    SCHEDULED = "scheduled"
+
+
 class Corner(StrEnum):
     """Canto do lutador na luta."""
 

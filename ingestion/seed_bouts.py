@@ -44,7 +44,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -499,6 +499,9 @@ def load_bouts(
                 round=core["round"],
                 ending_time_seconds=core["ending_time_seconds"],
                 weight_class=core["weight_class"],
+                # Explícito, não herdado do default: o seed do Kaggle é histórico congelado
+                # (ADR 0002) e nunca produz luta agendada.
+                status=BoutStatus.COMPLETED,
                 source=SOURCE,
             )
             session.add(bout)

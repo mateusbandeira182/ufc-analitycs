@@ -7,13 +7,41 @@ ficou verde durante todo o M5 e o M6 sobre payloads que a API não produz, e **n
 auditorias pegou. O formato do identificador é o critério mais barato que teria pegado: um id
 inventado não se parece com um id real.
 
-Formatos aceitos, medidos sobre as 157 capturas de evento em ``.cache/cito`` (1.933 ids
-distintos): 16 caracteres hexadecimais minúsculos (1.481 ocorrências, ex.: ``12cedec11b37ddc0``)
-ou um id numérico de 5 dígitos (452 ocorrências, ex.: ``11963``, usado em eventos sem
-enriquecimento do ufcstats). Nenhuma outra forma aparece.
+Formatos aceitos nas capturas de **stats de evento**, medidos sobre as 157 capturas em
+``.cache/cito`` (1.933 ids distintos): 16 caracteres hexadecimais minúsculos (1.481
+ocorrências, ex.: ``12cedec11b37ddc0``) ou um id numérico de 5 dígitos (452 ocorrências, ex.:
+``11963``, usado em eventos sem enriquecimento do ufcstats).
 
-A trava é deliberadamente **sem lista de exceção**: uma fixture que precise de um id fora do
-formato está afirmando algo sobre a API que não foi medido, e é isso que se quer barrar.
+O CATÁLOGO COM ``includeBouts`` TEM UM VOCABULÁRIO MAIS LARGO -- medido na Slice 04 do M9
+--------------------------------------------------------------------------------------------
+Aquela medição cobria só ``event_stats_*``, que é o endpoint dos eventos **realizados**. O
+catálogo com ``includeBouts=true`` traz o card de eventos **agendados**, e ali a Cito usa duas
+formas que nunca apareceram antes. Medido em 2026-10-15 sobre
+``catalog_l100_f2024-04-01_tall_ib_p1..p6.json`` (1.408 ids de luta):
+
+- ``hex16``: 825 -- todas em evento ``completed``;
+- numérico: 531 de 5 dígitos **e 1 de 4** (``1273``, em 'road-ufc-season-4-semifinals');
+- ``uuid-<uuid4>``: 23 -- **todas** em evento ``scheduled`` (ex.:
+  ``uuid-4568e65a-bd29-4496-8294-68cfb97d8e4b``);
+- forma de **slug**, ``<discriminante do evento>-<lutador>-<lutador>``: 28 -- **todas** em
+  evento ``scheduled``, e **uma delas com maiúscula**
+  (``fight-night-september-05-2026-Muhammad-Naimov-losen-keita``), ex.:
+  ``333-aaron-pico-arnold-allen``.
+
+Ou seja: **51 dos 52** ids "fora do formato" estão em evento agendado. Eles eram invisíveis até
+esta slice porque nada antes dela lia o card de um evento por vir.
+
+Por que o ramo do catálogo pode ser mais frouxo que o de stats
+--------------------------------------------------------------
+A forma de slug admite, por construção, algo parecido com o ``"ufc-319-bout-1"`` inventado que
+originou esta trava -- então ela **não** é aplicada às fixtures de stats, só às páginas de
+catálogo. A assimetria tem fundamento: em ``event_stats_*`` o ``bout_id`` **é** a chave de
+casamento (``(cito_bout_id, fighter_slug)``, ADR 0005), então um id inventado ali grava round no
+canto errado; no catálogo ele é só uma chave de lookup em memória -- a luta agendada é
+persistida pela chave natural (evento + par de lutadores), nunca pelo id da Cito.
+
+A trava segue **sem lista de exceção** por arquivo: o que mudou é o formato **medido** de um
+endpoint, não uma dispensa para uma fixture específica.
 """
 
 from __future__ import annotations
@@ -33,7 +61,25 @@ _CHAVES_DE_BOUT_ID = frozenset({"bout_id", "boutId"})
 # exatamente ali que o ``"ufc-319-bout-1"`` morava no bloco ``bouts[]`` da fixture antiga.
 _LISTAS_DE_LUTA = frozenset({"bouts"})
 
-_FORMATO_REAL = re.compile(r"^(?:[0-9a-f]{16}|[0-9]{5})$")
+# Formato das capturas de stats de evento: estrito, porque ali o id É a chave de casamento.
+_FORMATO_REAL = re.compile(r"^(?:[0-9a-f]{16}|[0-9]{4,5})$")
+
+# Formato adicional que SÓ as páginas do catálogo com ``includeBouts`` produzem (ver o
+# docstring do módulo): ``uuid-<uuid4>`` e a forma de slug do card agendado.
+_FORMATO_CATALOGO = re.compile(
+    r"^(?:uuid-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|[0-9A-Za-z][0-9A-Za-z-]*)$"
+)
+
+# Nome das fixtures de página de catálogo (o endpoint ``GET /api/v1/ufc/events``).
+_PREFIXO_CATALOGO = "events_catalog_page_"
+
+
+def _formato_aceito(fixture: Path) -> re.Pattern[str]:
+    """O formato de ``bout_id`` que esta fixture pode usar, pelo endpoint que a originou."""
+    if fixture.name.startswith(_PREFIXO_CATALOGO):
+        return _FORMATO_CATALOGO
+    return _FORMATO_REAL
 
 
 def _identificadores(node: object, *, dentro_de_bouts: bool = False) -> list[str]:
@@ -61,12 +107,13 @@ def _fixtures_json() -> list[Path]:
 def test_bout_id_das_fixtures_tem_o_formato_da_api_real(fixture: Path) -> None:
     """Nenhuma fixture da Cito carrega identificador de luta inventado."""
     payload = json.loads(fixture.read_text(encoding="utf-8"))
+    formato = _formato_aceito(fixture)
 
     fora_do_formato = sorted(
         {
             identificador
             for identificador in _identificadores(payload)
-            if not _FORMATO_REAL.match(identificador)
+            if not formato.match(identificador)
         }
     )
 
@@ -239,3 +286,44 @@ def test_a_trava_de_coerencia_enxerga_os_payloads_de_evento() -> None:
     quimera["data"]["bouts"][0]["eventSlug"] = "ufc-freedom-250"
 
     assert _incoerencias(Path("event_stats_ufc-fight-night-august-22-2026.json"), quimera)
+
+
+def test_o_ramo_estrito_continua_reprovando_o_id_inventado_original() -> None:
+    """Guarda da guarda: alargar o catálogo NÃO afrouxou o ramo que originou a trava.
+
+    ``"ufc-319-bout-1"`` é o id autoral que ficou verde durante o M5 e o M6 inteiros. Ele tem
+    forma de slug, então o ramo do catálogo o aceitaria -- e é exatamente por isso que o ramo de
+    stats, onde o id é a chave de casamento, permanece estrito.
+    """
+    inventado = "ufc-319-bout-1"
+
+    assert not _FORMATO_REAL.match(inventado)
+    assert _formato_aceito(Path("event_stats_ufc-319.json")) is _FORMATO_REAL
+    assert _formato_aceito(Path("events_catalog_page_1.json")) is _FORMATO_CATALOGO
+
+
+@pytest.mark.parametrize(
+    "identificador",
+    [
+        "uuid-4568e65a-bd29-4496-8294-68cfb97d8e4b",
+        "333-aaron-pico-arnold-allen",
+        "fight-night-september-05-2026-Muhammad-Naimov-losen-keita",
+        "12cedec11b37ddc0",
+        "11963",
+        "1273",
+    ],
+)
+def test_o_ramo_do_catalogo_aceita_as_formas_medidas(identificador: str) -> None:
+    """As seis formas medidas no catálogo real de 2026-09-01 passam (ver docstring do módulo)."""
+    assert _FORMATO_CATALOGO.match(identificador)
+
+
+@pytest.mark.parametrize("identificador", ["ufc 319 bout 1", "", "bout_#1", "-333-aaron-pico"])
+def test_o_ramo_do_catalogo_ainda_reprova_forma_que_a_cito_nao_produz(identificador: str) -> None:
+    """Espaço, vazio, pontuação e hífen inicial não aparecem em id nenhum da captura.
+
+    O que este ramo **não** consegue barrar é um slug curto inventado (``UUID-ABC`` é
+    indistinguível de um id de card legítimo): a forma de slug é larga por ser a forma real, e é
+    por isso que o ramo de stats -- onde o id vira chave de casamento -- continua estrito.
+    """
+    assert not _FORMATO_CATALOGO.match(identificador)

@@ -28,16 +28,82 @@ describe("FightersPage", () => {
     expect(screen.getByTestId("fighters-loading")).toBeInTheDocument();
   });
 
-  it("renderiza os lutadores vindos da API no sucesso", async () => {
+  it("renderiza os lutadores vindos da API numa tabela, com uma linha cada", async () => {
     renderFightersPage();
 
-    expect(await screen.findByText("Jon Jones")).toBeInTheDocument();
-    expect(screen.getByText("Alexander Volkanovski")).toBeInTheDocument();
-    expect(screen.getByText("Israel Adesanya")).toBeInTheDocument();
+    const tabela = await screen.findByRole("table", { name: /lutadores/i });
+    expect(within(tabela).getByText("Jon Jones")).toBeInTheDocument();
+    expect(
+      within(tabela).getByText("Alexander Volkanovski"),
+    ).toBeInTheDocument();
+    expect(within(tabela).getByText("Israel Adesanya")).toBeInTheDocument();
+
+    // Uma linha de cabeçalho + uma por lutador.
+    expect(within(tabela).getAllByRole("row")).toHaveLength(4);
+  });
+
+  it("exibe as colunas de cartel, altura, alcance e base", async () => {
+    renderFightersPage();
+
+    const tabela = await screen.findByRole("table", { name: /lutadores/i });
+    for (const coluna of [
+      /lutador/i,
+      /cartel/i,
+      /altura/i,
+      /alcance/i,
+      /base/i,
+    ]) {
+      expect(
+        within(tabela).getByRole("columnheader", { name: coluna }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("mostra o cartel, as medidas e a base formatados de cada lutador", async () => {
+    renderFightersPage();
+
+    const tabela = await screen.findByRole("table", { name: /lutadores/i });
+    const linha = within(tabela)
+      .getByText("Jon Jones")
+      .closest("tr") as HTMLElement;
+
+    expect(within(linha).getByText("27-1-0")).toBeInTheDocument();
+    expect(within(linha).getByText("193 cm")).toBeInTheDocument();
+    expect(within(linha).getByText("215 cm")).toBeInTheDocument();
+    expect(within(linha).getByText("Ortodoxa")).toBeInTheDocument();
+  });
+
+  it("mostra o apelido na linha, tornando a busca por apelido visível na tela", async () => {
+    renderFightersPage();
+
+    const tabela = await screen.findByRole("table", { name: /lutadores/i });
+    expect(within(tabela).getByText(/Bones/)).toBeInTheDocument();
+  });
+
+  it("leva ao lutador pelo link da linha", async () => {
+    renderFightersPage();
+
+    const link = await screen.findByRole("link", { name: /jon jones/i });
+    expect(link).toHaveAttribute("href", "/fighters/1");
+  });
+
+  it("usa o retrato quando há headshot_url e as iniciais quando não há", async () => {
+    renderFightersPage();
+
+    const tabela = await screen.findByRole("table", { name: /lutadores/i });
+
+    // Jon Jones tem retrato nas fixtures; Israel Adesanya, não (CA-22).
+    expect(
+      within(tabela).getByRole("img", { name: "Jon Jones" }),
+    ).toBeInTheDocument();
+    expect(within(tabela).getByText("IA")).toBeInTheDocument();
+    expect(
+      within(tabela).queryByRole("img", { name: "Israel Adesanya" }),
+    ).not.toBeInTheDocument();
   });
 
   it("mostra estado vazio quando a busca não retorna resultado", async () => {
-    renderFightersPage("/fighters?name=ninguem");
+    renderFightersPage("/fighters?q=ninguem");
 
     expect(
       await screen.findByText(/nenhum lutador encontrado/i),
@@ -58,7 +124,7 @@ describe("FightersPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("filtra server-side ao digitar e reflete o termo na URL", async () => {
+  it("filtra server-side ao digitar e reflete o termo na URL como `q`", async () => {
     const user = userEvent.setup();
     const { router } = renderFightersPage();
 
@@ -71,10 +137,32 @@ describe("FightersPage", () => {
       expect(screen.queryByText("Jon Jones")).not.toBeInTheDocument();
     });
 
-    const list = await screen.findByRole("list", { name: /lutadores/i });
-    expect(within(list).getByText("Alexander Volkanovski")).toBeInTheDocument();
-    expect(within(list).queryByText("Jon Jones")).not.toBeInTheDocument();
-    expect(router.state.location.search).toContain("name=volkanovski");
+    const tabela = await screen.findByRole("table", { name: /lutadores/i });
+    expect(
+      within(tabela).getByText("Alexander Volkanovski"),
+    ).toBeInTheDocument();
+    expect(within(tabela).queryByText("Jon Jones")).not.toBeInTheDocument();
+    expect(router.state.location.search).toContain("q=volkanovski");
+  });
+
+  it("encontra o lutador buscando pelo apelido", async () => {
+    const user = userEvent.setup();
+    const { router } = renderFightersPage();
+
+    await screen.findByText("Jon Jones");
+
+    const search = screen.getByLabelText(/buscar lutador/i);
+    await user.type(search, "bones");
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText("Alexander Volkanovski"),
+      ).not.toBeInTheDocument();
+    });
+
+    const tabela = await screen.findByRole("table", { name: /lutadores/i });
+    expect(within(tabela).getByText("Jon Jones")).toBeInTheDocument();
+    expect(router.state.location.search).toContain("q=bones");
   });
 
   it("pagina server-side lendo limit/offset da URL", async () => {
@@ -120,7 +208,7 @@ describe("FightersPage", () => {
     await waitFor(() => {
       expect(router.state.location.search).not.toContain("offset");
     });
-    expect(router.state.location.search).toContain("name=jon");
+    expect(router.state.location.search).toContain("q=jon");
   });
 
   it("orienta o usuário quando a página está fora do intervalo", async () => {

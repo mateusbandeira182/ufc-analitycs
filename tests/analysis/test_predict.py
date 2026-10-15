@@ -18,11 +18,14 @@ a predição sairia fabricada sobre um vetor inteiramente ``NaN``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from sqlalchemy import delete, event
 from sqlalchemy.orm import Session
 
 from analysis.model import load_artifact, run_training, save_artifact
@@ -30,25 +33,38 @@ from analysis.predict import (
     MatchupPrediction,
     _align_features,
     _asof_matchup_rows,
+    _prob_a_wins_by_bout,
+    neutral_prob_a_wins,
     predict_card,
     predict_matchup,
+    prob_a_wins_of,
+    serve_matchup,
 )
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
+from apps.features.models import FighterAsOfFeatures
+from apps.features.selectors import read_asof_features
 from apps.fighters.enums import Stance
 from apps.fighters.models import Fighter
-from ingestion.features.cli import run_materialize
+from ingestion.features.cli import run_materialize, run_materialize_asof
 from ingestion.features.long_frame import build_long_frame, read_granular
 from ingestion.features.rolling import (
     OPPONENT_WIN_RATE_PRIOR_AVG,
     SIMILAR_STYLE_WIN_RATE_PRIOR,
     SOUTHPAW_OPPONENTS_FACED_PRIOR,
+    WIN_RATE_PRIOR,
 )
 from ingestion.normalize import normalize_name
 
 # Roster sintético: nome -> alcance (cm). O alcance é o sinal preditivo (quem tem mais
 # alcance vence), variado por canto para produzir alvos R e B (ambas as classes).
+# Teto de statements do caminho quente de ``predict_card`` (CA-02). Com o cache, a predição
+# é UMA leitura por chamada; o teto acomoda o eventual ``SELECT`` de sessão sem acomodar a
+# releitura do granular (que custava quatro consultas sobre as 8.837 lutas, mais bio e
+# round-a-round, e em DUAS ordens de canto).
+_TETO_DE_STATEMENTS = 3
+
 _ROSTER: dict[str, int] = {
     "Fighter Alpha": 205,
     "Fighter Bravo": 198,
@@ -155,8 +171,15 @@ def _seed_history(session: Session) -> dict[str, int]:
 
 
 def _train_and_persist(session: Session, directory: Path) -> None:
-    """Materializa ``bout_features`` a partir do granular, treina e persiste o artefato."""
+    """Materializa os **dois** caches derivados, treina e persiste o artefato.
+
+    Espelha o que a produção precisa ter em pé para servir uma predição desde o M9:
+    ``bout_features`` (grão luta) alimenta o treino e ``fighter_asof_features`` (grão lutador)
+    alimenta o serving. Um teste que treinasse sem materializar o as-of exercitaria o caminho
+    de "cache nunca materializado", não o de serving -- e passaria dizendo o contrário.
+    """
     run_materialize(session)
+    run_materialize_asof(session)
     result = run_training(session, test_fraction=0.25, random_state=0)
     save_artifact(result, directory=directory)
 
@@ -294,6 +317,31 @@ def test_predict_matchup_lutador_so_com_luta_futura_falha_claro(
 
     with pytest.raises(ValueError, match="histórico"):
         predict_matchup(db_session, ids["Fighter Alpha"], int(estreante.id), directory=tmp_path)
+
+
+def test_predict_matchup_mesmo_lutador_dos_dois_lados_recusa(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """O par ``(a, a)`` **levanta**, em vez de devolver palpite de lutador contra si mesmo.
+
+    Um lutador contra si mesmo não é confronto: as duas linhas do par sairiam idênticas, todo
+    ``_diff`` zero, e o modelo devolveria uma probabilidade perfeitamente plausível e sem
+    sentido nenhum. Recusar é o único desfecho honesto.
+
+    **Este teste é a única coisa que segura a guarda.** ``predict_matchup`` não tem chamador de
+    produção desde o M9 (é a implementação de referência de um par só), e o router responde 422
+    para ``a == b`` antes de chegar aqui -- então a chamada a
+    ``_require_one_bout_per_fighter`` parece, de fora, uma validação redundante num caminho
+    morto. Sem este teste, a próxima limpeza de código aparentemente morto a apaga e ``(a, a)``
+    passa a devolver previsão sem nada ficar vermelho. É a mesma família de defeito silencioso
+    que esta SPEC já encontrou seis vezes.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    alpha = ids["Fighter Alpha"]
+
+    with pytest.raises(ValueError, match=str(alpha)):
+        predict_matchup(db_session, alpha, alpha, directory=tmp_path)
 
 
 def test_predict_card_equivale_as_chamadas_individuais(db_session: Session, tmp_path: Path) -> None:
@@ -489,3 +537,223 @@ def test_confronto_hipotetico_degrada_o_contexto_de_luta_para_nulo(
     assert degradadas, loaded.feature_names
     for coluna in degradadas:
         assert pd.isna(alinhadas[coluna].iloc[0]), coluna
+
+
+# ---------------------------------------------------------------------------
+# Serving pelo cache as-of (SPEC 011, Slice 01)
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _statements_emitidos(session: Session) -> Iterator[list[str]]:
+    """Coleta os statements SQL emitidos na conexão da sessão durante o bloco.
+
+    Prova **determinística** do CA-02: cronometrar em suíte é frágil (depende da máquina),
+    mas "o caminho quente não relê o granular" é contável. O relógio real do CA-02 é a
+    medição manual registrada no relatório de implementação.
+    """
+    emitidos: list[str] = []
+    bind = session.get_bind()
+
+    def registrar(
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        emitidos.append(statement)
+
+    event.listen(bind, "before_cursor_execute", registrar)
+    try:
+        yield emitidos
+    finally:
+        event.remove(bind, "before_cursor_execute", registrar)
+
+
+def test_predict_card_pelo_cache_reproduz_as_probabilidades_da_pipeline(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-03: ler o cache dá as MESMAS probabilidades que reconstruir a pipeline (``1e-9``).
+
+    O lado "de antes" é reconstruído aqui pelo caminho ao vivo (``_asof_matchup_rows`` +
+    ``_prob_a_wins_by_bout``), que permanece no código exatamente como implementação de
+    referência (DP-06). Se os dois divergirem, o serving passou a servir outro vetor.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    pares = [
+        (ids["Fighter Alpha"], ids["Fighter Delta"]),
+        (ids["Fighter Bravo"], ids["Fighter Charlie"]),
+    ]
+    as_of = datetime.now(UTC).date()
+    long = build_long_frame(read_granular(db_session))
+    bout_ids = [-1, -2]
+    ao_vivo = _prob_a_wins_by_bout(
+        load_artifact(tmp_path),
+        _asof_matchup_rows(db_session, long, pares, bout_ids, as_of),
+    )
+
+    card = predict_card(db_session, pares, directory=tmp_path)
+
+    for posicao, previsto in enumerate(card.matchups):
+        assert previsto.prob_a_wins is not None
+        assert previsto.prob_a_wins == pytest.approx(ao_vivo[bout_ids[posicao]], abs=1e-9)
+
+
+def test_predict_card_lutador_sem_linha_no_cache_volta_em_missing_history(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Contrato inalterado: sem linha no cache, o par volta nulo e marcado, sem derrubar o card."""
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    sem_historico = _make_fighter("Fighter Sem Historico", 195)
+    db_session.add(sem_historico)
+    db_session.flush()
+    orfao = int(sem_historico.id)
+
+    card = predict_card(
+        db_session,
+        [(ids["Fighter Alpha"], orfao), (ids["Fighter Bravo"], ids["Fighter Charlie"])],
+        directory=tmp_path,
+    )
+
+    impredizivel, predito = card.matchups
+    assert impredizivel.prob_a_wins is None
+    assert impredizivel.missing_history_ids == (orfao,)
+    assert predito.prob_a_wins is not None
+
+
+def test_predict_card_com_cache_vazio_devolve_tudo_indisponivel(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Cache nunca materializado: todo par volta indisponível -- e isso **não** é "estreante".
+
+    O que distingue as duas causas é ``features_freshness`` na mesma resposta
+    (``n_bouts_source = 0``, ``stale = true``): sem cache, todo lutador parece não ter
+    histórico. O ``unavailable_code`` que torna isso explícito é da Sprint 05 -- não
+    antecipar.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    # Esvaziar explicitamente é o que torna o cenário legível: o artefato existe e o granular
+    # existe; o que falta é **só** a materialização as-of.
+    db_session.execute(delete(FighterAsOfFeatures))
+
+    card = predict_card(
+        db_session, [(ids["Fighter Alpha"], ids["Fighter Delta"])], directory=tmp_path
+    )
+
+    (unico,) = card.matchups
+    assert unico.prob_a_wins is None
+    assert set(unico.missing_history_ids) == {ids["Fighter Alpha"], ids["Fighter Delta"]}
+
+
+def test_predict_card_nao_rele_o_granular_no_caminho_quente(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """CA-02 (guarda determinística): o caminho quente emite **poucos** statements.
+
+    Antes desta slice, uma predição custava quatro ``SELECT`` sobre as 8.837 lutas mais os de
+    bio e round-a-round, **duas vezes** (a neutralização de canto chama o serving nas duas
+    ordens) -- os ~67s do CA-02. Com o cache é uma leitura por chamada. O teto é baixo de
+    propósito: se alguém reintroduzir a leitura do granular aqui, o teste falha antes de o
+    usuário sentir.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    with _statements_emitidos(db_session) as emitidos:
+        predict_card(db_session, [(ids["Fighter Alpha"], ids["Fighter Delta"])], directory=tmp_path)
+
+    assert len(emitidos) <= _TETO_DE_STATEMENTS, emitidos
+
+
+# ---------------------------------------------------------------------------
+# As duas linhas servidas, públicas (SPEC 011, Slice 05) -- insumo da ablação local
+# ---------------------------------------------------------------------------
+
+
+def test_serve_matchup_devolve_duas_linhas_alinhadas_a_feature_names(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """``serve_matchup`` devolve ida e volta com **as** colunas do modelo, na ordem dele.
+
+    É o contrato que torna a ablação local possível sem reconstruir nada: as duas linhas já
+    vêm no formato que ``predict_proba`` come, com ``NaN`` explícito (sem imputação), então
+    neutralizar colunas é copiar a frame e sobrescrever.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    loaded = load_artifact(tmp_path)
+    cached = read_asof_features(db_session, [ids["Fighter Alpha"], ids["Fighter Delta"]])
+
+    served = serve_matchup(cached, loaded, ids["Fighter Alpha"], ids["Fighter Delta"])
+
+    for rows in (served.forward, served.reverse):
+        assert list(rows.columns) == loaded.feature_names
+        assert len(rows) == 1
+        assert all(dtype == "float64" for dtype in rows.dtypes)
+    # A degradação declarada do serving (CA-16 da SPEC 009) sobrevive como ``NaN``, não como
+    # zero imputado: é o que faz a cobertura por bloco medir ausência de verdade.
+    assert served.forward.isna().to_numpy().any()
+
+
+def test_prob_a_wins_of_reproduz_exatamente_o_predict_matchup(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """A entrada nova e a de referência não divergem: mesmo par, mesma probabilidade crua.
+
+    ``predict_matchup`` segue sendo a implementação de referência de um par só (DP-05i); este
+    teste é o que impede as duas entradas de contarem histórias diferentes sobre o mesmo par.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    a, b = ids["Fighter Alpha"], ids["Fighter Delta"]
+    loaded = load_artifact(tmp_path)
+    cached = read_asof_features(db_session, [a, b])
+
+    served = serve_matchup(cached, loaded, a, b)
+    (pela_linha,) = prob_a_wins_of(loaded, served.forward)
+
+    assert pela_linha == pytest.approx(
+        predict_matchup(db_session, a, b, directory=tmp_path).prob_a_wins, abs=1e-12
+    )
+
+
+def test_serve_matchup_reverse_e_o_mesmo_par_com_os_lados_trocados(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """A linha da volta é o par espelhado: ``x_a`` da volta == ``x_b`` da ida.
+
+    Sem isso, "as duas ordens de canto" seria só duas chamadas ao mesmo vetor, e a
+    neutralização de canto não neutralizaria nada.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    loaded = load_artifact(tmp_path)
+    a, b = ids["Fighter Alpha"], ids["Fighter Delta"]
+    cached = read_asof_features(db_session, [a, b])
+
+    served = serve_matchup(cached, loaded, a, b)
+
+    base = f"{WIN_RATE_PRIOR}"
+    coluna_a, coluna_b = f"{base}_a", f"{base}_b"
+    # Guarda de não-vacuidade: a base tem de estar no modelo e preenchida, senão o espelho
+    # seria asserido entre dois ``NaN`` e passaria dizendo nada.
+    assert {coluna_a, coluna_b} <= set(loaded.feature_names)
+    assert pd.notna(served.forward[coluna_a].iloc[0])
+    assert served.reverse[coluna_a].iloc[0] == pytest.approx(served.forward[coluna_b].iloc[0])
+    assert served.reverse[coluna_b].iloc[0] == pytest.approx(served.forward[coluna_a].iloc[0])
+
+
+def test_neutral_prob_a_wins_e_a_media_das_duas_ordens(db_session: Session, tmp_path: Path) -> None:
+    """A fórmula pública da neutralização: ida mais o complemento da volta, sobre dois.
+
+    Vive em ``analysis.predict`` porque três chamadores a usam (card, matchup e ablação por
+    bloco). A DECISÃO de neutralizar continua sendo da camada de apresentação.
+    """
+    assert neutral_prob_a_wins(0.9, 0.1) == pytest.approx(0.9)
+    assert neutral_prob_a_wins(0.5, 0.5) == pytest.approx(0.5)
+    # Simetria: neutralizar (A, B) e (B, A) dá valores complementares.
+    assert neutral_prob_a_wins(0.8, 0.3) == pytest.approx(1.0 - neutral_prob_a_wins(0.3, 0.8))

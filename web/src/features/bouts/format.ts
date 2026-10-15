@@ -33,14 +33,27 @@ export function formatAttempts(
 
 /** Resultado da luta pela ótica de quem venceu (ou a ausência de vencedor). */
 export type BoutResult =
-  { kind: "winner"; name: string } | { kind: "draw" } | { kind: "no_contest" };
+  | { kind: "winner"; name: string }
+  | { kind: "draw" }
+  | { kind: "no_contest" }
+  | { kind: "scheduled" };
 
 /**
  * Deriva o resultado a partir do detalhe da luta. No contest tem método próprio;
  * o empate mora na nulabilidade do vencedor (não há método `draw`). Havendo
  * vencedor, resolve o nome cruzando `winner_id` com o canto correspondente.
+ *
+ * A luta agendada é testada **antes** do empate: ela também chega sem
+ * `winner_id`, e sem esta ordem a tela afirmaria um empate que nunca ocorreu.
+ *
+ * Quem a identifica é o **`status`** (RF-31 / D-14), não a ausência de `method`:
+ * o contrato admite luta realizada de método desconhecido, e o proxy a rotularia
+ * "Agendada" — afirmação errada sobre uma luta que aconteceu.
  */
 export function resolveResult(bout: BoutDetailOut): BoutResult {
+  if (bout.status === "scheduled") {
+    return { kind: "scheduled" };
+  }
   if (bout.method === "no_contest") {
     return { kind: "no_contest" };
   }

@@ -212,6 +212,12 @@ def persisted_rosters(session: Session, events: Sequence[Event]) -> dict[int, fr
     Escopada pelos eventos que ``select_window_events`` já selecionou -- a janela da RF-03 tem
     guarda **única**, e repeti-la aqui esconderia qual das duas de fato protege. Uma consulta
     por evento seria N+1 sobre os ~641 eventos da janela a cada execução.
+
+    **Não filtra ``bouts.status``, e isso é decisão ativa** (M9, RF-07), não omissão: o roster
+    de um evento agendado é insumo legítimo do casamento por interseção (tier 2 do M7) -- o
+    card futuro é exatamente o conjunto de nomes que a fonte publica antes do evento. Filtrar
+    aqui empobreceria a interseção justamente no caso em que ela é mais necessária. Fixado por
+    ``tests/ingestion/test_guarda_de_luta_agendada.py``.
     """
     rows = session.execute(
         select(Bout.event_id, Fighter.name_normalized)

@@ -23,6 +23,9 @@ __pycache__/
 /.cache/
 # Frontend (SPA em web/) — artefatos não versionados.
 # Atenção: web/src/api/types.ts é gerado mas VERSIONADO (gate roda sem o backend).
+# Qualquer ferramenta rodada da RAIZ (vitest, por exemplo) resolve cache aqui.
+# A regra de `web/node_modules/` estava um nivel fundo demais e nao cobria isto.
+/node_modules/
 web/node_modules/
 web/dist/
 web/coverage/

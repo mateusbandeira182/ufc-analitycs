@@ -47,9 +47,8 @@ from apps.bouts.enums import Corner
 from apps.bouts.tests.factories import BoutFactory, BoutFighterFactory, EventFactory
 from apps.features.models import BoutFeatures
 from apps.fighters.tests.factories import FighterFactory
-from apps.predictions.models import BoutPrediction
+from apps.predictions.models import SOURCE_WALK_FORWARD, BoutPrediction
 from apps.predictions.selectors import get_prediction_outcomes
-from apps.predictions.services import SOURCE_WALK_FORWARD
 
 
 def _raw_row(

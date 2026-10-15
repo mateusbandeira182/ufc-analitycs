@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * List Fighters Endpoint
-         * @description Lista fighters paginados, com filtro opcional por nome.
+         * @description Lista fighters paginados, com busca opcional por nome ou apelido.
          */
         get: operations["list_fighters_endpoint_api_v1_fighters_get"];
         put?: never;
@@ -74,6 +74,17 @@ export interface paths {
         /**
          * Get Fighter Stats Endpoint
          * @description Estatísticas resumidas do lutador, computadas on demand; 404 quando não existe.
+         *
+         *     Carrega ``features_freshness`` (SPEC 011, RF-05/D-09): é a resposta que alimenta a "forma
+         *     atual" da página do lutador, uma das três que leem o cache as-of. O agregado em si **não**
+         *     depende do cache -- é computado on demand do granular --, então a resposta continua 200
+         *     mesmo com o cache nunca materializado; nesse caso ``materialized_at`` volta nulo.
+         *
+         *     ``current_form`` (Slice 06, RF-15) é o bloco as-of lido de ``fighter_asof_features`` -- a
+         *     mesma tabela que alimenta a predição. Vem **nulo**, com 200, quando o lutador não tem
+         *     linha no cache: ausência declarada, nunca um vetor de zeros, porque zero em golpe
+         *     significativo é uma afirmação sobre o lutador. Quem explica o motivo da ausência
+         *     (estreante ou cache nunca materializado) é o ``features_freshness`` da mesma resposta.
          */
         get: operations["get_fighter_stats_endpoint_api_v1_fighters__fighter_id__stats_get"];
         put?: never;
@@ -93,9 +104,41 @@ export interface paths {
         };
         /**
          * List Events Endpoint
-         * @description Lista events paginados, mais recentes primeiro.
+         * @description Lista events paginados; sem ``when``, mais recentes primeiro.
+         *
+         *     ``when=past|upcoming`` particiona o acervo (a partição deriva do ``status`` da luta,
+         *     nunca da data sozinha) e o ``total`` passa a refletir o conjunto filtrado. O tipo é
+         *     ``Literal``, não ``str``: sem ele o FastAPI **ignoraria** um valor inválido como
+         *     ``when=futuro`` e devolveria o acervo inteiro com 200 -- um defeito que se parece com
+         *     sucesso. Com o ``Literal``, a resposta é 422.
          */
         get: operations["list_events_endpoint_api_v1_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Latest Event Endpoint
+         * @description Detalha o último event **realizado**; 404 quando o acervo não tem nenhum.
+         *
+         *     Declarada **antes** de ``/{event_id}`` de propósito: na ordem inversa o FastAPI casaria
+         *     ``event_id="latest"`` e devolveria 422.
+         *
+         *     404 (e não 200 com corpo nulo) porque um corpo nulo tornaria o tipo anulável em todo
+         *     consumidor do contrato por causa de um estado de acervo vazio.
+         */
+        get: operations["get_latest_event_endpoint_api_v1_events_latest_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -113,7 +156,7 @@ export interface paths {
         };
         /**
          * Get Event Endpoint
-         * @description Detalha um event pelo id com o card de bouts; 404 quando não existe.
+         * @description Detalha um event pelo id com o card, a contagem por método e os destaques; 404 se não.
          */
         get: operations["get_event_endpoint_api_v1_events__event_id__get"];
         put?: never;
@@ -179,12 +222,55 @@ export interface paths {
          * Predict Matchup Endpoint
          * @description Palpite neutro de canto para o confronto hipotético entre dois lutadores.
          *
-         *     ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; lutador sem histórico no
-         *     granular (existe, mas não tem lutas para derivar features as-of) -> 422; artefato de modelo
-         *     ausente -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então
-         *     a ordem dos parâmetros não muda o vencedor previsto.
+         *     Precedência dos erros, nesta ordem (DP-05f): ``fighter_a == fighter_b`` -> **422**
+         *     (checado antes da existência); lutador inexistente -> **404**; artefato de modelo ausente
+         *     -> **503**; lutador sem histórico no granular -> **200 indisponível**.
+         *
+         *     O 503 **precede** o 200-indisponível porque o artefato é carregado antes de o cache ser
+         *     consultado: servidor sem modelo é falha de servidor, não estado do par.
+         *
+         *     Estreante **não** é mais 422 (D-04): responde 200 com probabilidades nulas,
+         *     ``unavailable_reason`` em prosa e ``unavailable_code`` legível por máquina. A página de
+         *     confronto é alcançada por um clique vindo do card de um evento futuro -- o usuário não
+         *     formulou requisição errada, clicou numa luta que vai acontecer; e o 422 forçaria a SPA a
+         *     parsear a mensagem de erro para distinguir "estreante" de falha real.
+         *
+         *     As probabilidades são neutralizadas de canto (média das duas ordens), então a ordem dos
+         *     parâmetros não muda o vencedor previsto.
          */
         get: operations["predict_matchup_endpoint_api_v1_predict_matchup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/predict/event/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Predict Event Card Endpoint
+         * @description Palpite neutro de canto para todas as lutas do card de um evento.
+         *
+         *     Event inexistente -> 404; artefato de modelo ausente -> 503; evento sem lutas -> 200 com
+         *     ``bouts`` vazio. Uma luta impredizível (lutador sem histórico no granular, card mal
+         *     formado) **não** derruba o card: volta com probabilidades nulas e ``unavailable_reason``
+         *     preenchido, status 200 -- diferença deliberada em relação ao matchup isolado, onde a mesma
+         *     situação é 422 porque é erro da própria requisição.
+         *
+         *     Cada luta predita é registrada em ``bout_predictions`` com ``source="api"``, idempotente
+         *     por ``(bout_id, model_version)``. A idempotência é **observável**: repetir o request não
+         *     envelhece o registro histórico, porque ``record_prediction`` preserva ``predicted_at`` e
+         *     ``source`` da primeira gravação. É o que sustenta o verbo GET aqui apesar da escrita --
+         *     render repetido da tela não muda nada que alguém possa ler depois.
+         */
+        get: operations["predict_event_card_endpoint_api_v1_predict_event__event_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -199,11 +285,11 @@ export interface components {
     schemas: {
         /**
          * BoutCardFighterOut
-         * @description Um participante da luta no card do event: identidade e canto.
+         * @description Um participante da luta no card do event: identidade, canto e retrato.
          *
-         *     Só identidade (id, nome, canto) -- o box-score granular vive no detalhe da
-         *     luta. A SPA cruza ``fighter_id`` com ``BoutCardOut.winner_id`` para destacar o
-         *     vencedor.
+         *     Só identidade (id, nome, canto, retrato) -- o box-score granular vive no
+         *     detalhe da luta. A SPA cruza ``fighter_id`` com ``BoutCardOut.winner_id`` para
+         *     destacar o vencedor.
          */
         BoutCardFighterOut: {
             /** Fighter Id */
@@ -211,6 +297,8 @@ export interface components {
             /** Name */
             name: string;
             corner: components["schemas"]["Corner"];
+            /** Headshot Url */
+            headshot_url: string | null;
         };
         /**
          * BoutCardOut
@@ -221,7 +309,7 @@ export interface components {
             id: number;
             /** Winner Id */
             winner_id: number | null;
-            method: components["schemas"]["BoutMethod"];
+            method: components["schemas"]["BoutMethod"] | null;
             /** Round */
             round: number | null;
             /** Ending Time Seconds */
@@ -230,6 +318,11 @@ export interface components {
             weight_class: string | null;
             /** Source */
             source: string;
+            status: components["schemas"]["BoutStatus"];
+            /** Card Section */
+            card_section: string | null;
+            /** Bout Order */
+            bout_order: number | null;
             /** Fighters */
             fighters: components["schemas"]["BoutCardFighterOut"][];
         };
@@ -243,13 +336,16 @@ export interface components {
             event: components["schemas"]["BoutEventOut"];
             /** Winner Id */
             winner_id: number | null;
-            method: components["schemas"]["BoutMethod"];
+            method: components["schemas"]["BoutMethod"] | null;
             /** Round */
             round: number | null;
             /** Ending Time Seconds */
             ending_time_seconds: number | null;
             /** Weight Class */
             weight_class: string | null;
+            status: components["schemas"]["BoutStatus"];
+            /** Card Section */
+            card_section: string | null;
             /** Title Bout */
             title_bout: boolean | null;
             /** Scheduled Rounds */
@@ -402,6 +498,19 @@ export interface components {
             source: string;
         };
         /**
+         * BoutHighlightOut
+         * @description Destaque de volume (golpes significativos conectados ou quedas) por lutador-por-luta.
+         *
+         *     ``value: 0`` é medição, não ausência: ausência de base faz o destaque inteiro ser nulo.
+         */
+        BoutHighlightOut: {
+            /** Bout Id */
+            bout_id: number;
+            fighter: components["schemas"]["MatchupFighterOut"];
+            /** Value */
+            value: number;
+        };
+        /**
          * BoutMethod
          * @description Método de encerramento da luta.
          *
@@ -412,14 +521,141 @@ export interface components {
          */
         BoutMethod: "ko_tko" | "submission" | "decision" | "dq" | "no_contest";
         /**
+         * BoutStatus
+         * @description A luta já aconteceu, ou está apenas agendada?
+         *
+         *     Existe porque ``bouts`` passou a comportar luta **sem** resultado (card por vir, M9):
+         *     sem esta coluna, a pipeline de features e o histórico do lutador tratariam uma luta que
+         *     ainda não ocorreu como se fosse passado. ``COMPLETED`` é o default do model -- é ele que
+         *     preserva a semântica de toda escrita que existia antes da coluna.
+         * @enum {string}
+         */
+        BoutStatus: "completed" | "scheduled";
+        /**
+         * CardBoutPredictionOut
+         * @description Predição neutra de canto de uma luta do card, ou o motivo da ausência.
+         *
+         *     Quando a luta não pôde ser predita, as probabilidades e o vencedor previsto são ``null`` e
+         *     ``unavailable_reason`` explica o porquê -- a luta continua listada, para o consumidor ver o
+         *     card inteiro. Os cantos também são ``null`` quando a luta não tem os dois cadastrados.
+         *
+         *     O motivo tem **duas faces** desde o M9 (RF-28 / D-08): ``unavailable_reason`` é prosa para
+         *     humano e ``unavailable_code`` é o enum que a interface consome. As duas causas exclusivas do
+         *     card (``missing_corners`` e ``repeated_fighter``) nascem aqui, e só aqui.
+         */
+        CardBoutPredictionOut: {
+            /** Bout Id */
+            bout_id: number;
+            fighter_red: components["schemas"]["MatchupFighterOut"] | null;
+            fighter_blue: components["schemas"]["MatchupFighterOut"] | null;
+            /** Prob Red Wins */
+            prob_red_wins: number | null;
+            /** Prob Blue Wins */
+            prob_blue_wins: number | null;
+            /** Predicted Winner Id */
+            predicted_winner_id: number | null;
+            /** Unavailable Reason */
+            unavailable_reason: string | null;
+            unavailable_code: components["schemas"]["UnavailableCode"] | null;
+        };
+        /**
+         * CommonOpponentBoutOut
+         * @description Uma luta contra o adversário em comum, pelo desfecho -- sem box-score.
+         *
+         *     ``winner_id`` nulo é empate ou no contest (a convenção que ``apps.bouts.enums``
+         *     documenta). Deliberadamente **não** reusa o ``won: bool`` de ``FighterBoutOut``:
+         *     ali empate colapsa em ``False``, e nesta seção -- onde os dois lutadores são
+         *     comparados contra o MESMO terceiro -- "perdeu para X" e "empatou com X" não
+         *     podem virar a mesma afirmação.
+         *
+         *     Sem stats granulares de propósito: a pergunta é "como cada um se saiu contra X",
+         *     não o box-score. Quem quer o detalhe clica na luta (``GET /bouts/{id}``).
+         */
+        CommonOpponentBoutOut: {
+            /** Bout Id */
+            bout_id: number;
+            /** Event Id */
+            event_id: number;
+            /** Event Name */
+            event_name: string;
+            /**
+             * Event Date
+             * Format: date
+             */
+            event_date: string;
+            /** Winner Id */
+            winner_id: number | null;
+            method: components["schemas"]["BoutMethod"] | null;
+            /** Round */
+            round: number | null;
+        };
+        /**
+         * CommonOpponentOut
+         * @description Um adversário que os dois lutadores enfrentaram, com o desfecho de cada lado.
+         */
+        CommonOpponentOut: {
+            opponent: components["schemas"]["MatchupFighterOut"];
+            /** Bouts A */
+            bouts_a: components["schemas"]["CommonOpponentBoutOut"][];
+            /** Bouts B */
+            bouts_b: components["schemas"]["CommonOpponentBoutOut"][];
+        };
+        /**
          * Corner
          * @description Canto do lutador na luta.
          * @enum {string}
          */
         Corner: "red" | "blue";
         /**
+         * CurrentFormOut
+         * @description Forma atual as-of do lutador, lida de ``fighter_asof_features`` (RF-15).
+         *
+         *     Mesma tabela que alimenta a predição: perfil e palpite contam a mesma história **por
+         *     construção**, e não por dois cálculos que se espera que coincidam.
+         *
+         *     Todo campo é nulável -- estreia, janela sem o dado e denominador zero produzem ausência,
+         *     e ausência **não** é zero (RF-03 da SPEC 009). O bloco inteiro vem nulo quando o lutador
+         *     não tem linha no cache; nesse caso ``features_freshness`` é quem diz se o motivo é falta
+         *     de histórico ou cache nunca materializado.
+         *
+         *     Os nomes replicam os das features de propósito (DP-08 do Plano 011-06): a seção da tela os
+         *     rotula em pt-BR, e renomeá-los no contrato criaria uma tradução cuja deriva seria muda.
+         *
+         *     ``extra="forbid"`` é load-bearing: uma divergência entre este schema e
+         *     ``selectors.CURRENT_FORM_FEATURES`` falha na validação em vez de servir campo a menos. O
+         *     teste-guarda de ``apps/features/tests/test_selectors.py`` antecipa essa falha para o gate.
+         */
+        CurrentFormOut: {
+            /** Sig Strikes Landed Pm R3 */
+            sig_strikes_landed_pm_r3: number | null;
+            /** Sig Strikes Absorbed Pm R3 */
+            sig_strikes_absorbed_pm_r3: number | null;
+            /** Takedowns Landed Avg R3 */
+            takedowns_landed_avg_r3: number | null;
+            /** Takedown Defense R3 */
+            takedown_defense_r3: number | null;
+            /** Control Time Avg R3 */
+            control_time_avg_r3: number | null;
+            /** Sig Strikes Landed Pm Trend */
+            sig_strikes_landed_pm_trend: number | null;
+            /** Sig Strikes Absorbed Pm Trend */
+            sig_strikes_absorbed_pm_trend: number | null;
+            /** Takedowns Landed Avg Trend */
+            takedowns_landed_avg_trend: number | null;
+            /** Takedown Defense Trend */
+            takedown_defense_trend: number | null;
+            /** Control Time Avg Trend */
+            control_time_avg_trend: number | null;
+            /** Career Minutes Before */
+            career_minutes_before: number | null;
+            /** Ko Losses Prior */
+            ko_losses_prior: number | null;
+            /** Submission Losses Prior */
+            submission_losses_prior: number | null;
+        };
+        /**
          * EventDetailOut
-         * @description Detalhe do event com os bouts do card.
+         * @description Detalhe do event com o card, a contagem por método e os destaques calculados.
          */
         EventDetailOut: {
             /** Id */
@@ -437,6 +673,18 @@ export interface components {
             source: string;
             /** Bouts */
             bouts: components["schemas"]["BoutCardOut"][];
+            summary: components["schemas"]["EventSummaryOut"] | null;
+            highlights: components["schemas"]["EventHighlightsOut"] | null;
+        };
+        /**
+         * EventHighlightsOut
+         * @description Os quatro destaques **calculados** do granular; cada um nulo quando não há base.
+         */
+        EventHighlightsOut: {
+            fastest_finish: components["schemas"]["FinishHighlightOut"] | null;
+            most_sig_strikes: components["schemas"]["BoutHighlightOut"] | null;
+            most_takedowns: components["schemas"]["BoutHighlightOut"] | null;
+            biggest_upset: components["schemas"]["UpsetHighlightOut"] | null;
         };
         /**
          * EventOut
@@ -458,6 +706,76 @@ export interface components {
             source: string;
         };
         /**
+         * EventPredictionOut
+         * @description Predição do card completo de um evento, com a identidade do modelo que a produziu.
+         *
+         *     ``model_version`` é o ``trained_at`` do artefato treinado -- a mesma versão gravada em
+         *     ``bout_predictions``, o que liga a resposta ao registro persistido.
+         */
+        EventPredictionOut: {
+            /** Event Id */
+            event_id: number;
+            /** Model Version */
+            model_version: string;
+            /** N Features */
+            n_features: number;
+            /** Bouts */
+            bouts: components["schemas"]["CardBoutPredictionOut"][];
+            features_freshness: components["schemas"]["FeaturesFreshnessOut"];
+        };
+        /**
+         * EventSummaryOut
+         * @description Contagem por método das lutas **realizadas** do card; ``n_bouts`` é o denominador.
+         *
+         *     A interface mostra ``n_bouts`` junto da contagem para que um card misto nunca se leia
+         *     como o card inteiro.
+         *
+         *     Os seis baldes somam ``n_bouts``. O balde ``dq`` é obrigatório: ``BoutMethod`` tem cinco
+         *     membros, e sem ele as lutas por desqualificação sairiam do resumo com a soma ficando
+         *     menor que o total **sem erro nenhum**. ``draws`` não vem de ``method`` -- ``BoutMethod``
+         *     não tem ``DRAW`` --, e sim de ``winner_id`` nulo.
+         */
+        EventSummaryOut: {
+            /** N Bouts */
+            n_bouts: number;
+            /** Ko Tko */
+            ko_tko: number;
+            /** Submissions */
+            submissions: number;
+            /** Decisions */
+            decisions: number;
+            /** Draws */
+            draws: number;
+            /** No Contests */
+            no_contests: number;
+            /** Dq */
+            dq: number;
+        };
+        /**
+         * FeaturesFreshnessOut
+         * @description Diagnóstico de defasagem do cache as-of: um ``COUNT``, não um recomputo (RF-05).
+         *
+         *     ``stale`` é ``n_bouts_current != n_bouts_source`` -- lutas entraram no granular desde a
+         *     última materialização. A interface exibe o aviso **na seção que lê o dado defasado**
+         *     (RF-06/D-05); o componente compartilhado que o renderiza nasce na Sprint 06, com a
+         *     primeira consumidora real (D-10).
+         *
+         *     **Emenda DP-05 ao texto da SPEC**: ``materialized_at`` é ``datetime | None``, enquanto a
+         *     SPEC aprovada o escreve não-nulo. Com o cache nunca materializado não existe valor, e um
+         *     campo obrigatório forçaria os três endpoints a falhar exatamente no estado que este
+         *     diagnóstico existe para reportar (``n_bouts_source = 0``, ``stale = true``).
+         */
+        FeaturesFreshnessOut: {
+            /** Materialized At */
+            materialized_at: string | null;
+            /** N Bouts Source */
+            n_bouts_source: number;
+            /** N Bouts Current */
+            n_bouts_current: number;
+            /** Stale */
+            stale: boolean;
+        };
+        /**
          * FighterBoutOut
          * @description Uma luta do histórico do lutador, com as stats daquele lutador naquela luta.
          */
@@ -473,7 +791,7 @@ export interface components {
              * Format: date
              */
             event_date: string;
-            method: components["schemas"]["BoutMethod"];
+            method: components["schemas"]["BoutMethod"] | null;
             /** Round */
             round: number | null;
             /** Ending Time Seconds */
@@ -513,6 +831,10 @@ export interface components {
             stance: components["schemas"]["Stance"] | null;
             /** Weight Kg */
             weight_kg: number | null;
+            /** Headshot Url */
+            headshot_url: string | null;
+            /** Body Image Url */
+            body_image_url: string | null;
             /** Wins */
             wins: number;
             /** Losses */
@@ -548,6 +870,26 @@ export interface components {
                 [key: string]: number;
             };
             striking_profile: components["schemas"]["StrikingProfileOut"];
+            current_form: components["schemas"]["CurrentFormOut"] | null;
+            features_freshness: components["schemas"]["FeaturesFreshnessOut"];
+        };
+        /**
+         * FinishHighlightOut
+         * @description A finalização mais rápida do card.
+         *
+         *     ``ending_time_seconds`` é o tempo **dentro** do round, não o decorrido total, e não há
+         *     campo de total: convertê-lo exigiria assumir 300s por round, e 48 lutas de 1994-1999
+         *     passam disso no round 1. Por isso o par ``(round, ending_time_seconds)`` viaja junto.
+         */
+        FinishHighlightOut: {
+            /** Bout Id */
+            bout_id: number;
+            fighter: components["schemas"]["MatchupFighterOut"];
+            method: components["schemas"]["BoutMethod"];
+            /** Round */
+            round: number;
+            /** Ending Time Seconds */
+            ending_time_seconds: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -556,11 +898,16 @@ export interface components {
         };
         /**
          * HeadToHeadOut
-         * @description Confrontos diretos entre dois lutadores.
+         * @description Confrontos diretos entre dois lutadores, mais os adversários em comum.
          *
          *     Envelope com os dois ids consultados e a lista de bouts em que ambos
          *     participaram, em ordem cronológica. Cada item reusa ``BoutDetailOut`` (Slice
          *     03): resultado + stats granulares dos dois cantos, nunca médias agregadas.
+         *
+         *     ``common_opponents`` (M9, RF-16) é a seção que faz a página servir para a dupla
+         *     que **nunca** se enfrentou -- o caso comum, e a razão de o humano dizer que "a
+         *     página não faz nada": antes dela, o envelope vinha com ``bouts: []`` e nada mais.
+         *     As duas seções convivem, e o próprio par nunca aparece em ``common_opponents``.
          */
         HeadToHeadOut: {
             /** Fighter A Id */
@@ -569,6 +916,47 @@ export interface components {
             fighter_b_id: number;
             /** Bouts */
             bouts: components["schemas"]["BoutDetailOut"][];
+            /** Common Opponents */
+            common_opponents: components["schemas"]["CommonOpponentOut"][];
+        };
+        /**
+         * MatchupAttributeOut
+         * @description Um atributo as-of **cru** dos dois lados: o número que forma a porcentagem (RF-19).
+         */
+        MatchupAttributeOut: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Value A */
+            value_a: number | null;
+            /** Value B */
+            value_b: number | null;
+        };
+        /**
+         * MatchupBlockInfluenceOut
+         * @description Influência de um bloco de ``BLOCK_REGISTRY`` sobre a probabilidade corrente (RF-17).
+         *
+         *     Medida por **ablação local**: neutraliza as colunas do bloco com ``NaN`` e re-prediz nas
+         *     duas ordens de canto. São sempre 11 entradas -- ``janela-canto-fabricado`` fica fora porque
+         *     não é conjunto de colunas, e sim comparação de duas variantes de dataset.
+         */
+        MatchupBlockInfluenceOut: {
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** N Columns */
+            n_columns: number;
+            /** N Columns Evaluated */
+            n_columns_evaluated: number;
+            /**
+             * Coverage
+             * @enum {string}
+             */
+            coverage: "full" | "partial" | "none";
+            /** Delta Prob A */
+            delta_prob_a: number | null;
         };
         /**
          * MatchupFighterOut
@@ -582,20 +970,37 @@ export interface components {
         };
         /**
          * MatchupPredictionOut
-         * @description Palpite neutro de canto para um confronto hipotético A vs B.
+         * @description Palpite neutro de canto para um confronto hipotético A vs B, com a explicabilidade.
          *
          *     ``prob_a_wins`` e ``prob_b_wins`` são complementares (somam 1) e já neutralizadas de
          *     canto; ``predicted_winner_id`` é o ``fighter_id`` de maior probabilidade neutra.
+         *
+         *     **Os três passaram a nulável no M9** (D-04): lutador sem histórico responde 200 com
+         *     ``unavailable_reason`` + ``unavailable_code``, não mais 422. A página de confronto é
+         *     alcançada por um clique vindo do card de um evento futuro -- o usuário não formulou
+         *     requisição errada, clicou numa luta que vai acontecer.
+         *
+         *     No estado indisponível, ``blocks`` e ``attributes`` vêm **vazios**, nunca listas de nulos
+         *     (DP-05e): lista vazia diz "não foi produzido", uma lista de nulos diria "foi medido e deu
+         *     ausente".
          */
         MatchupPredictionOut: {
             fighter_a: components["schemas"]["MatchupFighterOut"];
             fighter_b: components["schemas"]["MatchupFighterOut"];
             /** Prob A Wins */
-            prob_a_wins: number;
+            prob_a_wins: number | null;
             /** Prob B Wins */
-            prob_b_wins: number;
+            prob_b_wins: number | null;
             /** Predicted Winner Id */
-            predicted_winner_id: number;
+            predicted_winner_id: number | null;
+            /** Unavailable Reason */
+            unavailable_reason: string | null;
+            unavailable_code: components["schemas"]["UnavailableCode"] | null;
+            /** Blocks */
+            blocks: components["schemas"]["MatchupBlockInfluenceOut"][];
+            /** Attributes */
+            attributes: components["schemas"]["MatchupAttributeOut"][];
+            features_freshness: components["schemas"]["FeaturesFreshnessOut"];
         };
         /** Page[EventOut] */
         Page_EventOut_: {
@@ -647,6 +1052,38 @@ export interface components {
             /** Share Ground */
             share_ground: number | null;
         };
+        /**
+         * UnavailableCode
+         * @description Causa legível por máquina de uma previsão indisponível (RF-28 / D-08).
+         *
+         *     A prosa de ``unavailable_reason`` continua existindo, com ids embutidos, para humano.
+         *     O **código** é o que a interface consome: sem ele, a SPA precisaria parsear a prosa para
+         *     escolher o aviso específico de cada causa -- o mesmo anti-padrão que a D-04 nomeia ao
+         *     rejeitar o 422 para o estreante. A prosa é livre (texto para gente); o código é contrato.
+         * @enum {string}
+         */
+        UnavailableCode: "missing_corners" | "repeated_fighter" | "missing_history";
+        /**
+         * UpsetHighlightOut
+         * @description A maior zebra do card, lida do registro persistido em ``bout_predictions`` (D-01).
+         *
+         *     ``prob_of_winner`` é a probabilidade que o modelo **da época** deu a quem venceu -- do
+         *     registro do walk-forward, nunca do palpite servido por ``GET /predict/event/{id}``
+         *     (``source="api"``), que é recálculo as-of-hoje e faria a tela reescrever o passado.
+         *     ``n_bouts_with_prediction`` de ``n_bouts`` é o denominador declarado, para a tela poder
+         *     dizer "entre as 9 de 13 lutas previstas".
+         */
+        UpsetHighlightOut: {
+            /** Bout Id */
+            bout_id: number;
+            winner: components["schemas"]["MatchupFighterOut"];
+            /** Prob Of Winner */
+            prob_of_winner: number;
+            /** N Bouts With Prediction */
+            n_bouts_with_prediction: number;
+            /** N Bouts */
+            n_bouts: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -672,7 +1109,8 @@ export interface operations {
     list_fighters_endpoint_api_v1_fighters_get: {
         parameters: {
             query?: {
-                name?: string | null;
+                /** @description Busca por nome ou apelido; o termo vale como texto literal. */
+                q?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -798,6 +1236,7 @@ export interface operations {
     list_events_endpoint_api_v1_events_get: {
         parameters: {
             query?: {
+                when?: ("past" | "upcoming") | null;
                 limit?: number;
                 offset?: number;
             };
@@ -823,6 +1262,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_latest_event_endpoint_api_v1_events_latest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventDetailOut"];
                 };
             };
         };
@@ -947,6 +1406,51 @@ export interface operations {
                 };
             };
             /** @description Lutador não encontrado */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Modelo preditivo indisponível: artefato treinado ausente */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    predict_event_card_endpoint_api_v1_predict_event__event_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPredictionOut"];
+                };
+            };
+            /** @description Event não encontrado */
             404: {
                 headers: {
                     [name: string]: unknown;

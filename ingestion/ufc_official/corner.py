@@ -56,7 +56,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import Corner
+from apps.bouts.enums import BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -221,7 +221,14 @@ class _PersistedBout:
 
 
 def _persisted_bouts(session: Session, event: Event) -> list[_PersistedBout]:
-    """Lutas persistidas do evento com os dois cantos, numa query só (sem N+1 por luta)."""
+    """Lutas **realizadas** do evento com os dois cantos, numa query só (sem N+1 por luta).
+
+    É esta consulta que decide a população da comparação de canto -- a de
+    ``_corners_by_bout`` já recebe ``bout_ids`` derivados daqui. Filtra ``completed`` (M9,
+    RF-07): a luta agendada não tem canto a comparar, e sem o filtro cairia em
+    ``uncovered_bouts`` a cada execução, poluindo a métrica de cobertura com uma luta que a
+    fonte oficial ainda não tem como cobrir.
+    """
     statement = (
         select(
             Bout.id,
@@ -233,7 +240,7 @@ def _persisted_bouts(session: Session, event: Event) -> list[_PersistedBout]:
         )
         .join(BoutFighter, BoutFighter.bout_id == Bout.id)
         .join(Fighter, Fighter.id == BoutFighter.fighter_id)
-        .where(Bout.event_id == event.id)
+        .where(Bout.event_id == event.id, Bout.status == BoutStatus.COMPLETED)
         .order_by(Bout.id, BoutFighter.id)
     )
     por_luta: dict[int, list[_PersistedCorner]] = {}

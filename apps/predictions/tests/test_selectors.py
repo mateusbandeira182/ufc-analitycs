@@ -17,8 +17,9 @@ from sqlalchemy.orm import Session
 
 from apps.bouts.tests.factories import BoutFactory, EventFactory
 from apps.fighters.tests.factories import FighterFactory
+from apps.predictions.models import SOURCE_WALK_FORWARD
 from apps.predictions.selectors import get_prediction_outcomes
-from apps.predictions.services import SOURCE_WALK_FORWARD, record_prediction
+from apps.predictions.services import record_prediction
 
 VERSAO = "2026-08-31T10:00:00+00:00"
 OUTRA_VERSAO = "2026-09-15T10:00:00+00:00"

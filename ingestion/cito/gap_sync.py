@@ -49,7 +49,7 @@ from urllib.parse import unquote
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import Corner
+from apps.bouts.enums import BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
@@ -78,6 +78,7 @@ from ingestion.cito.gate import HumanGateNotConfirmedError, enforce_human_gate
 from ingestion.cito.matching import is_ufc_catalog_item
 from ingestion.entity_resolution import AmbiguousFighterMatchError, match_fighter_id_by_age
 from ingestion.incremental import (
+    BoutCore,
     TableDelta,
     is_known_method_token,
     load_existing_fighters,
@@ -278,16 +279,23 @@ def _corners_by_side(bout: CitoBoutBlock) -> tuple[CitoBoutFighterRef, CitoBoutF
     return primeiro, segundo
 
 
-def map_stats_to_bouts(stats: CitoEventStats) -> list[CitoBout]:
-    """Traduz o bloco ``bouts`` do payload de stats nos ``CitoBout`` do M1 (função pura).
+def map_bout_blocks(blocks: Sequence[CitoBoutBlock]) -> list[CitoBout]:
+    """Traduz blocos ``bouts`` do payload nos ``CitoBout`` do M1 (função pura).
 
     ``corners[0]`` é o vermelho e ``corners[1]`` o azul -- a convenção do DTO do M1, que
     ``map_bout_core`` e ``upsert_bout`` assumem. Campo de resultado ausente permanece ``None``
     (``map_bout_core`` degrada método nulo para ``NO_CONTEST``); luta cancelada ou sem os dois
     cantos é descartada com aviso, nunca completada por chute.
+
+    O parâmetro é a **sequência de blocos**, não o ``CitoEventStats`` inteiro, porque o card do
+    catálogo com ``includeBouts`` tem exactamente a mesma forma (``CitoCatalogItem.bouts``
+    reusa ``CitoBoutBlock``, medido em 2026-09-01) -- e porque a regra "luta sem exatamente dois
+    cantos distintos é descartada" é **metade da RF-32**. Copiá-la para
+    ``ingestion.cito.sync_scheduled`` criaria duas implementações da mesma invariante em módulos
+    diferentes, que é a duplicação que mais machuca aqui.
     """
     bouts: list[CitoBout] = []
-    for bout in stats.bouts:
+    for bout in blocks:
         if bout.is_cancelled:
             logger.info("Luta %r cancelada no card; descartada da ingestão.", bout.id)
             continue
@@ -515,7 +523,7 @@ def map_stats_to_event(stats: CitoEventStats) -> CitoEvent:
         event_id=stats.event.id,
         name=stats.event.title,
         date=stats.event.event_date,
-        bouts=map_stats_to_bouts(stats),
+        bouts=map_bout_blocks(stats.bouts),
     )
 
 
@@ -555,17 +563,22 @@ def corner_profile_to_fighter(fighter: CitoBoutFighterRef) -> CitoFighter:
 
 
 def corner_fighters_by_slug(
-    bouts: Sequence[CitoBout], stats: CitoEventStats
+    bouts: Sequence[CitoBout], blocks: Sequence[CitoBoutBlock]
 ) -> dict[str, CitoFighter]:
     """Mapa ``slug -> CitoFighter`` de todos os cantos do card (um por lutador, sem repetir).
 
-    Percorre o bloco ``bouts`` do payload -- a única fonte do ``profile`` embutido -- e restringe
-    aos slugs das lutas que ``map_stats_to_bouts`` manteve: um canto de luta cancelada não vira
-    lutador novo. Primeira ocorrência vence (o mesmo lutador só aparece uma vez por card).
+    Percorre os blocos ``bouts`` do payload -- a única fonte do ``profile`` embutido -- e
+    restringe aos slugs das lutas que ``map_bout_blocks`` manteve: um canto de luta cancelada
+    não vira lutador novo. Primeira ocorrência vence (o mesmo lutador só aparece uma vez por
+    card).
+
+    O parâmetro é a sequência de blocos pelo mesmo motivo de ``map_bout_blocks``: o card do
+    catálogo com ``includeBouts`` tem a mesma forma, e é o ``profile`` embutido que permite
+    criar um lutador novo com **zero** chamadas de perfil.
     """
     wanted = {corner.slug for bout in bouts for corner in bout.corners}
     fighters: dict[str, CitoFighter] = {}
-    for bout in stats.bouts:
+    for bout in blocks:
         for fighter in bout.fighters:
             if fighter.fighter_slug in wanted and fighter.fighter_slug not in fighters:
                 fighters[fighter.fighter_slug] = corner_profile_to_fighter(fighter)
@@ -809,6 +822,45 @@ def _reject_unknown_methods(item: CitoCatalogItem, bouts: Sequence[CitoBout]) ->
         )
 
 
+def _complete_scheduled_bout(
+    session: Session,
+    bout_id: int,
+    red_fighter_id: int,
+    blue_fighter_id: int,
+    core: BoutCore,
+) -> bool:
+    """Grava o desfecho numa luta AGENDADA e a promove a ``completed``; diz se promoveu.
+
+    É a transição que faltava a partir do M9: a Slice 04 escreve a luta **antes** de ela
+    acontecer, e ``upsert_bout`` -- correto para o M1, onde toda luta persistida já tinha
+    desfecho -- devolve o id existente e sai. Sem este passo a luta ficaria congelada com
+    ``method`` nulo para sempre, invisível às features e ao histórico do lutador.
+
+    **No-op em luta já realizada**: o desfecho é do seed, e trocar a fonte da verdade do
+    resultado em silêncio corromperia o rótulo que o modelo treina -- mesma regra que
+    ``fill_bout_context`` aplica a ``method``/``winner_id``.
+
+    ``source`` da linha **não** muda: ``source`` é a origem da LINHA (quem a criou), não de
+    cada campo. A procedência do enriquecimento fica rastreável pelas tabelas que ele popula.
+    """
+    bout = session.get(Bout, bout_id)
+    if bout is None or bout.status is not BoutStatus.SCHEDULED:
+        return False
+
+    # Canto vencedor -> ``fighter_id`` (ausente em empate/no contest, e ``.get`` já devolve
+    # ``None`` nesse caso). Local de propósito: ``incremental`` e ``seed_bouts`` mantêm cada
+    # um a sua tradução privada, e promover uma delas a API pública é refatoração de módulo
+    # compartilhado do M1, fora do escopo desta slice.
+    por_canto: dict[Corner | None, int] = {Corner.RED: red_fighter_id, Corner.BLUE: blue_fighter_id}
+    bout.winner_id = por_canto.get(core["winner_corner"])
+    bout.method = core["method"]
+    bout.round = core["round"]
+    bout.ending_time_seconds = core["ending_time_seconds"]
+    bout.status = BoutStatus.COMPLETED
+    logger.info("Luta %d promovida de agendada a realizada com o desfecho da Cito", bout_id)
+    return True
+
+
 def ingest_gap_event(
     session: Session,
     item: CitoCatalogItem,
@@ -846,7 +898,7 @@ def ingest_gap_event(
         event = _persisted_event(session, cito_event)
         _stamp_cito_identifiers(event, item)
 
-        fighters_by_slug = corner_fighters_by_slug(cito_event.bouts, stats)
+        fighters_by_slug = corner_fighters_by_slug(cito_event.bouts, stats.bouts)
         try:
             fighter_ids, profile_calls = resolve_gap_fighters(
                 session, fighters_by_slug, client, today=today
@@ -873,12 +925,18 @@ def ingest_gap_event(
             bout, corner_origin = assign_corners(bout, blocks_by_id[bout.bout_id], sort_keys)
             corner_origins[corner_origin] += 1
             red, blue = bout.corners
+            core = map_bout_core(bout)
             bout_db_id = upsert_bout(
                 session,
                 event.id,
                 fighter_ids[red.slug],
                 fighter_ids[blue.slug],
-                map_bout_core(bout),
+                core,
+            )
+            # Transição agendada -> realizada (M9, RF-07). Reusa o ``core`` e os ids já
+            # resolvidos acima; no-op em luta que já veio realizada.
+            _complete_scheduled_bout(
+                session, bout_db_id, fighter_ids[red.slug], fighter_ids[blue.slug], core
             )
             if bout_db_id in known_bout_ids:
                 bouts_reused += 1

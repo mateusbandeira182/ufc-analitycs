@@ -52,6 +52,7 @@ from ingestion.features.matchup import (
     TARGET_COLUMN,
     MatchupMatrix,
     add_differentials,
+    asof_feature_columns,
     build_matchup_matrix,
     collapse_bout_context_columns,
     derive_target,
@@ -83,6 +84,7 @@ from ingestion.features.rolling import (
     TAKEDOWN_DEFENSE_TREND,
     TAKEDOWNS_LANDED_AVG_TREND,
     TOTAL_TO_SIG_STRIKE_RATIO_R3,
+    WIN_RATE_PRIOR,
 )
 
 # Colunas cruas que o bloco A da SPEC 009 consome; todas já existiam na frame longa.
@@ -866,3 +868,75 @@ def test_derivadas_as_of_do_bloco_d3_d4_nao_entram_nas_bases_excluidas() -> None
     for base in _BASES_D3_D4:
         assert base not in _NON_FEATURE_BASES, base
         assert base not in BOUT_LEVEL_FEATURE_COLUMNS, base
+
+
+def test_asof_feature_columns_seleciona_as_bases_numericas_as_of() -> None:
+    """``asof_feature_columns`` aplica a MESMA exclusão de bases, antes do pivô (RF-03).
+
+    Fonte única do conjunto de bases: o vetor cacheado por lutador (SPEC 011, Slice 01) e o
+    produzido pelo pivô ao vivo precisam ter exatamente as mesmas bases, e duas listas do
+    mesmo fato divergiriam na próxima slice. Entram as features as-of numéricas; ficam fora
+    identidade (``fighter_id``/``bout_id``), contexto de evento (``event_date``), desfecho da
+    própria luta (``sig_strikes_landed`` -- leakage), contexto de luta (``weight_class``) e
+    tudo que não é numérico (``stance``, ``corner``).
+    """
+    long = pd.DataFrame(
+        [
+            {
+                **_corner_row(1, Corner.RED, 10, "win", 4.0),
+                "fighter_name": "Red",
+                "event_id": 1,
+                "source": "kaggle",
+                "sig_strikes_landed": 40,
+                WIN_RATE_PRIOR: 0.75,
+                "age_years": 31.0,
+            },
+            {
+                **_corner_row(1, Corner.BLUE, 20, "loss", 3.0),
+                "fighter_name": "Blue",
+                "event_id": 1,
+                "source": "kaggle",
+                "sig_strikes_landed": 30,
+                WIN_RATE_PRIOR: 0.25,
+                "age_years": 29.0,
+            },
+        ]
+    )
+
+    colunas = asof_feature_columns(long)
+
+    assert set(colunas) == {
+        _FEATURE,
+        WIN_RATE_PRIOR,
+        "age_years",
+        COL_GRAPPLING_AXIS,
+        COL_VOLUME_AXIS,
+    }
+    for excluida in (
+        "fighter_id",
+        "bout_id",
+        "event_date",
+        "sig_strikes_landed",
+        COL_WEIGHT_CLASS,
+        COL_STANCE,
+        COL_CORNER,
+    ):
+        assert excluida not in colunas, excluida
+
+
+def test_asof_feature_columns_preserva_a_ordem_de_descoberta() -> None:
+    """A ordem devolvida é a das colunas da frame -- determinística, nunca alfabética.
+
+    Determinismo importa porque o payload do cache as-of é construído a partir desta lista;
+    uma ordem instável tornaria diffs de materialização ruidosos sem nenhum ganho.
+    """
+    long = pd.DataFrame(
+        [
+            {**_corner_row(1, Corner.RED, 10, "win", 4.0), WIN_RATE_PRIOR: 0.5},
+            {**_corner_row(1, Corner.BLUE, 20, "loss", 3.0), WIN_RATE_PRIOR: 0.5},
+        ]
+    )
+
+    colunas = asof_feature_columns(long)
+
+    assert colunas == [coluna for coluna in long.columns if coluna in set(colunas)]

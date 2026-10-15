@@ -1,13 +1,23 @@
 import type { ReactNode } from "react";
 
-import { AlertTriangle, CalendarDays, CalendarX, MapPin } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarClock,
+  CalendarDays,
+  CalendarX,
+  MapPin,
+} from "lucide-react";
 import { useParams } from "react-router";
 
 import { ApiError } from "@/api/client";
-import type { EventDetailOut } from "@/api/schema";
+import type { CardBoutPredictionOut, EventDetailOut } from "@/api/schema";
+import { StaleFeaturesBadge } from "@/components/StaleFeaturesBadge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EventBoutCard } from "@/features/events/EventBoutCard";
+import { EventCardSections } from "@/features/events/EventCardSections";
+import { EventHighlightsBlock } from "@/features/events/EventHighlightsBlock";
+import { EventSummaryBlock } from "@/features/events/EventSummaryBlock";
 import { useEvent } from "@/features/events/useEvent";
+import { useEventPrediction } from "@/features/events/useEventPrediction";
 import { formatIsoDate } from "@/lib/format";
 
 /**
@@ -19,6 +29,21 @@ export function EventPage() {
   const { id } = useParams();
   const eventId = Number(id);
   const { data, isPending, isError, error } = useEvent(eventId);
+
+  /*
+    A previsão do card é requisitada **se e somente se** o card tem ao menos uma
+    luta agendada. Não é economia de rede: `GET /predict/event/{id}` escreve em
+    `bout_predictions` com `source="api"` e commita, e o destaque da maior zebra
+    lê essa tabela. Disparar na página de um evento realizado reescreveria um
+    destaque histórico do próprio evento e da Home a cada render.
+
+    O hook é chamado antes de qualquer retorno antecipado (regra dos hooks) e
+    nasce desabilitado: enquanto o detalhe carrega, `data` é `undefined` e não há
+    `status` de luta para consultar.
+  */
+  const temAgendada =
+    data?.bouts.some((bout) => bout.status === "scheduled") ?? false;
+  const prediction = useEventPrediction(eventId, temAgendada);
 
   // Id de rota inválido (ex.: `/events/abc`): tratado como não encontrado, sem
   // disparar request (o hook fica desabilitado).
@@ -47,23 +72,106 @@ export function EventPage() {
     <section className="mx-auto w-full max-w-5xl px-4 py-10">
       <EventHeader event={data} />
 
-      <div className="mt-10">
-        <h2 className="mb-4 font-display text-xl font-bold uppercase tracking-wide">
-          Card de lutas
-        </h2>
-        {data.bouts.length === 0 ? (
-          <p role="status" className="text-sm text-muted-foreground">
-            Nenhuma luta registrada para este evento.
-          </p>
-        ) : (
-          <ul aria-label="Lutas do evento" className="grid gap-3">
-            {data.bouts.map((bout) => (
-              <EventBoutCard key={bout.id} bout={bout} />
-            ))}
-          </ul>
-        )}
-      </div>
+      {data.bouts.length === 0 ? (
+        <UnpublishedCardNotice />
+      ) : (
+        <div className="mt-10 grid gap-10">
+          {/* Resumo e destaques se omitem sozinhos quando chegam nulos: card
+              inteiro agendado não produz contagem, e zero não é a resposta. */}
+          <EventSummaryBlock summary={data.summary} />
+          <EventHighlightsBlock highlights={data.highlights} />
+
+          <div>
+            <h2 className="font-display text-xl font-bold uppercase tracking-wide">
+              Card de lutas
+            </h2>
+            {temAgendada ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Cada luta aparece pelo seu próprio estado: as que já aconteceram
+                mostram o resultado, as que ainda não trazem o palpite do
+                modelo.
+              </p>
+            ) : null}
+            <div className="mt-5 grid gap-5">
+              {temAgendada ? <PredictionStatus query={prediction} /> : null}
+              <EventCardSections
+                bouts={data.bouts}
+                predictions={predictionsByBout(prediction.data?.bouts)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </section>
+  );
+}
+
+/**
+ * Previsões indexadas por **`bout_id`**. Nome não é chave: a identidade da luta
+ * é o id, e o nome serve só à tela. Mapa vazio enquanto a previsão não chegou —
+ * o que leva cada card a não renderizar palpite nenhum, nunca um 50/50.
+ */
+function predictionsByBout(
+  bouts: CardBoutPredictionOut[] | undefined,
+): Map<number, CardBoutPredictionOut> {
+  return new Map((bouts ?? []).map((item) => [item.bout_id, item]));
+}
+
+/**
+ * Estado da requisição de previsão, acima do card. O card **nunca** espera por
+ * ela: as lutas seguem navegáveis em carregamento e em erro, e sem palpite não
+ * se desenha barra, porcentagem nem 50/50 — ausência de opinião do modelo é um
+ * estado, não um número.
+ *
+ * Em sucesso, o que aparece é o aviso de cache defasado, renderizado **na seção
+ * que lê o dado defasado** (RF-06 / D-10) e não num banner global: foi assim que
+ * o cache por luta escondeu 21 features por meses.
+ */
+function PredictionStatus({
+  query,
+}: {
+  query: ReturnType<typeof useEventPrediction>;
+}) {
+  if (query.isPending) {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Carregando as previsões do card…
+      </p>
+    );
+  }
+
+  if (query.isError) {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Não foi possível carregar as previsões do card. As lutas seguem abaixo.
+      </p>
+    );
+  }
+
+  return <StaleFeaturesBadge freshness={query.data.features_freshness} />;
+}
+
+/**
+ * Evento no acervo **sem nenhuma luta**. Uma mensagem única, sem ramificar pela
+ * data: com zero luta não existe `status` para consultar, e ramificar aqui
+ * abriria na página de evento a porta que a decisão de modo pelo `status`
+ * fechou. A frase é verdadeira nos dois casos — card futuro ainda não publicado
+ * e card passado ainda não ingerido.
+ */
+function UnpublishedCardNotice() {
+  return (
+    <div
+      role="status"
+      className="mt-10 flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-card/50 px-6 py-16 text-center"
+    >
+      <CalendarClock className="size-6 text-belt-gold" />
+      <p className="font-display text-lg font-semibold uppercase tracking-wide">
+        Card ainda não publicado
+      </p>
+      <p className="max-w-sm text-sm text-muted-foreground">
+        O evento está no acervo, mas nenhuma luta foi ingerida até agora.
+      </p>
+    </div>
   );
 }
 

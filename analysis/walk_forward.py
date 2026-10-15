@@ -53,7 +53,8 @@ from analysis.model import ARTIFACTS_DIR, RANDOM_STATE, train_model
 from apps.bouts.enums import Corner
 from apps.events.models import Event
 from apps.events.selectors import list_event_bouts
-from apps.predictions.services import SOURCE_WALK_FORWARD, record_prediction
+from apps.predictions.models import SOURCE_WALK_FORWARD
+from apps.predictions.services import record_prediction
 from mma_analytics.db import SessionLocal
 
 logger = logging.getLogger(__name__)
