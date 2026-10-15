@@ -48,3 +48,18 @@ export type FeaturesFreshnessOut =
   components["schemas"]["FeaturesFreshnessOut"];
 export type UnavailableCode = components["schemas"]["UnavailableCode"];
 export type CurrentFormOut = components["schemas"]["CurrentFormOut"];
+export type MatchupBlockInfluenceOut =
+  components["schemas"]["MatchupBlockInfluenceOut"];
+export type MatchupAttributeOut = components["schemas"]["MatchupAttributeOut"];
+export type CommonOpponentOut = components["schemas"]["CommonOpponentOut"];
+export type CommonOpponentBoutOut =
+  components["schemas"]["CommonOpponentBoutOut"];
+
+/**
+ * Cobertura do bloco no serving. O contrato declara o enum **inline** no campo,
+ * não como schema nomeado, então o tipo é derivado do próprio campo — redigitar
+ * `"full" | "partial" | "none"` deixaria o cliente aceitando um valor que o
+ * backend não emite no dia em que a escala mudar, o mesmo defeito que `EventWhen`
+ * resolve por derivação.
+ */
+export type BlockCoverage = MatchupBlockInfluenceOut["coverage"];

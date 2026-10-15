@@ -3,7 +3,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 
-import { useHeadToHead } from "@/features/head-to-head/useHeadToHead";
+import { useHeadToHead } from "@/features/confronto/useHeadToHead";
 
 function wrapper() {
   const queryClient = new QueryClient({

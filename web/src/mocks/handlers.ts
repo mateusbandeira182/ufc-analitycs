@@ -19,7 +19,11 @@ import {
   FIGHTER_STATS_FIXTURES,
   FRESH_FEATURES,
 } from "@/mocks/fighters";
-import { headToHeadBouts } from "@/mocks/headToHead";
+import { commonOpponents, headToHeadBouts } from "@/mocks/headToHead";
+import {
+  MATCHUP_ATTRIBUTE_FIXTURES,
+  MATCHUP_BLOCK_FIXTURES,
+} from "@/mocks/matchup";
 
 /*
   Handlers MSW espelhando o contrato: GET /api/v1/fighters devolve o envelope
@@ -172,9 +176,10 @@ export const handlers = [
       fighter_a_id: a,
       fighter_b_id: b,
       bouts: headToHeadBouts(a, b),
-      // Seção de adversários em comum (RF-16): vazia por padrão; os testes que a
-      // exercitam sobrescrevem o handler com o próprio corpo.
-      common_opponents: [],
+      // Seção de adversários em comum (RF-16), por par: o (1, 3) tem um, o
+      // (1, 2) não tem nenhum porque eles se enfrentaram. Quem precisa de outro
+      // cenário sobrescreve o handler com o próprio corpo.
+      common_opponents: commonOpponents(a, b),
     };
     return HttpResponse.json(body);
   }),
@@ -213,13 +218,14 @@ export const handlers = [
       prob_a_wins: probA,
       prob_b_wins: 1 - probA,
       predicted_winner_id: probA >= 0.5 ? fighterA.id : fighterB.id,
-      // Caminho feliz: nada indisponível. A explicabilidade (blocos de ablação e
-      // atributos as-of dos dois lados) é a tela da Slice 08 — aqui as listas
-      // ficam vazias, que é o que o contrato chama de "não foi produzido".
+      // Caminho feliz: nada indisponível, e a explicabilidade preenchida — os
+      // onze blocos de ablação com as coberturas medidas na Sprint 05 e os oito
+      // atributos as-of crus dos dois lados. Quem exercita o estado
+      // indisponível sobrescreve o handler com `unavailableMatchup`.
       unavailable_reason: null,
       unavailable_code: null,
-      blocks: [],
-      attributes: [],
+      blocks: MATCHUP_BLOCK_FIXTURES,
+      attributes: MATCHUP_ATTRIBUTE_FIXTURES,
       features_freshness: FRESH_FEATURES,
     };
     return HttpResponse.json(body);

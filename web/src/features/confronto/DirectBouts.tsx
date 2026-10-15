@@ -1,88 +1,43 @@
 import { ArrowRight, Handshake, Trophy } from "lucide-react";
 import { Link } from "react-router";
 
-import type { BoutDetailOut, FighterOut } from "@/api/schema";
+import type { BoutDetailOut } from "@/api/schema";
 import { Card } from "@/components/ui/card";
-import { FighterRecord } from "@/features/fighters/FighterRecord";
 import { formatEndingTime, formatIsoDate, formatMethod } from "@/lib/format";
 
-interface HeadToHeadComparisonProps {
-  fighterA: FighterOut;
-  fighterB: FighterOut;
+interface DirectBoutsProps {
   /** Confrontos diretos em ordem cronológica; vazio => nunca se enfrentaram. */
   bouts: BoutDetailOut[];
+  nameA: string;
+  nameB: string;
 }
 
 /**
- * Comparação presentacional: os dois lutadores frente a frente (canto vermelho à
- * esquerda, azul à direita — o vernáculo do octógono) com cartel e atributos, e
- * abaixo o retrospecto do confronto direto. Sem confronto, indica-o em vez de
- * deixar a seção vazia sem explicação. Os dados vêm da rota.
+ * Retrospecto do confronto direto da dupla. Extraído de `HeadToHeadComparison`
+ * (SPEC 011, RF-23) com o comportamento preservado: a lista com resultado,
+ * método, momento e o link para o detalhe da luta, e o estado "nunca se
+ * enfrentaram" nomeando os dois atletas em vez de deixar a seção vazia sem
+ * explicação.
  */
-export function HeadToHeadComparison({
-  fighterA,
-  fighterB,
-  bouts,
-}: HeadToHeadComparisonProps) {
+export function DirectBouts({ bouts, nameA, nameB }: DirectBoutsProps) {
   return (
-    <div className="space-y-10">
-      <div className="grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-center">
-        <FighterColumn fighter={fighterA} corner="red" />
-        <VersusEmblem />
-        <FighterColumn fighter={fighterB} corner="blue" />
-      </div>
-
-      <section aria-labelledby="direct-bouts-heading">
-        <h2
-          id="direct-bouts-heading"
-          className="mb-4 font-display text-xl font-bold uppercase tracking-wide"
-        >
-          Confronto direto
-        </h2>
-        {bouts.length === 0 ? (
-          <NeverFought fighterA={fighterA} fighterB={fighterB} />
-        ) : (
-          <ul aria-label="Confrontos diretos" className="grid gap-3">
-            {bouts.map((bout) => (
-              <DirectBout key={bout.id} bout={bout} />
-            ))}
-          </ul>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function FighterColumn({
-  fighter,
-  corner,
-}: {
-  fighter: FighterOut;
-  corner: "red" | "blue";
-}) {
-  const cornerAccent =
-    corner === "red" ? "text-corner-red" : "text-corner-blue";
-  const cornerLabel = corner === "red" ? "Canto vermelho" : "Canto azul";
-
-  return (
-    <div>
-      <div className="mb-2 flex items-baseline justify-between gap-2">
-        <h2 className="min-w-0 truncate font-display text-2xl font-bold uppercase tracking-tight">
-          <Link
-            to={`/fighters/${String(fighter.id)}`}
-            className="hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {fighter.name}
-          </Link>
-        </h2>
-        <span
-          className={`shrink-0 text-[0.6rem] font-medium uppercase tracking-[0.2em] ${cornerAccent}`}
-        >
-          {cornerLabel}
-        </span>
-      </div>
-      <FighterRecord fighter={fighter} />
-    </div>
+    <section aria-labelledby="direct-bouts-heading">
+      <h2
+        id="direct-bouts-heading"
+        className="font-display text-xl font-bold uppercase tracking-wide"
+      >
+        Confronto direto
+      </h2>
+      {bouts.length === 0 ? (
+        <NeverFought nameA={nameA} nameB={nameB} />
+      ) : (
+        <ul aria-label="Confrontos diretos" className="mt-5 grid gap-3">
+          {bouts.map((bout) => (
+            <DirectBout key={bout.id} bout={bout} />
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -153,38 +108,19 @@ function DirectBout({ bout }: { bout: BoutDetailOut }) {
   );
 }
 
-function NeverFought({
-  fighterA,
-  fighterB,
-}: {
-  fighterA: FighterOut;
-  fighterB: FighterOut;
-}) {
+function NeverFought({ nameA, nameB }: { nameA: string; nameB: string }) {
   return (
     <div
       role="status"
-      className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-card/50 px-6 py-12 text-center"
+      className="mt-5 flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-card/50 px-6 py-12 text-center"
     >
       <Handshake aria-hidden="true" className="size-6 text-primary" />
       <p className="font-display text-lg font-semibold uppercase tracking-wide">
         Nunca se enfrentaram
       </p>
       <p className="max-w-sm text-sm text-muted-foreground">
-        {fighterA.name} e {fighterB.name} não têm confronto direto registrado no
-        acervo.
+        {nameA} e {nameB} não têm confronto direto registrado no acervo.
       </p>
-    </div>
-  );
-}
-
-function VersusEmblem() {
-  return (
-    <div aria-hidden="true" className="hidden place-items-center px-4 lg:grid">
-      <span className="octagon-clip grid size-12 place-items-center bg-gradient-to-br from-corner-red via-primary to-corner-blue p-[2px]">
-        <span className="octagon-clip grid size-full place-items-center bg-card font-display text-sm font-bold uppercase tracking-widest text-belt-gold">
-          vs
-        </span>
-      </span>
     </div>
   );
 }

@@ -33,8 +33,8 @@ describe("AppLayout", () => {
       "/events",
     );
     expect(
-      within(nav).getByRole("link", { name: /head-to-head/i }),
-    ).toHaveAttribute("href", "/head-to-head");
+      within(nav).getByRole("link", { name: /confronto/i }),
+    ).toHaveAttribute("href", "/confronto");
   });
 
   it("renderiza o conteúdo da rota filha no outlet", () => {

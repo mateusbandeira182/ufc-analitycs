@@ -3,7 +3,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 
-import { useMatchupPrediction } from "@/features/matchup/useMatchupPrediction";
+import { useMatchupPrediction } from "@/features/confronto/useMatchupPrediction";
 
 function wrapper() {
   const queryClient = new QueryClient({

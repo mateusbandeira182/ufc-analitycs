@@ -7,8 +7,7 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { to: "/fighters", label: "Lutadores" },
   { to: "/events", label: "Eventos" },
-  { to: "/head-to-head", label: "Head-to-head" },
-  { to: "/matchup", label: "Prevê essa luta" },
+  { to: "/confronto", label: "Confronto" },
 ];
 
 /**

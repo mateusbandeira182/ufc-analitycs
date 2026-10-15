@@ -6,12 +6,11 @@ import {
 
 import { AppLayout } from "@/components/layout/AppLayout";
 import { BoutDetail } from "@/features/bouts/BoutDetail";
+import { ConfrontoPage } from "@/features/confronto/ConfrontoPage";
 import { EventPage } from "@/features/events/EventPage";
 import { EventsPage } from "@/features/events/EventsPage";
 import { FighterPage } from "@/features/fighters/FighterPage";
 import { FightersPage } from "@/features/fighters/FightersPage";
-import { HeadToHeadPage } from "@/features/head-to-head/HeadToHeadPage";
-import { MatchupPage } from "@/features/matchup/MatchupPage";
 import { HomePage } from "@/routes/HomePage";
 
 /**
@@ -25,6 +24,17 @@ import { HomePage } from "@/routes/HomePage";
 export const fighterStatsRedirect: LoaderFunction = ({ params }) =>
   redirect(`/fighters/${params.id ?? ""}`);
 
+/**
+ * `/head-to-head` e `/matchup` foram absorvidas por `/confronto` (SPEC 011,
+ * RF-23). As duas sobrevivem só como redirecionamento, **preservando os
+ * parâmetros de query** — link já salvo e link vindo do card de um evento
+ * continuam funcionando. Mesmo padrão de `fighterStatsRedirect`: `loader` (e não
+ * `<Navigate>`) resolve antes de renderizar, sem piscar tela intermediária.
+ * Exportado para que o teste exercite o mesmo redirecionamento que o app usa.
+ */
+export const confrontoRedirect: LoaderFunction = ({ request }) =>
+  redirect(`/confronto${new URL(request.url).search}`);
+
 export const router = createBrowserRouter([
   {
     element: <AppLayout />,
@@ -36,8 +46,9 @@ export const router = createBrowserRouter([
       { path: "/events", element: <EventsPage /> },
       { path: "/events/:id", element: <EventPage /> },
       { path: "/bouts/:id", element: <BoutDetail /> },
-      { path: "/head-to-head", element: <HeadToHeadPage /> },
-      { path: "/matchup", element: <MatchupPage /> },
+      { path: "/confronto", element: <ConfrontoPage /> },
+      { path: "/head-to-head", loader: confrontoRedirect },
+      { path: "/matchup", loader: confrontoRedirect },
     ],
   },
 ]);
