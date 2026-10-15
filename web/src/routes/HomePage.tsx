@@ -142,7 +142,7 @@ function MainEventFaceOff({ bout }: { bout: BoutCardOut }) {
       aria-label="Luta principal"
       className="overflow-hidden rounded-lg border border-border bg-card"
     >
-      <div className="grid items-stretch gap-px bg-border sm:grid-cols-[1fr_auto_1fr]">
+      <div className="grid items-stretch gap-px bg-border sm:grid-cols-2">
         {ordered.map((fighter, index) => (
           <FaceOffCorner
             key={fighter.fighter_id}

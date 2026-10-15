@@ -35,6 +35,16 @@ function renderHomeInLayout() {
   });
 }
 
+/** Colunas de um template Tailwind: `grid-cols-2` ou `grid-cols-[1fr_auto_1fr]`. */
+function contarColunas(className: string): number {
+  const template = /grid-cols-\[([^\]]+)\]/.exec(className)?.[1];
+  if (template !== undefined) {
+    return template.split("_").length;
+  }
+  const quantas = /grid-cols-(\d+)/.exec(className)?.[1];
+  return quantas === undefined ? 0 : Number(quantas);
+}
+
 describe("HomePage — card do último evento", () => {
   it("mostra o último evento realizado com nome e data", async () => {
     renderHome();
@@ -60,6 +70,32 @@ describe("HomePage — card do último evento", () => {
     expect(
       within(principal).getByRole("img", { name: /alex pereira/i }),
     ).toHaveAttribute("src", "https://example.test/pereira.png");
+  });
+
+  /**
+   * O número de colunas declaradas tem de casar com o de filhos da grade.
+   *
+   * `MainEventFaceOff` renderiza dois cantos e usa o vão (`gap-px bg-border`)
+   * como separador, **sem elemento divisor no meio** — diferente do
+   * `EventBoutCard` e do `BoutDetail`, que inserem um divisor e por isso
+   * declaram três colunas. Com três colunas e dois filhos, o auto-placement do
+   * CSS Grid põe o canto azul na coluna `auto` (que encolhe para o conteúdo) e
+   * deixa a terceira `1fr` vazia: o azul sai mais estreito que o vermelho, com
+   * um vão à direita.
+   *
+   * jsdom não computa layout de grid, então a asserção é estrutural — e é ela
+   * que pega quem mexer num dos dois lados sem mexer no outro.
+   */
+  it("declara tantas colunas quantos cantos na grade da luta principal", async () => {
+    renderHome();
+
+    const principal = await screen.findByRole("region", {
+      name: /luta principal/i,
+    });
+    const grade = principal.querySelector<HTMLElement>("[class*='grid-cols-']");
+
+    expect(grade).not.toBeNull();
+    expect(contarColunas(grade!.className)).toBe(grade!.children.length);
   });
 
   it("cai no fallback por iniciais no canto sem retrato", async () => {
