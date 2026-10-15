@@ -34,13 +34,17 @@ from analysis.predict import (
     _align_features,
     _asof_matchup_rows,
     _prob_a_wins_by_bout,
+    neutral_prob_a_wins,
     predict_card,
     predict_matchup,
+    prob_a_wins_of,
+    serve_matchup,
 )
 from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.features.models import FighterAsOfFeatures
+from apps.features.selectors import read_asof_features
 from apps.fighters.enums import Stance
 from apps.fighters.models import Fighter
 from ingestion.features.cli import run_materialize, run_materialize_asof
@@ -49,6 +53,7 @@ from ingestion.features.rolling import (
     OPPONENT_WIN_RATE_PRIOR_AVG,
     SIMILAR_STYLE_WIN_RATE_PRIOR,
     SOUTHPAW_OPPONENTS_FACED_PRIOR,
+    WIN_RATE_PRIOR,
 )
 from ingestion.normalize import normalize_name
 
@@ -312,6 +317,31 @@ def test_predict_matchup_lutador_so_com_luta_futura_falha_claro(
 
     with pytest.raises(ValueError, match="histórico"):
         predict_matchup(db_session, ids["Fighter Alpha"], int(estreante.id), directory=tmp_path)
+
+
+def test_predict_matchup_mesmo_lutador_dos_dois_lados_recusa(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """O par ``(a, a)`` **levanta**, em vez de devolver palpite de lutador contra si mesmo.
+
+    Um lutador contra si mesmo não é confronto: as duas linhas do par sairiam idênticas, todo
+    ``_diff`` zero, e o modelo devolveria uma probabilidade perfeitamente plausível e sem
+    sentido nenhum. Recusar é o único desfecho honesto.
+
+    **Este teste é a única coisa que segura a guarda.** ``predict_matchup`` não tem chamador de
+    produção desde o M9 (é a implementação de referência de um par só), e o router responde 422
+    para ``a == b`` antes de chegar aqui -- então a chamada a
+    ``_require_one_bout_per_fighter`` parece, de fora, uma validação redundante num caminho
+    morto. Sem este teste, a próxima limpeza de código aparentemente morto a apaga e ``(a, a)``
+    passa a devolver previsão sem nada ficar vermelho. É a mesma família de defeito silencioso
+    que esta SPEC já encontrou seis vezes.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    alpha = ids["Fighter Alpha"]
+
+    with pytest.raises(ValueError, match=str(alpha)):
+        predict_matchup(db_session, alpha, alpha, directory=tmp_path)
 
 
 def test_predict_card_equivale_as_chamadas_individuais(db_session: Session, tmp_path: Path) -> None:
@@ -637,3 +667,93 @@ def test_predict_card_nao_rele_o_granular_no_caminho_quente(
         predict_card(db_session, [(ids["Fighter Alpha"], ids["Fighter Delta"])], directory=tmp_path)
 
     assert len(emitidos) <= _TETO_DE_STATEMENTS, emitidos
+
+
+# ---------------------------------------------------------------------------
+# As duas linhas servidas, públicas (SPEC 011, Slice 05) -- insumo da ablação local
+# ---------------------------------------------------------------------------
+
+
+def test_serve_matchup_devolve_duas_linhas_alinhadas_a_feature_names(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """``serve_matchup`` devolve ida e volta com **as** colunas do modelo, na ordem dele.
+
+    É o contrato que torna a ablação local possível sem reconstruir nada: as duas linhas já
+    vêm no formato que ``predict_proba`` come, com ``NaN`` explícito (sem imputação), então
+    neutralizar colunas é copiar a frame e sobrescrever.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    loaded = load_artifact(tmp_path)
+    cached = read_asof_features(db_session, [ids["Fighter Alpha"], ids["Fighter Delta"]])
+
+    served = serve_matchup(cached, loaded, ids["Fighter Alpha"], ids["Fighter Delta"])
+
+    for rows in (served.forward, served.reverse):
+        assert list(rows.columns) == loaded.feature_names
+        assert len(rows) == 1
+        assert all(dtype == "float64" for dtype in rows.dtypes)
+    # A degradação declarada do serving (CA-16 da SPEC 009) sobrevive como ``NaN``, não como
+    # zero imputado: é o que faz a cobertura por bloco medir ausência de verdade.
+    assert served.forward.isna().to_numpy().any()
+
+
+def test_prob_a_wins_of_reproduz_exatamente_o_predict_matchup(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """A entrada nova e a de referência não divergem: mesmo par, mesma probabilidade crua.
+
+    ``predict_matchup`` segue sendo a implementação de referência de um par só (DP-05i); este
+    teste é o que impede as duas entradas de contarem histórias diferentes sobre o mesmo par.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    a, b = ids["Fighter Alpha"], ids["Fighter Delta"]
+    loaded = load_artifact(tmp_path)
+    cached = read_asof_features(db_session, [a, b])
+
+    served = serve_matchup(cached, loaded, a, b)
+    (pela_linha,) = prob_a_wins_of(loaded, served.forward)
+
+    assert pela_linha == pytest.approx(
+        predict_matchup(db_session, a, b, directory=tmp_path).prob_a_wins, abs=1e-12
+    )
+
+
+def test_serve_matchup_reverse_e_o_mesmo_par_com_os_lados_trocados(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """A linha da volta é o par espelhado: ``x_a`` da volta == ``x_b`` da ida.
+
+    Sem isso, "as duas ordens de canto" seria só duas chamadas ao mesmo vetor, e a
+    neutralização de canto não neutralizaria nada.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    loaded = load_artifact(tmp_path)
+    a, b = ids["Fighter Alpha"], ids["Fighter Delta"]
+    cached = read_asof_features(db_session, [a, b])
+
+    served = serve_matchup(cached, loaded, a, b)
+
+    base = f"{WIN_RATE_PRIOR}"
+    coluna_a, coluna_b = f"{base}_a", f"{base}_b"
+    # Guarda de não-vacuidade: a base tem de estar no modelo e preenchida, senão o espelho
+    # seria asserido entre dois ``NaN`` e passaria dizendo nada.
+    assert {coluna_a, coluna_b} <= set(loaded.feature_names)
+    assert pd.notna(served.forward[coluna_a].iloc[0])
+    assert served.reverse[coluna_a].iloc[0] == pytest.approx(served.forward[coluna_b].iloc[0])
+    assert served.reverse[coluna_b].iloc[0] == pytest.approx(served.forward[coluna_a].iloc[0])
+
+
+def test_neutral_prob_a_wins_e_a_media_das_duas_ordens(db_session: Session, tmp_path: Path) -> None:
+    """A fórmula pública da neutralização: ida mais o complemento da volta, sobre dois.
+
+    Vive em ``analysis.predict`` porque três chamadores a usam (card, matchup e ablação por
+    bloco). A DECISÃO de neutralizar continua sendo da camada de apresentação.
+    """
+    assert neutral_prob_a_wins(0.9, 0.1) == pytest.approx(0.9)
+    assert neutral_prob_a_wins(0.5, 0.5) == pytest.approx(0.5)
+    # Simetria: neutralizar (A, B) e (B, A) dá valores complementares.
+    assert neutral_prob_a_wins(0.8, 0.3) == pytest.approx(1.0 - neutral_prob_a_wins(0.3, 0.8))

@@ -15,6 +15,7 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict
 
 from apps.bouts.enums import BoutMethod, Corner
+from apps.predictions.schemas import MatchupFighterOut
 
 
 class BoutFighterStatsOut(BaseModel):
@@ -125,14 +126,55 @@ class BoutDetailOut(BaseModel):
     rounds: list[BoutFighterRoundOut]
 
 
+class CommonOpponentBoutOut(BaseModel):
+    """Uma luta contra o adversário em comum, pelo desfecho -- sem box-score.
+
+    ``winner_id`` nulo é empate ou no contest (a convenção que ``apps.bouts.enums``
+    documenta). Deliberadamente **não** reusa o ``won: bool`` de ``FighterBoutOut``:
+    ali empate colapsa em ``False``, e nesta seção -- onde os dois lutadores são
+    comparados contra o MESMO terceiro -- "perdeu para X" e "empatou com X" não
+    podem virar a mesma afirmação.
+
+    Sem stats granulares de propósito: a pergunta é "como cada um se saiu contra X",
+    não o box-score. Quem quer o detalhe clica na luta (``GET /bouts/{id}``).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    bout_id: int
+    event_id: int
+    event_name: str
+    event_date: date
+    winner_id: int | None
+    # Nulo na luta agendada -- que, aqui, nunca aparece: a seção filtra ``completed``.
+    method: BoutMethod | None
+    round: int | None
+
+
+class CommonOpponentOut(BaseModel):
+    """Um adversário que os dois lutadores enfrentaram, com o desfecho de cada lado."""
+
+    opponent: MatchupFighterOut
+    # O lutador pode ter enfrentado o mesmo adversário mais de uma vez: o adversário
+    # não duplica (é a chave da entrada), as lutas somam.
+    bouts_a: list[CommonOpponentBoutOut]
+    bouts_b: list[CommonOpponentBoutOut]
+
+
 class HeadToHeadOut(BaseModel):
-    """Confrontos diretos entre dois lutadores.
+    """Confrontos diretos entre dois lutadores, mais os adversários em comum.
 
     Envelope com os dois ids consultados e a lista de bouts em que ambos
     participaram, em ordem cronológica. Cada item reusa ``BoutDetailOut`` (Slice
     03): resultado + stats granulares dos dois cantos, nunca médias agregadas.
+
+    ``common_opponents`` (M9, RF-16) é a seção que faz a página servir para a dupla
+    que **nunca** se enfrentou -- o caso comum, e a razão de o humano dizer que "a
+    página não faz nada": antes dela, o envelope vinha com ``bouts: []`` e nada mais.
+    As duas seções convivem, e o próprio par nunca aparece em ``common_opponents``.
     """
 
     fighter_a_id: int
     fighter_b_id: int
     bouts: list[BoutDetailOut]
+    common_opponents: list[CommonOpponentOut]

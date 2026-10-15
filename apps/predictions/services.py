@@ -25,11 +25,32 @@ from pathlib import Path
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from analysis.predict import CardMatchupPrediction, predict_card
+from analysis.ablation import BlockInfluence, block_influences
+from analysis.model import load_artifact
+from analysis.predict import (
+    CardMatchupPrediction,
+    neutral_prob_a_wins,
+    predict_card,
+    prob_a_wins_of,
+    serve_matchup,
+)
 from apps.bouts.enums import Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.selectors import list_event_bouts
+from apps.features.models import FighterAsOfFeatures
+from apps.features.selectors import read_asof_features
+from apps.predictions.enums import UnavailableCode
 from apps.predictions.models import BoutPrediction
+from ingestion.features.rolling import (
+    CONTROL_TIME_AVG_R3,
+    FINISH_RATE_PRIOR,
+    SIG_STRIKE_ACCURACY_R3,
+    SIG_STRIKES_ABSORBED_PM_R3,
+    SIG_STRIKES_LANDED_PM_R3,
+    TAKEDOWN_ACCURACY_R3,
+    TAKEDOWN_DEFENSE_R3,
+    WIN_RATE_PRIOR,
+)
 
 # Origens do registro: predição servida por request e predição do loop walk-forward.
 SOURCE_API = "api"
@@ -113,6 +134,9 @@ class BoutCardPrediction:
     prob_blue_wins: float | None
     predicted_winner_id: int | None
     unavailable_reason: str | None
+    # Causa legível por máquina, ao lado da prosa (RF-28 / D-08): preenchido se e somente se
+    # ``unavailable_reason`` está. A interface decide o aviso por ele, nunca pelo texto.
+    unavailable_code: UnavailableCode | None
 
 
 @dataclass(frozen=True)
@@ -149,16 +173,6 @@ def _repeated_fighter_ids(corners_por_luta: dict[int, tuple[BoutFighter, BoutFig
         bout_fighter.fighter_id for cantos in corners_por_luta.values() for bout_fighter in cantos
     )
     return {fighter_id for fighter_id, total in ocorrencias.items() if total > 1}
-
-
-def _neutral_prob_red_wins(forward_prob_a_wins: float, reverse_prob_a_wins: float) -> float:
-    """Probabilidade neutra de o canto vermelho vencer: média das duas ordens de canto.
-
-    ``forward`` avalia o vermelho como A; ``reverse`` inverte o par, então ``prob_a_wins`` de
-    lá é a probabilidade do **azul** -- daí o complemento. A média cancela a vantagem de canto
-    que o modelo aprendeu (ADR 0001), tornando o palpite invariante à ordem.
-    """
-    return (forward_prob_a_wins + (1.0 - reverse_prob_a_wins)) / 2.0
 
 
 def predicted_winner_id(fighter_a_id: int, fighter_b_id: int, prob_a_wins: float) -> int:
@@ -269,9 +283,16 @@ def _record_card(session: Session, card: EventCardPrediction) -> None:
 
 
 def _unavailable(
-    bout_id: int, cantos: tuple[BoutFighter, BoutFighter] | None, reason: str
+    bout_id: int,
+    cantos: tuple[BoutFighter, BoutFighter] | None,
+    reason: str,
+    code: UnavailableCode,
 ) -> BoutCardPrediction:
-    """Entrada de card sem predição: os cantos conhecidos e o motivo, tudo mais nulo."""
+    """Entrada de card sem predição: os cantos conhecidos, o motivo e o código, tudo mais nulo.
+
+    O ``code`` é obrigatório, não opcional: um caminho de indisponibilidade sem código
+    devolveria prosa sem contraparte de máquina, e a interface voltaria a parsear o texto.
+    """
     red, blue = cantos if cantos is not None else (None, None)
     return BoutCardPrediction(
         bout_id=bout_id,
@@ -281,6 +302,7 @@ def _unavailable(
         prob_blue_wins=None,
         predicted_winner_id=None,
         unavailable_reason=reason,
+        unavailable_code=code,
     )
 
 
@@ -301,6 +323,7 @@ def _to_bout_card_prediction(
             None,
             "Luta sem os dois cantos cadastrados (é preciso exatamente um lutador no canto "
             "vermelho e um no azul).",
+            UnavailableCode.MISSING_CORNERS,
         )
     red, blue = cantos
     repetidos_na_luta = sorted({red.fighter_id, blue.fighter_id} & repetidos)
@@ -311,13 +334,19 @@ def _to_bout_card_prediction(
             cantos,
             f"Lutador(es) de id {ids} escalado(s) em mais de uma luta deste card; "
             f"a predição exige um lutador por luta.",
+            UnavailableCode.REPEATED_FIGHTER,
         )
 
     ida, volta = previstos[bout_id]
     if ida.prob_a_wins is None or volta.prob_a_wins is None:
-        return _unavailable(bout_id, cantos, _missing_history_reason(ida.missing_history_ids))
+        return _unavailable(
+            bout_id,
+            cantos,
+            _missing_history_reason(ida.missing_history_ids),
+            UnavailableCode.MISSING_HISTORY,
+        )
 
-    prob_red_wins = _neutral_prob_red_wins(ida.prob_a_wins, volta.prob_a_wins)
+    prob_red_wins = neutral_prob_a_wins(ida.prob_a_wins, volta.prob_a_wins)
     return BoutCardPrediction(
         bout_id=bout_id,
         red=red,
@@ -326,4 +355,139 @@ def _to_bout_card_prediction(
         prob_blue_wins=1.0 - prob_red_wins,
         predicted_winner_id=predicted_winner_id(red.fighter_id, blue.fighter_id, prob_red_wins),
         unavailable_reason=None,
+        unavailable_code=None,
+    )
+
+
+@dataclass(frozen=True)
+class MatchupAttribute:
+    """Um atributo as-of **cru** dos dois lados -- o número que forma a porcentagem na tela.
+
+    ``value_a``/``value_b`` são ``None`` -- nunca ``0.0`` -- quando a chave está ausente ou
+    nula no payload cacheado: zero é um valor legítimo de taxa, e usá-lo para "não tenho"
+    faria a tela afirmar "zero por cento" onde não há medição.
+    """
+
+    key: str
+    label: str
+    value_a: float | None
+    value_b: float | None
+
+
+@dataclass(frozen=True)
+class MatchupExplanation:
+    """Palpite neutro do par com a explicabilidade do contrato da Slice 05.
+
+    Probabilidade e vencedor são ``None`` sempre que ``unavailable_reason``/``unavailable_code``
+    estão preenchidos -- e vice-versa, o mesmo contrato do card.
+
+    No estado indisponível, ``blocks`` e ``attributes`` saem **vazios**, nunca listas de nulos
+    (DP-05e): lista vazia diz "não foi produzido", uma lista de nulos diria "foi medido e deu
+    ausente". A ablação exige os dois lados e os atributos são comparação lado a lado.
+    """
+
+    fighter_a_id: int
+    fighter_b_id: int
+    prob_a_wins: float | None
+    predicted_winner_id: int | None
+    unavailable_reason: str | None
+    unavailable_code: UnavailableCode | None
+    blocks: list[BlockInfluence]
+    attributes: list[MatchupAttribute]
+
+
+# Os oito atributos as-of expostos pelo matchup (RF-19), na ordem em que a tela os lê.
+# As chaves são **importadas**, nunca redigitadas como string literal: uma string duplicada e
+# desatualizada faria o atributo sumir da resposta em silêncio -- a mesma razão pela qual o
+# bloco ``dimensoes-ausentes`` importa os nomes de ``rolling``.
+MATCHUP_ATTRIBUTES: tuple[tuple[str, str], ...] = (
+    (WIN_RATE_PRIOR, "Vitórias no histórico as-of"),
+    (FINISH_RATE_PRIOR, "Taxa de finalização"),
+    (SIG_STRIKE_ACCURACY_R3, "Precisão de golpes significativos"),
+    (SIG_STRIKES_LANDED_PM_R3, "Golpes significativos conectados por minuto"),
+    (SIG_STRIKES_ABSORBED_PM_R3, "Golpes significativos absorvidos por minuto"),
+    (TAKEDOWN_ACCURACY_R3, "Precisão de quedas"),
+    (TAKEDOWN_DEFENSE_R3, "Defesa de quedas"),
+    (CONTROL_TIME_AVG_R3, "Tempo de controle médio por luta (segundos)"),
+)
+
+
+def _asof_value(row: FighterAsOfFeatures, key: str) -> float | None:
+    """Valor as-of cru do lutador, lido do payload cacheado.
+
+    Chave ausente **ou** nula vira ``None``, nunca ``0.0``: zero é um valor legítimo de taxa
+    (quem nunca finalizou tem ``finish_rate_prior`` zero de verdade), e usá-lo para "não tenho
+    o dado" faria a tela afirmar uma medição inexistente.
+    """
+    value = row.features.get(key)
+    return None if value is None else float(value)
+
+
+def _matchup_attributes(
+    row_a: FighterAsOfFeatures, row_b: FighterAsOfFeatures
+) -> list[MatchupAttribute]:
+    """Os oito atributos de ``MATCHUP_ATTRIBUTES`` com os valores crus dos dois lados."""
+    return [
+        MatchupAttribute(
+            key=key,
+            label=label,
+            value_a=_asof_value(row_a, key),
+            value_b=_asof_value(row_b, key),
+        )
+        for key, label in MATCHUP_ATTRIBUTES
+    ]
+
+
+def explain_matchup(
+    session: Session, fighter_a_id: int, fighter_b_id: int, directory: Path
+) -> MatchupExplanation:
+    """Palpite neutro de canto do par, com a explicabilidade do contrato da Slice 05.
+
+    Caminho **único** do endpoint ``GET /predict/matchup`` desde o M9: o router só traduz o
+    503 e monta o schema.
+
+    Ordem de precedência (DP-05f): o artefato é carregado **antes** de o cache ser consultado,
+    então ``FileNotFoundError`` (503 no router) precede o estado de estreante. Servidor sem
+    modelo é falha de servidor, não estado do par -- na ordem inversa, um deploy sem artefato
+    diria "sem histórico" sobre todo mundo.
+
+    Lado sem linha no cache devolve a indisponibilidade (200 no router), com a **mesma** prosa
+    do card (``_missing_history_reason``: uma causa, um texto) e o código ``missing_history``.
+    Isso **não** distingue "estreante" de "cache nunca materializado": as duas chegam aqui
+    iguais, e quem as separa é o ``features_freshness`` da mesma resposta
+    (``n_bouts_source == 0`` com granular cheio).
+    """
+    loaded = load_artifact(directory)
+    cached = read_asof_features(session, [fighter_a_id, fighter_b_id])
+    faltantes = tuple(
+        fighter_id for fighter_id in (fighter_a_id, fighter_b_id) if fighter_id not in cached
+    )
+    if faltantes:
+        return MatchupExplanation(
+            fighter_a_id=fighter_a_id,
+            fighter_b_id=fighter_b_id,
+            prob_a_wins=None,
+            predicted_winner_id=None,
+            unavailable_reason=_missing_history_reason(faltantes),
+            unavailable_code=UnavailableCode.MISSING_HISTORY,
+            blocks=[],
+            attributes=[],
+        )
+
+    served = serve_matchup(cached, loaded, fighter_a_id, fighter_b_id)
+    (ida,) = prob_a_wins_of(loaded, served.forward)
+    (volta,) = prob_a_wins_of(loaded, served.reverse)
+    prob_a = neutral_prob_a_wins(ida, volta)
+    return MatchupExplanation(
+        fighter_a_id=fighter_a_id,
+        fighter_b_id=fighter_b_id,
+        prob_a_wins=prob_a,
+        predicted_winner_id=predicted_winner_id(fighter_a_id, fighter_b_id, prob_a),
+        unavailable_reason=None,
+        unavailable_code=None,
+        # A base da ablação é a probabilidade **neutra**, a mesma que a tela mostra: os
+        # ablacionados também são neutralizados, então comparar contra a crua de uma ordem só
+        # misturaria o efeito do bloco com a vantagem de canto.
+        blocks=block_influences(served, prob_a),
+        attributes=_matchup_attributes(cached[fighter_a_id], cached[fighter_b_id]),
     )

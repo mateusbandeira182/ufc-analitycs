@@ -21,10 +21,20 @@ from apps.bouts.schemas import (
     BoutEventOut,
     BoutFighterRoundOut,
     BoutFighterStatsOut,
+    CommonOpponentBoutOut,
+    CommonOpponentOut,
     HeadToHeadOut,
 )
-from apps.bouts.selectors import BoutDetail, BoutFighterRoundRow, get_bout_by_id, get_head_to_head
+from apps.bouts.selectors import (
+    BoutDetail,
+    BoutFighterRoundRow,
+    CommonOpponent,
+    get_bout_by_id,
+    get_common_opponents,
+    get_head_to_head,
+)
 from apps.fighters.selectors import get_fighter_by_id
+from apps.predictions.schemas import MatchupFighterOut
 from mma_analytics.db import get_session
 
 router = APIRouter(prefix="/bouts", tags=["bouts"])
@@ -157,4 +167,21 @@ def head_to_head(
         fighter_a_id=a,
         fighter_b_id=b,
         bouts=[_to_bout_detail_out(detail) for detail in detalhes],
+        common_opponents=[
+            _to_common_opponent_out(comum) for comum in get_common_opponents(session, a, b)
+        ],
+    )
+
+
+def _to_common_opponent_out(comum: CommonOpponent) -> CommonOpponentOut:
+    """Converte uma entrada de adversário em comum no schema de saída.
+
+    ``opponent`` reusa ``MatchupFighterOut`` (id + nome). **Não** reusa
+    ``FighterOpponentOut`` de ``apps.fighters.schemas``: aquele módulo já importa
+    ``apps.bouts.schemas``, e importá-lo de volta fecharia um ciclo de imports.
+    """
+    return CommonOpponentOut(
+        opponent=MatchupFighterOut(id=comum.opponent_id, name=comum.opponent_name),
+        bouts_a=[CommonOpponentBoutOut.model_validate(luta) for luta in comum.bouts_a],
+        bouts_b=[CommonOpponentBoutOut.model_validate(luta) for luta in comum.bouts_b],
     )

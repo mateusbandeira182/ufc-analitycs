@@ -43,7 +43,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import numpy as np
 import pandas as pd
@@ -63,6 +63,7 @@ from analysis.dataset import (
     temporal_split,
 )
 from analysis.model import ARTIFACTS_DIR, DEFAULT_TEST_FRACTION, RANDOM_STATE, train_model
+from analysis.predict import ServedMatchup, neutral_prob_a_wins, prob_a_wins_of
 from ingestion.features.division import (
     DIVISION_BASE_RATE_FEATURES,
     DIVISION_CATEGORY_FEATURES,
@@ -413,6 +414,134 @@ BLOCK_REGISTRY: dict[str, FeatureBlock] = {
         ),
     )
 }
+
+
+# ---------------------------------------------------------------------------
+# Ablação LOCAL: a influência de cada bloco sobre a probabilidade de UM confronto
+# (SPEC 011, Slice 05 -- RF-17/RF-18). Grandeza diferente da ablação de treino acima.
+# ---------------------------------------------------------------------------
+
+BlockCoverage = Literal["full", "partial", "none"]
+
+
+@dataclass(frozen=True)
+class BlockInfluence:
+    """Influência de um bloco sobre a probabilidade corrente, por ablação local.
+
+    ``delta_prob_a = prob_a_base - prob_a_ablado``; **positivo empurra para o lado A** (D-11).
+    É dele que sai o rótulo "favorece Fulano" na tela.
+
+    **Sinal deliberadamente OPOSTO, em semântica, ao de ``MetricsDelta``** -- lá
+    ``delta = log_loss(com) - log_loss(sem)`` e NEGATIVO é bom. São grandezas diferentes:
+    perda de um modelo contra atribuição de probabilidade a um lado. NÃO "harmonizar" os dois:
+    inverteria a tela sem quebrar teste nenhum.
+
+    ``delta_prob_a`` é ``None`` -- **jamais 0.0** -- quando ``coverage == "none"``. "Não
+    avaliado" e "não influenciou" são afirmações diferentes; a segunda diz que a divisão não
+    importa, quando ela nem foi medida.
+
+    ``n_columns`` é o universo do bloco **dentro do modelo** e ``n_columns_evaluated`` a
+    contagem **real** de não-nulos na linha servida -- nunca uma lista fixa, que apodreceria
+    do mesmo modo que o cache ``bout_features`` apodreceu.
+    """
+
+    name: str
+    description: str
+    n_columns: int
+    n_columns_evaluated: int
+    coverage: BlockCoverage
+    delta_prob_a: float | None
+
+
+def _ablated(rows: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+    """Cópia das linhas com as colunas do bloco neutralizadas em ``NaN``.
+
+    ``NaN`` e não zero, e não a média: o ``HistGradientBoostingClassifier`` trata a ausência
+    nativamente, então neutralizar é dizer "não sei", não "vale zero".
+
+    As colunas incluem o ``_diff`` de cada base (``block_columns`` já o devolve). Zerar
+    ``_a``/``_b`` e deixar o ``_diff`` de pé não ablaria nada: o diferencial é calculado
+    **antes** (por ``add_differentials``, na montagem da linha), sobreviveria à neutralização e
+    o bloco continuaria informando o modelo -- um bloco de cobertura cheia sairia rotulado
+    "não influenciou".
+
+    Cópia, nunca mutação: as linhas servidas são o insumo compartilhado dos 11 blocos, e
+    mutá-las faria cada influência depender da ordem de iteração.
+    """
+    neutralizado = rows.copy()
+    neutralizado[list(columns)] = float("nan")
+    return neutralizado
+
+
+def _coverage_of(n_columns: int, n_columns_evaluated: int) -> BlockCoverage:
+    """Classifica a cobertura pela contagem real (DP-05c): ``none`` | ``full`` | ``partial``."""
+    if n_columns_evaluated == 0:
+        return "none"
+    if n_columns_evaluated == n_columns:
+        return "full"
+    return "partial"
+
+
+def _block_influence(
+    served: ServedMatchup, block: FeatureBlock, prob_a_base: float
+) -> BlockInfluence:
+    """Mede um bloco: resolve as colunas, conta as avaliadas e, se houver, ablaciona.
+
+    O universo é ``block_columns(block)`` interseção ``feature_names`` (DP-05a): coluna que o
+    modelo **não consome** não pode mover a probabilidade, e contá-la no denominador faria
+    ``partial`` mentir na direção oposta -- declararia cobertura incompleta onde não há nada a
+    cobrir.
+
+    Uma coluna conta como avaliada quando é não-nula em **alguma** das duas linhas servidas
+    (DP-05b). As duas são o mesmo par com os lados trocados: se A tem o valor e B não, ``x_a``
+    é não-nulo na ida e nulo na volta -- e ablar essa coluna **move** a probabilidade.
+    "Avaliada" é exatamente "poderia mover a agulha".
+    """
+    do_modelo = set(served.loaded.feature_names)
+    colunas = [coluna for coluna in block_columns(block) if coluna in do_modelo]
+    avaliadas = [
+        coluna
+        for coluna in colunas
+        if bool(served.forward[coluna].notna().any() or served.reverse[coluna].notna().any())
+    ]
+    coverage = _coverage_of(len(colunas), len(avaliadas))
+    delta: float | None = None
+    if coverage != "none":
+        ida, volta = prob_a_wins_of(
+            served.loaded,
+            pd.concat(
+                [_ablated(served.forward, colunas), _ablated(served.reverse, colunas)],
+                ignore_index=True,
+            ),
+        )
+        delta = prob_a_base - neutral_prob_a_wins(ida, volta)
+    return BlockInfluence(
+        name=block.name,
+        description=block.description,
+        n_columns=len(colunas),
+        n_columns_evaluated=len(avaliadas),
+        coverage=coverage,
+        delta_prob_a=delta,
+    )
+
+
+def block_influences(served: ServedMatchup, prob_a_base: float) -> list[BlockInfluence]:
+    """Influência de cada bloco de ``BLOCK_REGISTRY`` -- **11 entradas, sempre**.
+
+    ``janela-canto-fabricado`` fica FORA: não é conjunto de colunas, é comparação de duas
+    variantes de dataset (por isso nem passa por ``measure_block``). Ele não vive em
+    ``BLOCK_REGISTRY``, então iterar o registro já o exclui por construção -- não há filtro a
+    esquecer.
+
+    A cobertura vem da **contagem real de não-nulos** na linha servida, nunca de lista fixa:
+    lista fixa apodrece do mesmo modo que o cache ``bout_features`` apodreceu, com 21 features
+    descartadas em silêncio por meses enquanto o log avisava.
+
+    Ordem de saída = ordem de inserção de ``BLOCK_REGISTRY``. Barato por construção: um
+    ``predict_proba`` sobre uma frame de 2 linhas por bloco com cobertura, zero para os sem --
+    é o cache as-of da Slice 01 que torna isso viável (sem ele, 11 reconstruções de pipeline).
+    """
+    return [_block_influence(served, block, prob_a_base) for block in BLOCK_REGISTRY.values()]
 
 
 # Limiar da RF-09: abaixo disso a coluna é destacada no log. Feature que nasce quase vazia

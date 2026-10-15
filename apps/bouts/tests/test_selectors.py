@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout
-from apps.bouts.selectors import get_bout_by_id, get_head_to_head
+from apps.bouts.selectors import get_bout_by_id, get_common_opponents, get_head_to_head
 from apps.bouts.tests.factories import (
     BoutFactory,
     BoutFighterFactory,
@@ -397,3 +397,314 @@ def test_head_to_head_ignora_a_luta_agendada_entre_a_dupla(db_session: Session) 
     assert persistida is not None
     assert persistida.status is BoutStatus.SCHEDULED
     assert len(persistida.bout_fighters) == 2
+
+
+# ---------------------------------------------------------------------------
+# Adversários em comum (SPEC 011, Slice 05 -- RF-16; CA-18/CA-P2)
+# ---------------------------------------------------------------------------
+
+
+def test_common_opponents_de_dupla_que_nunca_se_enfrentou(db_session: Session) -> None:
+    """CA-18: A e B nunca se enfrentaram, mas os dois enfrentaram X -> uma entrada para X.
+
+    É a queixa de origem da tela: hoje o head-to-head devolve lista vazia para qualquer dupla
+    que nunca se enfrentou -- o caso comum --, e a página "não faz nada". Adversário em comum é
+    o cruzamento que existe mesmo sem confronto direto.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    x = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    ax = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=x, winner=a
+    )
+    bx = _seed_confronto(
+        db_session, event_name="UFC 276", event_date=date(2022, 7, 2), red=x, blue=b, winner=b
+    )
+
+    comuns = get_common_opponents(db_session, a.id, b.id)
+
+    (comum,) = comuns
+    assert comum.opponent_id == x.id
+    assert comum.opponent_name == "Max Holloway"
+    assert [luta.bout_id for luta in comum.bouts_a] == [ax.id]
+    assert [luta.bout_id for luta in comum.bouts_b] == [bx.id]
+    # O desfecho de cada lado vem junto: é o que permite comparar os dois contra o MESMO
+    # terceiro, que é a razão de a seção existir.
+    assert comum.bouts_a[0].winner_id == a.id
+    assert comum.bouts_b[0].winner_id == b.id
+    assert comum.bouts_a[0].method is BoutMethod.DECISION
+    assert comum.bouts_a[0].event_name == "UFC 245"
+    assert comum.bouts_a[0].event_date == date(2019, 12, 14)
+
+
+def test_common_opponents_mesmo_adversario_duas_vezes_nao_duplica_a_entrada(
+    db_session: Session,
+) -> None:
+    """CA-18: adversário enfrentado duas vezes pelo mesmo lado -> uma entrada, duas lutas.
+
+    O adversário não duplica (ele é a chave da entrada), as lutas somam -- e em ordem
+    cronológica ascendente, para a tela ler a sequência como ela aconteceu.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    x = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    # Semeadas fora de ordem cronológica de propósito: a ordenação é do selector.
+    segunda = _seed_confronto(
+        db_session, event_name="UFC 276", event_date=date(2022, 7, 2), red=a, blue=x, winner=a
+    )
+    primeira = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=x, blue=a, winner=a
+    )
+    _seed_confronto(
+        db_session, event_name="UFC 300", event_date=date(2024, 4, 13), red=b, blue=x, winner=b
+    )
+
+    (comum,) = get_common_opponents(db_session, a.id, b.id)
+
+    assert comum.opponent_id == x.id
+    assert [luta.bout_id for luta in comum.bouts_a] == [primeira.id, segunda.id]
+    assert [luta.event_date for luta in comum.bouts_a] == [
+        date(2019, 12, 14),
+        date(2022, 7, 2),
+    ]
+
+
+def test_common_opponents_exclui_adversario_de_um_lado_so(db_session: Session) -> None:
+    """Adversário que só um dos dois enfrentou fica fora: a seção é a **interseção**."""
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    comum = FighterFactory.build(name="Max Holloway")
+    so_de_a = FighterFactory.build(name="Brian Ortega")
+    db_session.add_all([a, b, comum, so_de_a])
+    db_session.flush()
+    _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=comum, winner=a
+    )
+    _seed_confronto(
+        db_session, event_name="UFC 300", event_date=date(2024, 4, 13), red=b, blue=comum, winner=b
+    )
+    _seed_confronto(
+        db_session,
+        event_name="UFC 266",
+        event_date=date(2021, 9, 25),
+        red=a,
+        blue=so_de_a,
+        winner=a,
+    )
+
+    comuns = get_common_opponents(db_session, a.id, b.id)
+
+    assert [entrada.opponent_id for entrada in comuns] == [comum.id]
+
+
+def test_common_opponents_nao_inclui_o_proprio_par(db_session: Session) -> None:
+    """O confronto DIRETO entre A e B não vira entrada de adversário em comum.
+
+    Sem excluir o próprio par, B apareceria como "adversário em comum de A e B" (A enfrentou B,
+    e B enfrentou B? não -- mas A enfrentou B e o join trivial de B contra si mesmo ou a
+    simples presença de B no conjunto de adversários de A o traria), duplicando na tela a
+    seção de confronto direto que fica ao lado.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b])
+    db_session.flush()
+    _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=b, winner=a
+    )
+
+    comuns = get_common_opponents(db_session, a.id, b.id)
+
+    assert comuns == []
+    assert {entrada.opponent_id for entrada in comuns}.isdisjoint({a.id, b.id})
+
+
+def test_common_opponents_ignora_luta_agendada(db_session: Session) -> None:
+    """CA-P2: luta ``scheduled`` **não** produz adversário em comum -- o filtro é ``completed``.
+
+    ``get_common_opponents`` é consumidor **novo** de ``bout_fighters``, criado depois da
+    varredura de ``bouts.status`` desta SPEC: ``rg '\\bBout\\b'`` não casa ``BoutFighter``, e é
+    por ``bout_fighters`` que a luta agendada vaza. Sem o filtro, um adversário que A **vai**
+    enfrentar entraria no retrospecto como se já tivesse enfrentado -- e sem desfecho, o que a
+    tela leria como derrota (``winner_id`` nulo).
+
+    Luta agendada chega à tela pelo card do evento, não por aqui.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    futuro = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b, futuro])
+    db_session.flush()
+    agendada = _seed_confronto(
+        db_session,
+        event_name="UFC Card Futuro",
+        event_date=date(2026, 12, 12),
+        red=a,
+        blue=futuro,
+        status=BoutStatus.SCHEDULED,
+    )
+    _seed_confronto(
+        db_session,
+        event_name="UFC 300",
+        event_date=date(2024, 4, 13),
+        red=b,
+        blue=futuro,
+        winner=b,
+    )
+
+    comuns = get_common_opponents(db_session, a.id, b.id)
+
+    assert comuns == []
+    # Guarda de não-vacuidade: a agendada está persistida, com os dois cantos. Sem isto, o
+    # teste passaria se o seed simplesmente não tivesse criado a luta.
+    persistida = db_session.get(Bout, agendada.id)
+    assert persistida is not None
+    assert persistida.status is BoutStatus.SCHEDULED
+    assert len(persistida.bout_fighters) == 2
+
+
+def test_common_opponents_tem_ordem_deterministica_por_nome(db_session: Session) -> None:
+    """A ordem das entradas é por nome do adversário, ascendente.
+
+    Ordem determinística é contrato: sem ``ORDER BY``, o Postgres pode devolver em ordem de
+    varredura e a tela reordenaria sozinha entre dois carregamentos do mesmo confronto.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    # Semeados em ordem inversa à alfabética, para a ordenação ter o que provar.
+    zulu = FighterFactory.build(name="Zulu Fighter")
+    alfa = FighterFactory.build(name="Alfa Fighter")
+    db_session.add_all([a, b, zulu, alfa])
+    db_session.flush()
+    for adversario in (zulu, alfa):
+        _seed_confronto(
+            db_session,
+            event_name=f"UFC A vs {adversario.name}",
+            event_date=date(2019, 12, 14),
+            red=a,
+            blue=adversario,
+            winner=a,
+        )
+        _seed_confronto(
+            db_session,
+            event_name=f"UFC B vs {adversario.name}",
+            event_date=date(2024, 4, 13),
+            red=b,
+            blue=adversario,
+            winner=b,
+        )
+
+    comuns = get_common_opponents(db_session, a.id, b.id)
+
+    assert [entrada.opponent_name for entrada in comuns] == ["Alfa Fighter", "Zulu Fighter"]
+
+
+def test_common_opponents_empate_preserva_winner_id_nulo(db_session: Session) -> None:
+    """Empate contra o adversário em comum mantém ``winner_id`` nulo -- não colapsa em derrota.
+
+    Deliberadamente **não** reusa o ``won: bool`` de ``FighterBoutOut``: ali empate colapsa em
+    ``False``, e nesta seção -- onde os dois lutadores são comparados contra o MESMO terceiro --
+    "perdeu para X" e "empatou com X" não podem virar a mesma afirmação.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    x = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=x, winner=None
+    )
+    _seed_confronto(
+        db_session, event_name="UFC 300", event_date=date(2024, 4, 13), red=b, blue=x, winner=b
+    )
+
+    (comum,) = get_common_opponents(db_session, a.id, b.id)
+
+    assert comum.bouts_a[0].winner_id is None
+    assert comum.bouts_b[0].winner_id == b.id
+
+
+def test_common_opponents_ordem_dos_argumentos_espelha_os_lados(db_session: Session) -> None:
+    """Trocar ``a_id`` e ``b_id`` espelha ``bouts_a``/``bouts_b``, sem mudar o conjunto.
+
+    A função não é simétrica por acidente: ``bouts_a`` é sempre do primeiro argumento. O que
+    não pode mudar é **quem** são os adversários em comum.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    x = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    ax = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=x, winner=a
+    )
+    bx = _seed_confronto(
+        db_session, event_name="UFC 300", event_date=date(2024, 4, 13), red=b, blue=x, winner=b
+    )
+
+    (direto,) = get_common_opponents(db_session, a.id, b.id)
+    (invertido,) = get_common_opponents(db_session, b.id, a.id)
+
+    assert direto.opponent_id == invertido.opponent_id == x.id
+    assert [luta.bout_id for luta in direto.bouts_a] == [ax.id]
+    assert [luta.bout_id for luta in invertido.bouts_a] == [bx.id]
+    assert [luta.bout_id for luta in invertido.bouts_b] == [ax.id]
+
+
+def test_common_opponents_usa_duas_queries_sem_n_mais_1(db_session: Session) -> None:
+    """Duas queries no total (uma por lado), constantes -- não crescem com os adversários.
+
+    Semeia quatro adversários em comum e conta os statements que tocam ``bout_fighters``. A
+    interseção é feita em memória e o nome do adversário vem resolvido no join, então nem a
+    quantidade de adversários nem a de lutas por adversário acrescenta consulta. Sem esta
+    guarda, um N+1 aqui só apareceria na produção, onde um lutador tem dezenas de adversários.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    adversarios = [FighterFactory.build(name=f"Common Opponent {indice}") for indice in range(4)]
+    db_session.add_all([a, b, *adversarios])
+    db_session.flush()
+    for indice, adversario in enumerate(adversarios):
+        _seed_confronto(
+            db_session,
+            event_name=f"UFC A{indice}",
+            event_date=date(2019, 1, 1),
+            red=a,
+            blue=adversario,
+            winner=a,
+        )
+        _seed_confronto(
+            db_session,
+            event_name=f"UFC B{indice}",
+            event_date=date(2024, 1, 1),
+            red=b,
+            blue=adversario,
+            winner=b,
+        )
+
+    statements: list[str] = []
+
+    def _capturar(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        if "bout_fighters" in statement:
+            statements.append(statement)
+
+    connection = db_session.connection()
+    event.listen(connection, "before_cursor_execute", _capturar)
+    try:
+        comuns = get_common_opponents(db_session, a.id, b.id)
+    finally:
+        event.remove(connection, "before_cursor_execute", _capturar)
+
+    assert len(comuns) == 4
+    assert len(statements) == 2

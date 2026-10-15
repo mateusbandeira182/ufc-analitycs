@@ -20,9 +20,15 @@ comparação de contagem, não um recomputo de pipeline. Os caminhos de erro (40
 sem o campo: eles não chegaram a ler o cache.
 
 O endpoint de card é o primeiro da API v1 que **escreve** (registra cada predição em
-``bout_predictions``): a gravação e o commit ficam no service, o router segue fino. Nele, a
-ausência de histórico é estado de uma luta (``unavailable_reason``, status 200) e não 422 --
-no card, uma luta impredizível não é erro da requisição.
+``bout_predictions``): a gravação e o commit ficam no service, o router segue fino.
+
+Desde o M9 (SPEC 011, Slice 05) os **dois** endpoints tratam a ausência de histórico como
+estado, não como erro da requisição: 200 com ``unavailable_reason`` (prosa) e
+``unavailable_code`` (enum, D-08). O matchup respondia 422 e passou a 200 pela D-04 -- a
+página de confronto é alcançada por um clique vindo do card de um evento futuro, e o 422
+forçaria a SPA a parsear a mensagem de erro. O matchup também passou a servir a
+explicabilidade (``blocks`` por ablação local, ``attributes`` as-of crus), montada no service
+``explain_matchup``; o router continua só validando, traduzindo o 503 e montando o schema.
 """
 
 from __future__ import annotations
@@ -34,7 +40,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from analysis.model import ARTIFACTS_DIR
-from analysis.predict import predict_matchup
 from apps.bouts.models import BoutFighter
 from apps.events.selectors import get_event_by_id
 from apps.features.schemas import FeaturesFreshnessOut
@@ -43,13 +48,15 @@ from apps.fighters.selectors import get_fighter_by_id
 from apps.predictions.schemas import (
     CardBoutPredictionOut,
     EventPredictionOut,
+    MatchupAttributeOut,
+    MatchupBlockInfluenceOut,
     MatchupFighterOut,
     MatchupPredictionOut,
 )
 from apps.predictions.services import (
     BoutCardPrediction,
+    explain_matchup,
     predict_event_card,
-    predicted_winner_id,
 )
 from mma_analytics.db import get_session
 
@@ -57,8 +64,9 @@ router = APIRouter(prefix="/predict", tags=["predictions"])
 
 # Contratos de erro do endpoint, declarados para entrarem no OpenAPI (e, por tabela, nos
 # tipos gerados no web). O 422 NÃO é declarado aqui de propósito: o FastAPI já o documenta
-# com o schema ``HTTPValidationError`` (validação de query + os casos de negócio do router --
-# lutadores não-distintos e lutador sem histórico); declará-lo aqui sobrescreveria esse schema.
+# com o schema ``HTTPValidationError`` (validação de query + o único caso de negócio que
+# resta, lutadores não-distintos); declará-lo aqui sobrescreveria esse schema. O 422 de
+# "lutador sem histórico" **saiu** no M9: virou 200 com ``unavailable_code`` (D-04).
 _MATCHUP_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     404: {"description": "Lutador não encontrado"},
     503: {"description": "Modelo preditivo indisponível: artefato treinado ausente"},
@@ -79,20 +87,6 @@ def get_artifacts_dir() -> Path:
     return ARTIFACTS_DIR
 
 
-def _neutral_prob_a_wins(
-    session: Session, fighter_a_id: int, fighter_b_id: int, directory: Path
-) -> float:
-    """Probabilidade neutra de A vencer: média das duas ordens de canto.
-
-    ``predict_matchup(a, b).prob_a_wins`` avalia A no canto vermelho;
-    ``predict_matchup(b, a).prob_b_wins`` avalia A no canto azul. A média cancela a vantagem
-    de canto que o modelo aprendeu, tornando o palpite invariante à ordem dos parâmetros.
-    """
-    forward = predict_matchup(session, fighter_a_id, fighter_b_id, directory)
-    reverse = predict_matchup(session, fighter_b_id, fighter_a_id, directory)
-    return (forward.prob_a_wins + reverse.prob_b_wins) / 2.0
-
-
 @router.get("/matchup", response_model=MatchupPredictionOut, responses=_MATCHUP_ERROR_RESPONSES)
 def predict_matchup_endpoint(
     session: Annotated[Session, Depends(get_session)],
@@ -102,10 +96,21 @@ def predict_matchup_endpoint(
 ) -> MatchupPredictionOut:
     """Palpite neutro de canto para o confronto hipotético entre dois lutadores.
 
-    ``fighter_a == fighter_b`` -> 422; lutador inexistente -> 404; lutador sem histórico no
-    granular (existe, mas não tem lutas para derivar features as-of) -> 422; artefato de modelo
-    ausente -> 503. As probabilidades são neutralizadas de canto (média das duas ordens), então
-    a ordem dos parâmetros não muda o vencedor previsto.
+    Precedência dos erros, nesta ordem (DP-05f): ``fighter_a == fighter_b`` -> **422**
+    (checado antes da existência); lutador inexistente -> **404**; artefato de modelo ausente
+    -> **503**; lutador sem histórico no granular -> **200 indisponível**.
+
+    O 503 **precede** o 200-indisponível porque o artefato é carregado antes de o cache ser
+    consultado: servidor sem modelo é falha de servidor, não estado do par.
+
+    Estreante **não** é mais 422 (D-04): responde 200 com probabilidades nulas,
+    ``unavailable_reason`` em prosa e ``unavailable_code`` legível por máquina. A página de
+    confronto é alcançada por um clique vindo do card de um evento futuro -- o usuário não
+    formulou requisição errada, clicou numa luta que vai acontecer; e o 422 forçaria a SPA a
+    parsear a mensagem de erro para distinguir "estreante" de falha real.
+
+    As probabilidades são neutralizadas de canto (média das duas ordens), então a ordem dos
+    parâmetros não muda o vencedor previsto.
     """
     if fighter_a == fighter_b:
         raise HTTPException(
@@ -117,21 +122,27 @@ def predict_matchup_endpoint(
         raise HTTPException(status_code=404, detail="Lutador não encontrado")
 
     try:
-        prob_a_wins = _neutral_prob_a_wins(session, fighter_a, fighter_b, artifacts_dir)
+        explicacao = explain_matchup(session, fighter_a, fighter_b, artifacts_dir)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=_MODEL_UNAVAILABLE_DETAIL) from exc
-    except ValueError as exc:
-        # Lutador válido (existe no banco), mas sem lutas no granular: a pipeline de features
-        # as-of não tem base para predizer. Traduzido para 422 (nunca 500 cru) para a SPA
-        # tratar "sem histórico" como estado esperado.
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    prob_a_wins = explicacao.prob_a_wins
     return MatchupPredictionOut(
         fighter_a=MatchupFighterOut(id=a.id, name=a.name),
         fighter_b=MatchupFighterOut(id=b.id, name=b.name),
         prob_a_wins=prob_a_wins,
-        prob_b_wins=1.0 - prob_a_wins,
-        predicted_winner_id=predicted_winner_id(fighter_a, fighter_b, prob_a_wins),
+        prob_b_wins=None if prob_a_wins is None else 1.0 - prob_a_wins,
+        predicted_winner_id=explicacao.predicted_winner_id,
+        unavailable_reason=explicacao.unavailable_reason,
+        unavailable_code=explicacao.unavailable_code,
+        blocks=[
+            MatchupBlockInfluenceOut.model_validate(bloco, from_attributes=True)
+            for bloco in explicacao.blocks
+        ],
+        attributes=[
+            MatchupAttributeOut.model_validate(atributo, from_attributes=True)
+            for atributo in explicacao.attributes
+        ],
         features_freshness=FeaturesFreshnessOut.model_validate(get_features_freshness(session)),
     )
 
@@ -153,6 +164,7 @@ def _to_card_bout_out(previsao: BoutCardPrediction) -> CardBoutPredictionOut:
         prob_blue_wins=previsao.prob_blue_wins,
         predicted_winner_id=previsao.predicted_winner_id,
         unavailable_reason=previsao.unavailable_reason,
+        unavailable_code=previsao.unavailable_code,
     )
 
 

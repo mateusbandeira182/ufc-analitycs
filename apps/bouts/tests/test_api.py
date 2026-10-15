@@ -415,3 +415,122 @@ def test_head_to_head_id_inexistente_retorna_404(client: TestClient, db_session:
     resposta = client.get("/api/v1/head-to-head", params={"a": f.id, "b": 999_999})
 
     assert resposta.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Adversários em comum no head-to-head (SPEC 011, Slice 05 -- RF-16 / CA-18)
+# ---------------------------------------------------------------------------
+
+
+def test_head_to_head_sem_confronto_direto_traz_adversarios_em_comum(
+    client: TestClient, db_session: Session
+) -> None:
+    """CA-18: dupla que nunca se enfrentou responde ``bouts: []`` **e** ``common_opponents`` cheio.
+
+    É exatamente a queixa de origem -- "a página não faz nada". Antes, qualquer dupla sem
+    confronto direto (o caso comum) recebia só a lista vazia; agora o cruzamento que existe de
+    fato, o adversário em comum, vem na mesma resposta.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    x = FighterFactory.build(name="Max Holloway")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    ax = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=x, winner=a
+    )
+    bx = _seed_confronto(
+        db_session, event_name="UFC 300", event_date=date(2024, 4, 13), red=x, blue=b, winner=b
+    )
+
+    resposta = client.get("/api/v1/head-to-head", params={"a": a.id, "b": b.id})
+
+    assert resposta.status_code == 200
+    body = resposta.json()
+    assert body["bouts"] == []
+    (comum,) = body["common_opponents"]
+    assert comum["opponent"] == {"id": x.id, "name": "Max Holloway"}
+    assert [luta["bout_id"] for luta in comum["bouts_a"]] == [ax.id]
+    assert [luta["bout_id"] for luta in comum["bouts_b"]] == [bx.id]
+    # O desfecho de cada lado contra o MESMO terceiro -- a razão de a seção existir.
+    assert comum["bouts_a"][0]["winner_id"] == a.id
+    assert comum["bouts_b"][0]["winner_id"] == b.id
+    assert comum["bouts_a"][0]["event_name"] == "UFC 245"
+    assert comum["bouts_a"][0]["method"] == BoutMethod.DECISION.value
+    assert set(comum["bouts_a"][0]) == {
+        "bout_id",
+        "event_id",
+        "event_name",
+        "event_date",
+        "winner_id",
+        "method",
+        "round",
+    }
+
+
+def test_head_to_head_sem_nada_em_comum_traz_common_opponents_vazio(
+    client: TestClient, db_session: Session
+) -> None:
+    """Dupla sem confronto direto e sem adversário em comum: 200 com as duas listas vazias.
+
+    Lista vazia, não 404: os dois recursos existem, o que está ausente é a relação entre eles.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Islam Makhachev")
+    db_session.add_all([a, b])
+    db_session.flush()
+
+    body = client.get("/api/v1/head-to-head", params={"a": a.id, "b": b.id}).json()
+
+    assert body["bouts"] == []
+    assert body["common_opponents"] == []
+
+
+def test_head_to_head_com_confronto_direto_tambem_traz_os_comuns(
+    client: TestClient, db_session: Session
+) -> None:
+    """As duas seções convivem: confronto direto **e** adversário em comum na mesma resposta.
+
+    E o próprio par **não** aparece como adversário em comum -- senão a seção de cima
+    duplicaria a de baixo.
+    """
+    a = FighterFactory.build(name="Alexander Volkanovski")
+    b = FighterFactory.build(name="Max Holloway")
+    x = FighterFactory.build(name="Brian Ortega")
+    db_session.add_all([a, b, x])
+    db_session.flush()
+    direto = _seed_confronto(
+        db_session, event_name="UFC 245", event_date=date(2019, 12, 14), red=a, blue=b, winner=a
+    )
+    _seed_confronto(
+        db_session, event_name="UFC 266", event_date=date(2021, 9, 25), red=a, blue=x, winner=a
+    )
+    _seed_confronto(
+        db_session, event_name="UFC 231", event_date=date(2018, 12, 8), red=b, blue=x, winner=b
+    )
+
+    body = client.get("/api/v1/head-to-head", params={"a": a.id, "b": b.id}).json()
+
+    assert [luta["id"] for luta in body["bouts"]] == [direto.id]
+    assert [comum["opponent"]["id"] for comum in body["common_opponents"]] == [x.id]
+
+
+def test_head_to_head_erros_inalterados_com_common_opponents(
+    client: TestClient, db_session: Session
+) -> None:
+    """Os contratos de erro não mudam: ``a == b`` -> 422 **antes** da existência; 404 depois.
+
+    O campo novo é adição ao envelope de sucesso; a ADR 0003 (validação no router, ``a == b``
+    checado antes de existir) segue valendo sem alteração.
+    """
+    f = FighterFactory.build(name="Alexander Volkanovski")
+    db_session.add(f)
+    db_session.flush()
+
+    def _status(a: int, b: int) -> int:
+        return int(client.get("/api/v1/head-to-head", params={"a": a, "b": b}).status_code)
+
+    # Dois ids iguais E inexistentes ainda respondem 422, não 404.
+    assert _status(999_999, 999_999) == 422
+    assert _status(f.id, f.id) == 422
+    assert _status(f.id, 999_999) == 404
