@@ -125,3 +125,51 @@ describe("groupByCardSection", () => {
     expect(groupByCardSection([])).toEqual([]);
   });
 });
+
+describe("groupByCardSection — card misto", () => {
+  /** A mesma luta mínima, com o `status` explícito. */
+  function comStatus(
+    id: number,
+    cardSection: string | null,
+    boutOrder: number | null,
+    status: "scheduled" | "completed",
+  ): BoutCardOut {
+    return { ...makeBout(id, cardSection, boutOrder), status };
+  }
+
+  it("não separa as agendadas das realizadas num grupo próprio", () => {
+    /*
+      A armadilha específica da tela de evento futuro: agrupar as agendadas à
+      parte parece organização e quebra a ordem real do card. A seção vem do
+      payload e é a única partição legítima; o `status` decide o modo de cada
+      luta, não o lugar dela.
+    */
+    const bouts = [
+      comStatus(1, "Main Card", 1001, "completed"),
+      comStatus(2, "Main Card", 1002, "scheduled"),
+      comStatus(3, "Prelims", 2001, "scheduled"),
+      comStatus(4, "Prelims", 2002, "completed"),
+    ];
+
+    const groups = groupByCardSection(bouts);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.section).toBe("Main Card");
+    expect(groups[0]?.bouts.map((b) => b.id)).toEqual([1, 2]);
+    expect(groups[1]?.section).toBe("Prelims");
+    expect(groups[1]?.bouts.map((b) => b.id)).toEqual([3, 4]);
+  });
+
+  it("preserva a ordem do servidor mesmo com os status alternando", () => {
+    const bouts = [
+      comStatus(10, "Main Card", 1001, "scheduled"),
+      comStatus(11, "Main Card", 1002, "completed"),
+      comStatus(12, "Main Card", 1003, "scheduled"),
+    ];
+
+    const groups = groupByCardSection(bouts);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.bouts.map((b) => b.id)).toEqual([10, 11, 12]);
+  });
+});

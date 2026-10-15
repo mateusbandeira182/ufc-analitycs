@@ -8,6 +8,14 @@ interface UnavailablePredictionProps {
   code: UnavailableCode | null;
   /** Prosa pronta do backend, com ids embutidos. EXIBIDA verbatim, JAMAIS parseada. */
   reason: string | null;
+  /**
+   * `"section"` é o bloco centrado da página de confronto; `"inline"` é a linha
+   * dentro do card de uma luta — treze blocos de `py-12` num card de evento
+   * seriam ilegíveis. Só a **moldura** muda: o `switch` sobre os três códigos e a
+   * prosa são os mesmos nos dois, porque dois componentes com a mesma redação
+   * divergiriam no primeiro ajuste de texto.
+   */
+  variant?: "section" | "inline";
 }
 
 /** Aviso de cada causa: título e orientação, escolhidos pelo código. */
@@ -32,22 +40,54 @@ interface Aviso {
 export function UnavailablePrediction({
   code,
   reason,
+  variant = "section",
 }: UnavailablePredictionProps) {
   const { icon, title, hint } = avisoDe(code);
+  const inline = variant === "inline";
 
   return (
     <div
       role="status"
-      className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-card/50 px-6 py-12 text-center"
+      className={
+        inline
+          ? "flex items-start gap-2.5 border-t border-dashed border-border bg-card/40 px-4 py-3"
+          : "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-card/50 px-6 py-12 text-center"
+      }
     >
       {icon}
-      <h3 className="font-display text-lg font-semibold uppercase tracking-wide">
-        {title}
-      </h3>
-      <p className="max-w-md text-sm text-muted-foreground">{hint}</p>
-      {reason ? (
-        <p className="max-w-md text-xs text-muted-foreground/80">{reason}</p>
-      ) : null}
+      {/* `contents` deixa o agrupador fora do layout na variante de seção, que
+          empilha os três textos no centro da própria coluna flex. */}
+      <div className={inline ? "min-w-0" : "contents"}>
+        <h3
+          className={
+            inline
+              ? "font-display text-xs font-semibold uppercase tracking-[0.15em]"
+              : "font-display text-lg font-semibold uppercase tracking-wide"
+          }
+        >
+          {title}
+        </h3>
+        <p
+          className={
+            inline
+              ? "mt-1 text-xs text-muted-foreground"
+              : "max-w-md text-sm text-muted-foreground"
+          }
+        >
+          {hint}
+        </p>
+        {reason ? (
+          <p
+            className={
+              inline
+                ? "mt-1 text-[0.7rem] leading-relaxed text-muted-foreground/80"
+                : "max-w-md text-xs text-muted-foreground/80"
+            }
+          >
+            {reason}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

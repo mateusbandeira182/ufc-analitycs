@@ -43,6 +43,9 @@ export type BoutDetailOut = components["schemas"]["BoutDetailOut"];
 export type HeadToHeadOut = components["schemas"]["HeadToHeadOut"];
 export type MatchupPredictionOut =
   components["schemas"]["MatchupPredictionOut"];
+export type EventPredictionOut = components["schemas"]["EventPredictionOut"];
+export type CardBoutPredictionOut =
+  components["schemas"]["CardBoutPredictionOut"];
 export type MatchupFighterOut = components["schemas"]["MatchupFighterOut"];
 export type FeaturesFreshnessOut =
   components["schemas"]["FeaturesFreshnessOut"];

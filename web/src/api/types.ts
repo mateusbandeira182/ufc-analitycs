@@ -343,6 +343,9 @@ export interface components {
             ending_time_seconds: number | null;
             /** Weight Class */
             weight_class: string | null;
+            status: components["schemas"]["BoutStatus"];
+            /** Card Section */
+            card_section: string | null;
             /** Title Bout */
             title_bout: boolean | null;
             /** Scheduled Rounds */
@@ -1064,7 +1067,9 @@ export interface components {
          * UpsetHighlightOut
          * @description A maior zebra do card, lida do registro persistido em ``bout_predictions`` (D-01).
          *
-         *     ``prob_of_winner`` é a probabilidade que o modelo **da época** deu a quem venceu.
+         *     ``prob_of_winner`` é a probabilidade que o modelo **da época** deu a quem venceu -- do
+         *     registro do walk-forward, nunca do palpite servido por ``GET /predict/event/{id}``
+         *     (``source="api"``), que é recálculo as-of-hoje e faria a tela reescrever o passado.
          *     ``n_bouts_with_prediction`` de ``n_bouts`` é o denominador declarado, para a tela poder
          *     dizer "entre as 9 de 13 lutas previstas".
          */

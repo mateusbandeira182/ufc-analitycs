@@ -10,12 +10,14 @@ import {
 import { useParams } from "react-router";
 
 import { ApiError } from "@/api/client";
-import type { EventDetailOut } from "@/api/schema";
+import type { CardBoutPredictionOut, EventDetailOut } from "@/api/schema";
+import { StaleFeaturesBadge } from "@/components/StaleFeaturesBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EventCardSections } from "@/features/events/EventCardSections";
 import { EventHighlightsBlock } from "@/features/events/EventHighlightsBlock";
 import { EventSummaryBlock } from "@/features/events/EventSummaryBlock";
 import { useEvent } from "@/features/events/useEvent";
+import { useEventPrediction } from "@/features/events/useEventPrediction";
 import { formatIsoDate } from "@/lib/format";
 
 /**
@@ -27,6 +29,21 @@ export function EventPage() {
   const { id } = useParams();
   const eventId = Number(id);
   const { data, isPending, isError, error } = useEvent(eventId);
+
+  /*
+    A previsão do card é requisitada **se e somente se** o card tem ao menos uma
+    luta agendada. Não é economia de rede: `GET /predict/event/{id}` escreve em
+    `bout_predictions` com `source="api"` e commita, e o destaque da maior zebra
+    lê essa tabela. Disparar na página de um evento realizado reescreveria um
+    destaque histórico do próprio evento e da Home a cada render.
+
+    O hook é chamado antes de qualquer retorno antecipado (regra dos hooks) e
+    nasce desabilitado: enquanto o detalhe carrega, `data` é `undefined` e não há
+    `status` de luta para consultar.
+  */
+  const temAgendada =
+    data?.bouts.some((bout) => bout.status === "scheduled") ?? false;
+  const prediction = useEventPrediction(eventId, temAgendada);
 
   // Id de rota inválido (ex.: `/events/abc`): tratado como não encontrado, sem
   // disparar request (o hook fica desabilitado).
@@ -65,15 +82,73 @@ export function EventPage() {
           <EventHighlightsBlock highlights={data.highlights} />
 
           <div>
-            <h2 className="mb-5 font-display text-xl font-bold uppercase tracking-wide">
+            <h2 className="font-display text-xl font-bold uppercase tracking-wide">
               Card de lutas
             </h2>
-            <EventCardSections bouts={data.bouts} />
+            {temAgendada ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Cada luta aparece pelo seu próprio estado: as que já aconteceram
+                mostram o resultado, as que ainda não trazem o palpite do
+                modelo.
+              </p>
+            ) : null}
+            <div className="mt-5 grid gap-5">
+              {temAgendada ? <PredictionStatus query={prediction} /> : null}
+              <EventCardSections
+                bouts={data.bouts}
+                predictions={predictionsByBout(prediction.data?.bouts)}
+              />
+            </div>
           </div>
         </div>
       )}
     </section>
   );
+}
+
+/**
+ * Previsões indexadas por **`bout_id`**. Nome não é chave: a identidade da luta
+ * é o id, e o nome serve só à tela. Mapa vazio enquanto a previsão não chegou —
+ * o que leva cada card a não renderizar palpite nenhum, nunca um 50/50.
+ */
+function predictionsByBout(
+  bouts: CardBoutPredictionOut[] | undefined,
+): Map<number, CardBoutPredictionOut> {
+  return new Map((bouts ?? []).map((item) => [item.bout_id, item]));
+}
+
+/**
+ * Estado da requisição de previsão, acima do card. O card **nunca** espera por
+ * ela: as lutas seguem navegáveis em carregamento e em erro, e sem palpite não
+ * se desenha barra, porcentagem nem 50/50 — ausência de opinião do modelo é um
+ * estado, não um número.
+ *
+ * Em sucesso, o que aparece é o aviso de cache defasado, renderizado **na seção
+ * que lê o dado defasado** (RF-06 / D-10) e não num banner global: foi assim que
+ * o cache por luta escondeu 21 features por meses.
+ */
+function PredictionStatus({
+  query,
+}: {
+  query: ReturnType<typeof useEventPrediction>;
+}) {
+  if (query.isPending) {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Carregando as previsões do card…
+      </p>
+    );
+  }
+
+  if (query.isError) {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Não foi possível carregar as previsões do card. As lutas seguem abaixo.
+      </p>
+    );
+  }
+
+  return <StaleFeaturesBadge freshness={query.data.features_freshness} />;
 }
 
 /**

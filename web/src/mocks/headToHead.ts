@@ -56,6 +56,11 @@ const JONES_VS_VOLKANOVSKI: BoutDetailOut[] = [
     round: 2,
     ending_time_seconds: 84,
     weight_class: "Light Heavyweight",
+    // `HeadToHeadOut.bouts` reusa `BoutDetailOut` e a secao filtra `completed`:
+    // aqui o `status` sai sempre assim. `card_section` nulo porque o
+    // enriquecimento de contexto da Cito nao alcanca evento de 2016.
+    status: "completed",
+    card_section: null,
     title_bout: false,
     scheduled_rounds: 3,
     referee: "Herb Dean",

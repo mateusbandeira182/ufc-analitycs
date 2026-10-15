@@ -35,7 +35,7 @@ from apps.bouts.enums import BoutMethod, BoutStatus
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.fighters.models import Fighter
-from apps.predictions.models import BoutPrediction
+from apps.predictions.models import SOURCE_WALK_FORWARD, BoutPrediction
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,8 @@ class UpsetHighlight:
     época deu a quem efetivamente venceu.
 
     ``n_bouts_with_prediction`` é o tamanho do universo da comparação -- lutas realizadas
-    com vencedor conhecido **e** predição registrada --, e ``n_bouts`` o mesmo denominador
+    com vencedor conhecido **e** predição registrada pelo walk-forward (a linha de origem
+    ``api`` não conta, ver ``_latest_predictions``) --, e ``n_bouts`` o mesmo denominador
     de ``EventSummary``. Os dois juntos é que permitem a tela dizer "entre as 9 de 13 lutas
     previstas" em vez de apresentar a zebra como se o card inteiro tivesse sido previsto.
     """
@@ -402,12 +403,23 @@ def _latest_predictions(session: Session, bout_ids: Sequence[int]) -> dict[int, 
     ``bout_predictions`` tem chave natural ``(bout_id, model_version)``: a mesma luta
     acumula uma linha por versão de modelo. Uma única query ``WHERE bout_id IN (...)`` e a
     seleção por luta em Python -- sem N+1 e sem window function.
+
+    **Só a origem ``walk_forward``**: ``GET /predict/event/{id}`` escreve linhas
+    ``source="api"`` e commita, então prever o card de um evento já realizado deixaria
+    palpites as-of-hoje mais recentes que o registro retrospectivo. Lidos aqui, mudariam a
+    maior zebra e o denominador ``n_bouts_with_prediction`` do evento **e** da Home -- um
+    ``GET`` numa tela alterando o que outra tela mostra. É também o que mantém a D-01
+    verdadeira: o registro do walk-forward é o que o modelo de fato disse na época, enquanto
+    a linha ``api`` é o recálculo com o artefato de hoje que a D-01 recusa.
     """
     if not bout_ids:
         return {}
     stmt = (
         select(BoutPrediction)
-        .where(BoutPrediction.bout_id.in_(bout_ids))
+        .where(
+            BoutPrediction.bout_id.in_(bout_ids),
+            BoutPrediction.source == SOURCE_WALK_FORWARD,
+        )
         .order_by(BoutPrediction.predicted_at.asc(), BoutPrediction.id.asc())
     )
     mais_recente: dict[int, BoutPrediction] = {}

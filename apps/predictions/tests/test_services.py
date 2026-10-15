@@ -31,13 +31,8 @@ from apps.bouts.enums import BoutMethod, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.bouts.tests.factories import BoutFactory, EventFactory
 from apps.fighters.tests.factories import FighterFactory
-from apps.predictions.models import BoutPrediction
-from apps.predictions.services import (
-    SOURCE_API,
-    SOURCE_WALK_FORWARD,
-    predict_event_card,
-    record_prediction,
-)
+from apps.predictions.models import SOURCE_API, SOURCE_WALK_FORWARD, BoutPrediction
+from apps.predictions.services import predict_event_card, record_prediction
 from apps.predictions.tests.test_api import _seed_card
 from tests.analysis.test_predict import _make_fighter, _seed_history, _train_and_persist
 

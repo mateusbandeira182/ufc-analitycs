@@ -29,18 +29,19 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from analysis.ablation import BLOCK_REGISTRY, WINDOW_BLOCK_NAME
 from analysis.model import load_artifact
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout, BoutFighter
 from apps.events.models import Event
 from apps.events.selectors import list_event_bouts
 from apps.features.models import FighterAsOfFeatures
 from apps.features.selectors import read_asof_features
 from apps.predictions.api import get_artifacts_dir
+from apps.predictions.models import SOURCE_API, BoutPrediction
 from apps.predictions.services import MATCHUP_ATTRIBUTES
 from ingestion.features.cli import run_materialize_asof
 from mma_analytics.app import create_app
@@ -261,13 +262,22 @@ def test_matchup_lutador_so_com_luta_futura_responde_200_indisponivel(
     assert body["blocks"] == []
 
 
-def _seed_card(db_session: Session, ids: dict[str, int], pares: list[tuple[str, str]]) -> int:
+def _seed_card(
+    db_session: Session,
+    ids: dict[str, int],
+    pares: list[tuple[str, str]],
+    *,
+    status: BoutStatus = BoutStatus.COMPLETED,
+) -> int:
     """Semeia um evento cujo card tem uma luta por par (nomes do roster) e devolve o event_id.
 
     As lutas ainda não têm vencedor nem box-score (``winner_id`` e as estatísticas nulas): é um
-    card **futuro**, que é o que o endpoint de predição de evento existe para servir. O
-    ``method`` é preenchido porque a coluna é NOT NULL no schema atual (que nasceu para
-    eventos já ocorridos) -- é placeholder, nada no endpoint o consome.
+    card **futuro**, que é o que o endpoint de predição de evento existe para servir.
+
+    ``status=BoutStatus.SCHEDULED`` semeia o card tal como o banco o guarda desde a Slice 04:
+    ``method`` **nulo** (a coluna virou nullable na Slice 02), sem vencedor e sem box-score. No
+    padrão ``COMPLETED``, o ``method`` é placeholder de decisão -- nada no endpoint o consome,
+    porque a pipeline as-of do serving não lê desfecho da luta corrente.
     """
     event = Event(name="UFC Card Futuro", date=date(2026, 12, 31), location=None, source="kaggle")
     db_session.add(event)
@@ -276,10 +286,11 @@ def _seed_card(db_session: Session, ids: dict[str, int], pares: list[tuple[str, 
         bout = Bout(
             event_id=event.id,
             winner_id=None,
-            method=BoutMethod.DECISION,
+            method=None if status is BoutStatus.SCHEDULED else BoutMethod.DECISION,
             round=None,
             ending_time_seconds=None,
             weight_class=None,
+            status=status,
             source="kaggle",
         )
         db_session.add(bout)
@@ -331,6 +342,82 @@ def test_event_preve_todas_as_lutas_do_card(db_session: Session, tmp_path: Path)
             item["fighter_red"]["id"],
             item["fighter_blue"]["id"],
         }
+
+
+def test_event_totalmente_agendado_preve_sem_fechar_as_lutas(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Card 100% ``scheduled`` responde 200 com palpite por luta, e o banco segue agendado.
+
+    É a razão de existir do endpoint desde a Slice 04: as 89 lutas agendadas do banco não têm
+    ``method``, ``winner_id`` nem box-score. A asserção de que o estado **não** mudou é o que
+    distingue "serviu o card agendado" de "o endpoint fechou a luta no caminho" -- predição
+    não é desfecho.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    event_id = _seed_card(
+        db_session,
+        ids,
+        [("Fighter Alpha", "Fighter Delta"), ("Fighter Bravo", "Fighter Charlie")],
+        status=BoutStatus.SCHEDULED,
+    )
+    agendadas = list_event_bouts(db_session, event_id)
+    assert [bout.method for bout in agendadas] == [None, None]
+
+    with _client(db_session, tmp_path) as client:
+        resp = client.get(f"/api/v1/predict/event/{event_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [item["bout_id"] for item in body["bouts"]] == [bout.id for bout in agendadas]
+    for item in body["bouts"]:
+        assert item["unavailable_reason"] is None
+        assert item["unavailable_code"] is None
+        assert item["prob_red_wins"] + item["prob_blue_wins"] == pytest.approx(1.0)
+        assert item["predicted_winner_id"] in {
+            item["fighter_red"]["id"],
+            item["fighter_blue"]["id"],
+        }
+
+    for bout in list_event_bouts(db_session, event_id):
+        db_session.refresh(bout)
+        assert bout.status is BoutStatus.SCHEDULED
+        assert bout.method is None
+        assert bout.winner_id is None
+
+
+def test_event_agendado_repetido_nao_envelhece_o_registro(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Dois ``GET`` no mesmo card agendado não envelhecem ``bout_predictions`` (CA-16).
+
+    ``record_prediction`` faz ``DO UPDATE`` só em vencedor/probabilidade/n_features:
+    ``predicted_at`` e ``source`` são **preservados** da primeira gravação. É isso que sustenta
+    um verbo ``GET`` que escreve -- repetir a leitura não inventa histórico de predição.
+    """
+    ids = _seed_history(db_session)
+    _train_and_persist(db_session, tmp_path)
+    event_id = _seed_card(
+        db_session,
+        ids,
+        [("Fighter Alpha", "Fighter Delta"), ("Fighter Bravo", "Fighter Charlie")],
+        status=BoutStatus.SCHEDULED,
+    )
+
+    with _client(db_session, tmp_path) as client:
+        assert client.get(f"/api/v1/predict/event/{event_id}").status_code == 200
+        antes = db_session.scalars(select(BoutPrediction)).all()
+        instantes = {p.bout_id: (p.predicted_at, p.source) for p in antes}
+        assert len(antes) == 2
+        assert {p.source for p in antes} == {SOURCE_API}
+
+        assert client.get(f"/api/v1/predict/event/{event_id}").status_code == 200
+
+    db_session.expire_all()
+    depois = db_session.scalars(select(BoutPrediction)).all()
+    assert len(depois) == len(antes)
+    assert {p.bout_id: (p.predicted_at, p.source) for p in depois} == instantes
 
 
 def test_event_bate_com_o_matchup_do_mesmo_par(db_session: Session, tmp_path: Path) -> None:

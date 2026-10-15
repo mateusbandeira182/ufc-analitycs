@@ -14,7 +14,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.predictions.schemas import MatchupFighterOut
 
 
@@ -116,6 +116,14 @@ class BoutDetailOut(BaseModel):
     round: int | None
     ending_time_seconds: int | None
     weight_class: str | None
+    # Realizada x agendada: é o ``status`` que decide o modo da página (RF-31 / D-14), nunca a
+    # ausência de ``method`` -- uma luta realizada pode chegar sem método conhecido, e o proxy
+    # a rotularia "agendada".
+    status: BoutStatus
+    # Rótulo **cru** da Cito ('Main Card' / 'Prelims'), vindo do payload e **nunca** derivado de
+    # ``bout_order`` (RF-27). Nulo é o caso comum no acervo: ``fill_bout_context`` tem o
+    # ``bout_order`` como porteiro, e o contexto só cobre evento recente.
+    card_section: str | None
     # Contexto de luta do M5 (ADR 0004), todos nullable (backfill do CSV do seed).
     title_bout: bool | None
     scheduled_rounds: int | None

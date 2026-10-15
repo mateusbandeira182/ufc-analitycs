@@ -51,6 +51,8 @@ function bout(overrides: Partial<BoutDetailOut> = {}): BoutDetailOut {
     round: 3,
     ending_time_seconds: 300,
     weight_class: "Light Heavyweight",
+    status: "completed",
+    card_section: "Main Card",
     title_bout: false,
     scheduled_rounds: 3,
     referee: "Herb Dean",
@@ -122,12 +124,42 @@ describe("resolveResult", () => {
     ).toEqual({ kind: "draw" });
   });
 
-  it("classifica como agendada a luta sem método, e não como empate", () => {
-    // Luta agendada chega sem `winner_id` e sem `method`. Sem esta guarda ela
-    // cairia no ramo do empate — a tela afirmaria um desfecho que não existe.
-    expect(resolveResult(bout({ winner_id: null, method: null }))).toEqual({
-      kind: "scheduled",
-    });
+  it("classifica como agendada pelo `status`, e não como empate", () => {
+    /*
+      A luta agendada chega sem `winner_id` e sem `method`. Sem esta guarda ela
+      cairia no ramo do empate — a tela afirmaria um desfecho que não existe.
+      Quem decide é o `status` (RF-31 / D-14): o modo da página nunca vem da data
+      nem da ausência de método.
+    */
+    expect(
+      resolveResult(
+        bout({ status: "scheduled", winner_id: null, method: null }),
+      ),
+    ).toEqual({ kind: "scheduled" });
+  });
+
+  it("não rotula 'agendada' a luta realizada de método desconhecido", () => {
+    /*
+      `method === null` é PROXY de luta agendada: coincide com a realidade do
+      banco hoje, mas o contrato admite luta realizada sem método conhecido, e o
+      proxy a rotularia "Agendada" — afirmação errada sobre uma luta que
+      aconteceu.
+    */
+    const resultado = resolveResult(
+      bout({ status: "completed", method: null, winner_id: 2 }),
+    );
+
+    expect(resultado).toEqual({ kind: "winner", name: "Daniel Cormier" });
+  });
+
+  it("classifica como empate a realizada sem método e sem vencedor", () => {
+    // Realizada, sem método e sem vencedor: o empate mora na nulabilidade do
+    // vencedor, e é o que resta quando o desfecho existe mas o método não veio.
+    expect(
+      resolveResult(
+        bout({ status: "completed", method: null, winner_id: null }),
+      ),
+    ).toEqual({ kind: "draw" });
   });
 
   it("classifica como sem resultado quando o método é no contest", () => {

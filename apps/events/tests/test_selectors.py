@@ -32,7 +32,8 @@ from apps.events.selectors import (
 )
 from apps.fighters.models import Fighter
 from apps.fighters.tests.factories import FighterFactory
-from apps.predictions.services import SOURCE_WALK_FORWARD, record_prediction
+from apps.predictions.models import SOURCE_API, SOURCE_WALK_FORWARD
+from apps.predictions.services import record_prediction
 
 
 def _add_event(session: Session, name: str, event_date: date) -> Event:
@@ -1050,6 +1051,94 @@ def test_event_highlights_biggest_upset_usa_a_predicao_mais_recente(db_session: 
     assert destaques is not None
     assert destaques.biggest_upset is not None
     assert destaques.biggest_upset.prob_of_winner == pytest.approx(1 - 0.55)
+
+
+def test_event_highlights_biggest_upset_ignora_predicao_de_origem_api(
+    db_session: Session,
+) -> None:
+    """A zebra só considera o registro do walk-forward; o palpite servido por API não entra.
+
+    ``GET /predict/event/{id}`` **escreve** em ``bout_predictions`` com ``source="api"`` e
+    commita. Prever o card de um evento **já realizado** gera linhas as-of-hoje, mais recentes
+    que as do walk-forward: lidas aqui, elas trocariam a maior zebra e o denominador do próprio
+    evento e da Home -- um ``GET`` numa tela mudando o que outra tela mostra.
+
+    E contradiria a D-01 pela porta da persistência: ler do registro se justifica porque o
+    registro é o que o modelo **de fato disse na época**; a linha ``api`` é exatamente o
+    recálculo com o artefato de hoje que a D-01 recusa.
+    """
+    event = _add_event(db_session, "UFC 300", date(2024, 4, 13))
+    red = _add_fighter(db_session, "Alex Pereira")
+    blue = _add_fighter(db_session, "Jamahal Hill")
+    zebra = _add_luta_com_cantos(
+        db_session,
+        event,
+        red=red,
+        blue=blue,
+        method=BoutMethod.KO_TKO,
+        winner_id=blue.id,
+        round=1,
+        ending_time_seconds=180,
+        sig_red=10,
+        sig_blue=20,
+        td_red=0,
+        td_blue=0,
+    )
+    so_api = _add_luta_com_cantos(
+        db_session,
+        event,
+        red=red,
+        blue=blue,
+        method=BoutMethod.DECISION,
+        winner_id=blue.id,
+        round=3,
+        ending_time_seconds=300,
+        sig_red=80,
+        sig_blue=90,
+        td_red=0,
+        td_blue=0,
+    )
+    record_prediction(
+        db_session,
+        bout_id=zebra.id,
+        predicted_winner_id=red.id,
+        prob_predicted_winner=0.83,
+        model_version="v1",
+        n_features=57,
+        source=SOURCE_WALK_FORWARD,
+    )
+    # Gravadas DEPOIS: são as mais recentes por ``predicted_at``/``id``, logo venceriam a
+    # seleção por luta se a origem não fosse filtrada.
+    record_prediction(
+        db_session,
+        bout_id=zebra.id,
+        predicted_winner_id=blue.id,
+        prob_predicted_winner=0.70,
+        model_version="v2",
+        n_features=57,
+        source=SOURCE_API,
+    )
+    record_prediction(
+        db_session,
+        bout_id=so_api.id,
+        predicted_winner_id=red.id,
+        prob_predicted_winner=0.95,
+        model_version="v2",
+        n_features=57,
+        source=SOURCE_API,
+    )
+
+    destaques = collect_event_highlights(
+        db_session, bouts=list_event_bouts(db_session, event.id), n_bouts=2
+    )
+
+    assert destaques is not None
+    assert destaques.biggest_upset is not None
+    # A linha ``api`` da própria zebra acertou o vencedor: lida, apagaria a zebra do card.
+    assert destaques.biggest_upset.bout_id == zebra.id
+    assert destaques.biggest_upset.prob_of_winner == pytest.approx(1 - 0.83)
+    # A luta com predição SÓ de origem ``api`` não entra nem como candidata nem no denominador.
+    assert destaques.biggest_upset.n_bouts_with_prediction == 1
 
 
 def test_event_highlights_biggest_upset_none_quando_o_modelo_acertou_todas(

@@ -45,9 +45,13 @@ export type BoutResult =
  *
  * A luta agendada é testada **antes** do empate: ela também chega sem
  * `winner_id`, e sem esta ordem a tela afirmaria um empate que nunca ocorreu.
+ *
+ * Quem a identifica é o **`status`** (RF-31 / D-14), não a ausência de `method`:
+ * o contrato admite luta realizada de método desconhecido, e o proxy a rotularia
+ * "Agendada" — afirmação errada sobre uma luta que aconteceu.
  */
 export function resolveResult(bout: BoutDetailOut): BoutResult {
-  if (bout.method === null) {
+  if (bout.status === "scheduled") {
     return { kind: "scheduled" };
   }
   if (bout.method === "no_contest") {

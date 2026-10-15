@@ -780,6 +780,20 @@
             ],
             "title": "Weight Class"
           },
+          "status": {
+            "$ref": "#/components/schemas/BoutStatus"
+          },
+          "card_section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Section"
+          },
           "title_bout": {
             "anyOf": [
               {
@@ -841,6 +855,8 @@
           "round",
           "ending_time_seconds",
           "weight_class",
+          "status",
+          "card_section",
           "title_bout",
           "scheduled_rounds",
           "referee",
@@ -2973,7 +2989,7 @@
           "n_bouts"
         ],
         "title": "UpsetHighlightOut",
-        "description": "A maior zebra do card, lida do registro persistido em ``bout_predictions`` (D-01).\n\n``prob_of_winner`` \u00e9 a probabilidade que o modelo **da \u00e9poca** deu a quem venceu.\n``n_bouts_with_prediction`` de ``n_bouts`` \u00e9 o denominador declarado, para a tela poder\ndizer \"entre as 9 de 13 lutas previstas\"."
+        "description": "A maior zebra do card, lida do registro persistido em ``bout_predictions`` (D-01).\n\n``prob_of_winner`` \u00e9 a probabilidade que o modelo **da \u00e9poca** deu a quem venceu -- do\nregistro do walk-forward, nunca do palpite servido por ``GET /predict/event/{id}``\n(``source=\"api\"``), que \u00e9 rec\u00e1lculo as-of-hoje e faria a tela reescrever o passado.\n``n_bouts_with_prediction`` de ``n_bouts`` \u00e9 o denominador declarado, para a tela poder\ndizer \"entre as 9 de 13 lutas previstas\"."
       },
       "ValidationError": {
         "properties": {

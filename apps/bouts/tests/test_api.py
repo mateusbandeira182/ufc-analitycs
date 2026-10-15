@@ -13,7 +13,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from apps.bouts.enums import BoutMethod, Corner
+from apps.bouts.enums import BoutMethod, BoutStatus, Corner
 from apps.bouts.models import Bout
 from apps.bouts.selectors import get_bout_by_id
 from apps.bouts.tests.factories import (
@@ -247,6 +247,94 @@ def test_get_bout_sem_rounds_expoe_lista_vazia(client: TestClient, db_session: S
     body = client.get(f"/api/v1/bouts/{bout.id}").json()
 
     assert body["rounds"] == []
+
+
+def test_get_bout_realizada_expoe_status_completed_e_card_section(
+    client: TestClient, db_session: Session
+) -> None:
+    """Luta realizada expõe ``status: completed`` e o rótulo cru de seção do card.
+
+    A página da luta decide o modo pelo ``status`` (RF-31 / D-14), e o ``card_section`` é o
+    "contexto do card" que a CA-30 nomeia. Metade "não regredi" da CA-30: a luta realizada
+    continua inteira e agora se declara realizada, em vez de a tela inferir isso.
+    """
+    bout = _seed_bout(db_session)
+    bout.card_section = "Main Card"
+    db_session.flush()
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    assert body["status"] == BoutStatus.COMPLETED.value
+    assert body["card_section"] == "Main Card"
+    assert body["method"] == BoutMethod.KO_TKO.value
+
+
+def test_get_bout_agendada_expoe_status_scheduled_sem_desfecho(
+    client: TestClient, db_session: Session
+) -> None:
+    """Luta agendada responde 200 com ``status: scheduled`` e desfecho nulo, nunca 404.
+
+    Com ``bouts.status`` a rota passou a ser alcançável para luta que ainda não aconteceu
+    (CA-30). O ``status`` é o que a tela precisa: inferir o modo por ``method is None`` seria
+    proxy -- luta realizada de método desconhecido sairia rotulada "Agendada".
+    """
+    event = EventFactory.build(name="UFC 335", date=date(2026, 12, 12))
+    red = FighterFactory.build(name="Ilia Topuria")
+    blue = FighterFactory.build(name="Paddy Pimblett")
+    db_session.add_all([event, red, blue])
+    db_session.flush()
+    bout = BoutFactory.build(
+        event_id=event.id,
+        status=BoutStatus.SCHEDULED,
+        winner_id=None,
+        method=None,
+        round=None,
+        ending_time_seconds=None,
+        card_section="Main Card",
+        weight_class="Lightweight",
+    )
+    db_session.add(bout)
+    db_session.flush()
+    db_session.add_all(
+        [
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=red.id, corner=Corner.RED),
+            BoutFighterFactory.build(bout_id=bout.id, fighter_id=blue.id, corner=Corner.BLUE),
+        ]
+    )
+    db_session.flush()
+
+    resposta = client.get(f"/api/v1/bouts/{bout.id}")
+
+    assert resposta.status_code == 200
+    body = resposta.json()
+    assert body["status"] == BoutStatus.SCHEDULED.value
+    assert body["card_section"] == "Main Card"
+    assert body["method"] is None
+    assert body["winner_id"] is None
+    assert body["rounds"] == []
+    assert {canto["corner"] for canto in body["fighters"]} == {
+        Corner.RED.value,
+        Corner.BLUE.value,
+    }
+
+
+def test_get_bout_sem_contexto_de_card_expoe_card_section_nulo(
+    client: TestClient, db_session: Session
+) -> None:
+    """``card_section`` nulo é o caso comum do acervo.
+
+    ``fill_bout_context`` tem o ``bout_order`` como porteiro, então a maior parte das lutas
+    não tem seção de card nenhuma. O nulo é **declarado** aqui, e não herdado do padrão da
+    ``BoutFactory``: o estado sob prova é premissa do teste, não detalhe de uma factory
+    compartilhada por três apps.
+    """
+    bout = _seed_bout(db_session)
+    bout.card_section = None
+    db_session.flush()
+
+    body = client.get(f"/api/v1/bouts/{bout.id}").json()
+
+    assert body["card_section"] is None
 
 
 def test_get_bout_inexistente_retorna_404(client: TestClient) -> None:

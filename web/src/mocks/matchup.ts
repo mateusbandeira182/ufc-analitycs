@@ -200,7 +200,7 @@ export const MATCHUP_ATTRIBUTE_FIXTURES: MatchupAttributeOut[] = [
   para gente: a tela a exibe, nunca a interpreta — quem escolhe o aviso é o
   **código** (D-08).
 */
-const UNAVAILABLE_REASONS: Record<UnavailableCode, string> = {
+export const UNAVAILABLE_REASONS: Record<UnavailableCode, string> = {
   missing_history:
     "Sem histórico de lutas no granular para o(s) lutador(es) de id 2; sem lutas passadas não há features as-of para predizer.",
   missing_corners:

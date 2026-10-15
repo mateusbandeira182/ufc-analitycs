@@ -125,6 +125,8 @@ def _to_bout_detail_out(detail: BoutDetail) -> BoutDetailOut:
         round=detail.bout.round,
         ending_time_seconds=detail.bout.ending_time_seconds,
         weight_class=detail.bout.weight_class,
+        status=detail.bout.status,
+        card_section=detail.bout.card_section,
         title_bout=detail.bout.title_bout,
         scheduled_rounds=detail.bout.scheduled_rounds,
         referee=detail.bout.referee,

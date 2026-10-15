@@ -40,7 +40,7 @@ from apps.events.selectors import list_event_bouts
 from apps.features.models import FighterAsOfFeatures
 from apps.features.selectors import read_asof_features
 from apps.predictions.enums import UnavailableCode
-from apps.predictions.models import BoutPrediction
+from apps.predictions.models import SOURCE_API, BoutPrediction
 from ingestion.features.rolling import (
     CONTROL_TIME_AVG_R3,
     FINISH_RATE_PRIOR,
@@ -51,10 +51,6 @@ from ingestion.features.rolling import (
     TAKEDOWN_DEFENSE_R3,
     WIN_RATE_PRIOR,
 )
-
-# Origens do registro: predição servida por request e predição do loop walk-forward.
-SOURCE_API = "api"
-SOURCE_WALK_FORWARD = "walk_forward"
 
 
 def record_prediction(

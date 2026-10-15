@@ -22,6 +22,11 @@ export const queryKeys = {
     ["events", params] as const,
   latestEvent: () => ["events", "latest"] as const,
   event: (id: number) => ["event", id] as const,
+  // Entrada SEPARADA da do detalhe do evento. `GET /predict/event/{id}` é uma
+  // requisição distinta, disparada só quando o card tem luta agendada: uma chave
+  // compartilhada com `event(id)` faria o detalhe e o palpite se sobrescreverem
+  // no cache.
+  eventPrediction: (id: number) => ["event", id, "prediction"] as const,
   bout: (id: number) => ["bout", id] as const,
   headToHead: (a: number | null, b: number | null) =>
     ["head-to-head", a, b] as const,

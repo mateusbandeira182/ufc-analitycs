@@ -7,6 +7,7 @@ import type {
   PageFighterOut,
 } from "@/api/schema";
 import { BOUT_DETAIL_FIXTURES, BOUT_FIXTURES } from "@/mocks/bouts";
+import { EVENT_PREDICTION_FIXTURES } from "@/mocks/eventPrediction";
 import {
   EVENT_DETAIL_FIXTURES,
   EVENT_FIXTURES,
@@ -182,6 +183,24 @@ export const handlers = [
       common_opponents: commonOpponents(a, b),
     };
     return HttpResponse.json(body);
+  }),
+
+  /*
+    Card previsto do evento. Handler **padrão** porque `setup.ts` roda com
+    `onUnhandledRequest: "error"`: sem ele, todo teste de página de evento com
+    luta agendada quebraria na requisição não tratada, e não pelo que afirma.
+
+    Atenção ao que este endpoint é no servidor real: um GET que **escreve** em
+    `bout_predictions`. Quem prova que a página de evento realizado não o dispara
+    é o handler-espião do teste, não este mock.
+  */
+  http.get("*/api/v1/predict/event/:id", ({ params }) => {
+    const id = Number(params.id);
+    const prediction = EVENT_PREDICTION_FIXTURES[id];
+    if (!prediction) {
+      return HttpResponse.json({ detail: "Not Found" }, { status: 404 });
+    }
+    return HttpResponse.json(prediction);
   }),
 
   /*

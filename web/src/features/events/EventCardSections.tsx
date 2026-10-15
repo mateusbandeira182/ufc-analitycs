@@ -1,9 +1,14 @@
-import type { BoutCardOut } from "@/api/schema";
+import type { BoutCardOut, CardBoutPredictionOut } from "@/api/schema";
 import { EventBoutCard } from "@/features/events/EventBoutCard";
 import { groupByCardSection } from "@/features/events/cardOrder";
 
 interface EventCardSectionsProps {
   bouts: BoutCardOut[];
+  /**
+   * Previsões do card indexadas por **`bout_id`**. Vazio quando o card não tem
+   * luta agendada (a requisição nem sai) e enquanto ela carrega ou falha.
+   */
+  predictions: Map<number, CardBoutPredictionOut>;
 }
 
 /**
@@ -13,8 +18,15 @@ interface EventCardSectionsProps {
  *
  * A ordem, dentro e entre os grupos, é a do servidor. `bout_order` traz 1001 na
  * luta principal e não é sequencial nem denso, então nada aqui o lê.
+ *
+ * Card **misto** não é particionado nem reordenado por `status`: separar as
+ * agendadas num grupo próprio pareceria organização e quebraria a ordem real do
+ * card. Cada luta decide o próprio modo, dentro da seção em que o payload a pôs.
  */
-export function EventCardSections({ bouts }: EventCardSectionsProps) {
+export function EventCardSections({
+  bouts,
+  predictions,
+}: EventCardSectionsProps) {
   const groups = groupByCardSection(bouts);
 
   return (
@@ -34,7 +46,11 @@ export function EventCardSections({ bouts }: EventCardSectionsProps) {
             </h3>
             <ul aria-label={`Lutas — ${label}`} className="grid gap-3">
               {group.bouts.map((bout) => (
-                <EventBoutCard key={bout.id} bout={bout} />
+                <EventBoutCard
+                  key={bout.id}
+                  bout={bout}
+                  prediction={predictions.get(bout.id)}
+                />
               ))}
             </ul>
           </section>

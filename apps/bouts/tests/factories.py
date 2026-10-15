@@ -43,6 +43,15 @@ class BoutFactory(SQLAlchemyFactory[Bout]):
     assume ``completed`` -- os dois fixados de propósito, porque ambas as colunas são enum
     (e ``method`` virou nullable no M9), e o sorteio do polyfactory tornaria a suíte
     não-determinística.
+
+    ``card_section`` e ``bout_order`` ficam **nulos** pela mesma razão, e não por serem enum:
+    o ``SQLAlchemyFactory`` sorteia valor para qualquer coluna, inclusive ``str | None`` e
+    ``int | None``. Os dois sorteios custavam vermelho de diagnóstico caro -- uma seção de card
+    aleatória faz um teste de contrato passar isolado e falhar na suíte, e um ``bout_order``
+    aleatório embaralha a ordem de ``list_event_bouts`` (``bout_order asc nulls_last, id asc``),
+    deixando qualquer asserção de ordem do card à mercê do sorteio. Nulos, os dois refletem o
+    caso comum do acervo (contexto de card só cobre evento recente) e a ordem cai no ``id asc``,
+    que é a de inserção -- determinística. O teste que precisa de contexto o declara.
     """
 
     __model__ = Bout
@@ -66,6 +75,14 @@ class BoutFactory(SQLAlchemyFactory[Bout]):
         intermitente -- o tipo de vermelho que custa horas para diagnosticar.
         """
         return BoutStatus.COMPLETED
+
+    @classmethod
+    def card_section(cls) -> None:
+        return None
+
+    @classmethod
+    def bout_order(cls) -> None:
+        return None
 
     @classmethod
     def source(cls) -> str:

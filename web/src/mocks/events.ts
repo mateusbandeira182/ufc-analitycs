@@ -280,6 +280,137 @@ const UFC_332_BOUTS: BoutCardOut[] = [
   },
 ];
 
+/*
+  Card do UFC 334 (id 812): card **misto**, o caso que a decisão de modo pelo
+  `status` resolve sem regra extra. Uma luta já realizada e duas ainda agendadas,
+  todas com `card_section` e `bout_order` do payload — o PASSO-00 mediu 100% de
+  cobertura dos dois campos nas 89 lutas agendadas do banco, então contexto
+  preenchido é o caso dominante e o nulo (UFC 332) é o secundário.
+
+  `bout_order` traz 1001 na luta principal, que é o MENOR valor; a faixa não é
+  sequencial nem densa, e nada na tela a lê como número.
+
+  A luta das preliminares tem os dois cantos sem `headshot_url` e é a que recebe
+  `unavailable_code` na fixture de previsão: o estreante.
+*/
+const UFC_334_BOUTS: BoutCardOut[] = [
+  {
+    id: 820,
+    winner_id: 100,
+    method: "ko_tko",
+    round: 1,
+    ending_time_seconds: 72,
+    weight_class: "Light Heavyweight",
+    source: "cito",
+    status: "completed",
+    card_section: "Main Card",
+    bout_order: 1001,
+    fighters: [
+      {
+        fighter_id: 100,
+        name: "Alex Pereira",
+        corner: "red",
+        headshot_url: "https://example.test/pereira.png",
+      },
+      {
+        fighter_id: 200,
+        name: "Jamahal Hill",
+        corner: "blue",
+        headshot_url: null,
+      },
+    ],
+  },
+  {
+    id: 821,
+    winner_id: null,
+    method: null,
+    round: null,
+    ending_time_seconds: null,
+    weight_class: "Lightweight",
+    source: "cito",
+    status: "scheduled",
+    card_section: "Main Card",
+    bout_order: 1002,
+    fighters: [
+      {
+        fighter_id: 300,
+        name: "Charles Oliveira",
+        corner: "red",
+        headshot_url: "https://example.test/oliveira.png",
+      },
+      {
+        fighter_id: 400,
+        name: "Arman Tsarukyan",
+        corner: "blue",
+        headshot_url: null,
+      },
+    ],
+  },
+  {
+    id: 822,
+    winner_id: null,
+    method: null,
+    round: null,
+    ending_time_seconds: null,
+    weight_class: null,
+    source: "cito",
+    status: "scheduled",
+    card_section: "Prelims",
+    bout_order: 2001,
+    fighters: [
+      {
+        fighter_id: 900,
+        name: "Caio Borralho",
+        corner: "red",
+        headshot_url: null,
+      },
+      {
+        fighter_id: 910,
+        name: "Dakota Ferreira",
+        corner: "blue",
+        headshot_url: null,
+      },
+    ],
+  },
+];
+
+/*
+  Resumo do card misto: o denominador conta só a luta **realizada**, porque é a
+  única classificável. As agendadas não entram como zero em balde nenhum.
+*/
+const UFC_334_SUMMARY: EventSummaryOut = {
+  n_bouts: 1,
+  ko_tko: 1,
+  submissions: 0,
+  decisions: 0,
+  draws: 0,
+  no_contests: 0,
+  dq: 0,
+};
+
+/*
+  Destaques do card misto, calculados sobre a única luta realizada.
+  `most_takedowns` e `biggest_upset` chegam nulos: não houve queda, e não há
+  registro de walk-forward para um evento em ingestão — ausência de base é nulo,
+  nunca zero.
+*/
+const UFC_334_HIGHLIGHTS: EventHighlightsOut = {
+  fastest_finish: {
+    bout_id: 820,
+    fighter: { id: 100, name: "Alex Pereira" },
+    method: "ko_tko",
+    round: 1,
+    ending_time_seconds: 72,
+  },
+  most_sig_strikes: {
+    bout_id: 820,
+    fighter: { id: 100, name: "Alex Pereira" },
+    value: 31,
+  },
+  most_takedowns: null,
+  biggest_upset: null,
+};
+
 /**
  * O último evento **realizado** que `GET /events/latest` devolve: o mesmo shape
  * do detalhe (`EventDetailOut`), porque a Home precisa exatamente da mesma
@@ -295,6 +426,34 @@ export const LATEST_EVENT_FIXTURE: EventDetailOut = {
   summary: UFC_300_SUMMARY,
   highlights: UFC_300_HIGHLIGHTS,
 };
+
+/**
+ * O `UFC 334` com a luta das preliminares cadastrada **sem o canto azul**. É o
+ * card que o backend de fato tem quando responde `missing_corners`: a
+ * indisponibilidade e a ausência do canto são o mesmo fato, vistos por dois
+ * endpoints. Sem esta fixture, o teste do código sobrescreveria só a previsão e
+ * afirmaria contra um par que o servidor nunca emite junto.
+ *
+ * Consequência na tela: sem os dois ids não há para onde apontar o "por que?" —
+ * `/confronto` exige dois lutadores.
+ */
+export function eventDetailSemCantoAzul(): EventDetailOut {
+  const semCantoAzul: BoutCardOut[] = UFC_334_BOUTS.map((bout) =>
+    bout.id === 822
+      ? { ...bout, fighters: bout.fighters.filter((f) => f.corner === "red") }
+      : bout,
+  );
+  return {
+    id: 812,
+    name: "UFC 334",
+    date: isoDateFromToday(23),
+    location: "Abu Dhabi, UAE",
+    source: "cito",
+    bouts: semCantoAzul,
+    summary: UFC_334_SUMMARY,
+    highlights: UFC_334_HIGHLIGHTS,
+  };
+}
 
 /** Detalhe por id do evento; ausente no mapa significa 404. */
 export const EVENT_DETAIL_FIXTURES: Record<number, EventDetailOut> = {
@@ -320,6 +479,17 @@ export const EVENT_DETAIL_FIXTURES: Record<number, EventDetailOut> = {
     bouts: UFC_332_BOUTS,
     summary: null,
     highlights: null,
+  },
+  // Card misto: uma luta realizada e duas agendadas, com as seções reais.
+  812: {
+    id: 812,
+    name: "UFC 334",
+    date: isoDateFromToday(23),
+    location: "Abu Dhabi, UAE",
+    source: "cito",
+    bouts: UFC_334_BOUTS,
+    summary: UFC_334_SUMMARY,
+    highlights: UFC_334_HIGHLIGHTS,
   },
   // `UFC 335`: no acervo sem nenhuma luta, com data futura.
   813: {

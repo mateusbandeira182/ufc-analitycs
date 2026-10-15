@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { UnavailableCode } from "@/api/schema";
-import { UnavailablePrediction } from "@/features/confronto/UnavailablePrediction";
+import { UnavailablePrediction } from "@/components/UnavailablePrediction";
 
 const PROSA =
   "Sem histórico de lutas no granular para o(s) lutador(es) de id 2; sem lutas passadas não há features as-of para predizer.";
@@ -143,5 +143,46 @@ describe("UnavailablePrediction — código ausente ou fora do enum", () => {
 
     expect(screen.getByRole("heading").textContent).not.toBe("");
     expect(screen.getByText(PROSA)).toBeInTheDocument();
+  });
+});
+
+describe("UnavailablePrediction — a variante inline do card de evento", () => {
+  it("mantém o título e a prosa da variante de seção", () => {
+    /*
+      Só a MOLDURA muda entre as duas variantes: um bloco centrado de `py-12`
+      repetido em treze linhas de um card seria ilegível. O texto é o mesmo
+      porque o mapa `código -> aviso` é único — dois componentes com a mesma
+      redação divergiriam no primeiro ajuste.
+    */
+    const { unmount } = render(
+      <UnavailablePrediction code="missing_history" reason={PROSA} />,
+    );
+    const daSecao = textoDoAviso();
+    unmount();
+
+    render(
+      <UnavailablePrediction
+        code="missing_history"
+        reason={PROSA}
+        variant="inline"
+      />,
+    );
+
+    expect(textoDoAviso()).toBe(daSecao);
+    expect(
+      screen.getByRole("heading", { name: /sem histórico para prever/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("não exibe porcentagem na variante inline tampouco", () => {
+    render(
+      <UnavailablePrediction
+        code="missing_corners"
+        reason={PROSA}
+        variant="inline"
+      />,
+    );
+
+    expect(screen.queryByText(/\d+\s*%/)).not.toBeInTheDocument();
   });
 });

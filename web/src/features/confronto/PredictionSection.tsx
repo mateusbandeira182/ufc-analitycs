@@ -2,8 +2,8 @@ import { Trophy } from "lucide-react";
 
 import type { FighterOut, MatchupPredictionOut } from "@/api/schema";
 import { StaleFeaturesBadge } from "@/components/StaleFeaturesBadge";
+import { UnavailablePrediction } from "@/components/UnavailablePrediction";
 import { Avatar } from "@/components/ui/avatar";
-import { UnavailablePrediction } from "@/features/confronto/UnavailablePrediction";
 import {
   clampProbability,
   formatProbability,
